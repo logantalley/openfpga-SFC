@@ -27,7 +27,12 @@ entity SMP is
 		
 		IO_ADDR     	: in std_logic_vector(16 downto 0);
 		IO_DAT  			: in std_logic_vector(15 downto 0);
-		IO_WR 			: in std_logic
+		IO_WR 			: in std_logic;
+
+		SS_ADDR         : in std_logic_vector(7 downto 0);
+		SS_WR           : in std_logic;
+		SS_DI           : in std_logic_vector(7 downto 0);
+		SS_DO           : out std_logic_vector(7 downto 0)
 	);
 end SMP;
 
@@ -186,7 +191,10 @@ begin
 		WE       	=> SPC700_R_WN,
 		
 		REG_SET	   => REG_SET, 
-		REG_DAT	   => SPC_REG_DAT
+		REG_DAT	   => SPC_REG_DAT,
+
+		SS_ADDR  	=> SS_ADDR,
+		SS_DO    	=> SS_SPC_DO,
 	);
 	
 	
@@ -239,6 +247,32 @@ begin
 				T0OUT <= SMP_REG_DAT(75 downto 72);
 				T1OUT <= SMP_REG_DAT(99 downto 96);
 				T2OUT <= SMP_REG_DAT(107 downto 104);
+			elsif SS_WR = '1' then
+				case SS_ADDR(7 downto 0) is
+					-- CPUO writes (directly to the array, bypassing REG_DAT)
+					when x"00" => CPUO(0) <= SS_DI;
+					when x"01" => CPUO(1) <= SS_DI;
+					when x"02" => CPUO(2) <= SS_DI;
+					when x"03" => CPUO(3) <= SS_DI;
+					
+					-- Timer state writes
+					when x"04" => T0_CNT <= unsigned(SS_DI);
+					when x"05" => T1_CNT <= unsigned(SS_DI);
+					when x"06" => T2_CNT <= unsigned(SS_DI);
+					when x"07" => TM01_CNT(7 downto 0) <= unsigned(SS_DI);
+					when x"08" => TM01_CNT(8) <= SS_DI(0);
+					when x"09" => TM2_CNT <= unsigned(SS_DI(5 downto 0));
+					
+					-- Port/Control state writes
+					when x"0A" => CPUI(0) <= SS_DI;
+					when x"0B" => CPUI(1) <= SS_DI;
+					when x"0C" => CPUI(2) <= SS_DI;
+					when x"0D" => CPUI(3) <= SS_DI;
+					when x"0E" => AUX(0) <= SS_DI;
+					when x"0F" => AUX(1) <= SS_DI;
+					
+					when others => null;
+				end case;
 			elsif SPC700_CE = '1' then
 				TIMER_CE <= '1';
 				if SPC700_A(15 downto 4) = x"00F" then
@@ -403,5 +437,25 @@ begin
 			end if;
 		end if;
 	end process;
+
+		-- Save state read multiplexer
+	SS_DO <= 
+		CPUO(0) when SS_ADDR(7 downto 0) = x"00" else
+		CPUO(1) when SS_ADDR(7 downto 0) = x"01" else
+		CPUO(2) when SS_ADDR(7 downto 0) = x"02" else
+		CPUO(3) when SS_ADDR(7 downto 0) = x"03" else
+		std_logic_vector(T0_CNT) when SS_ADDR(7 downto 0) = x"04" else
+		std_logic_vector(T1_CNT) when SS_ADDR(7 downto 0) = x"05" else
+		std_logic_vector(T2_CNT) when SS_ADDR(7 downto 0) = x"06" else
+		std_logic_vector(TM01_CNT(7 downto 0)) when SS_ADDR(7 downto 0) = x"07" else
+		"0000000" & std_logic_vector(TM01_CNT(8)) when SS_ADDR(7 downto 0) = x"08" else
+		"00" & std_logic_vector(TM2_CNT) when SS_ADDR(7 downto 0) = x"09" else
+		CPUI(0) when SS_ADDR(7 downto 0) = x"0A" else
+		CPUI(1) when SS_ADDR(7 downto 0) = x"0B" else
+		CPUI(2) when SS_ADDR(7 downto 0) = x"0C" else
+		CPUI(3) when SS_ADDR(7 downto 0) = x"0D" else
+		AUX(0) when SS_ADDR(7 downto 0) = x"0E" else
+		AUX(1) when SS_ADDR(7 downto 0) = x"0F" else
+		x"00";
 
 end rtl;

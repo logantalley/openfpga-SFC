@@ -9,6 +9,16 @@ module MAIN_SNES (
     // Settings
     input wire cpu_turbo_enabled,
     input wire gsu_turbo_enabled,
+    
+    // Save states
+    input  wire        ss_busy,
+    input  wire  [8:0] ss_addr,
+    input  wire        ss_regs_sel,
+    input  wire        ss_smp_sel,
+    input  wire        ss_wr,
+    input  wire  [7:0] ss_di,
+    output wire  [7:0] ss_spc_do,
+    output wire  [7:0] ss_ppu_do,
 
     input wire multitap_enabled,
     input wire lightgun_enabled,
@@ -410,6 +420,16 @@ module MAIN_SNES (
       .IO_ADDR(ioctl_addr[16:0]),
       .IO_DAT (ioctl_dout),
       .IO_WR  (spc_download & ioctl_wr),
+
+      // Save states
+      .SS_ADDR    (ss_addr),
+      .SS_BUSY    (ss_busy),
+      .SS_REGS_SEL(ss_regs_sel),
+      .SS_SMP_SEL (ss_smp_sel),
+      .SS_WR      (ss_wr),
+      .SS_DI      (ss_di),
+      .SS_SPC_DO  (ss_spc_do),
+      .SS_PPU_DO  (ss_ppu_do),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),
