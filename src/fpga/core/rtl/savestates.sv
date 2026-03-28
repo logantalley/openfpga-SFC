@@ -72,7 +72,7 @@ module savestates
     output reg   [7:0] ss_do,        // data override to CPU data bus
 
     // ROM address override (points into the savestates.bin image in ROM)
-    output wire [23:0] rom_addr,
+    output reg  [23:0] rom_addr,
 
     // External (SPC/BSRAM/DSPn) address counter — passed to SPC/BSRAM
     output wire [19:0] ext_addr,
@@ -486,6 +486,9 @@ end
 //   BSRAM reads (pa == $87) → bsram_di
 //   DSPn RAM reads (pa == $88) → dspn_di
 // ---------------------------------------------------------------------------
+wire aram_sel;
+wire dsp_regs_sel;
+wire smp_regs_sel;
 wire spc_sel     = aram_sel | dsp_regs_sel | smp_regs_sel;
 wire spc_read    = spc_sel  & ~pard_n;
 wire bsram_read  = bsram_sel & ~pard_n;
