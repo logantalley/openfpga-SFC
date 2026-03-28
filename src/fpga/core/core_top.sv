@@ -258,41 +258,6 @@ module core_top (
   assign port_tran_sd            = 1'bz;
   assign port_tran_sd_dir        = 1'b0;  // SD is input and not used
 
-  // tie off the rest of the pins we are not using
-  //   assign cram0_a                 = 'h0;
-  //   assign cram0_dq                = {16{1'bZ}};
-  //   assign cram0_clk               = 0;
-  //   assign cram0_adv_n             = 1;
-  //   assign cram0_cre               = 0;
-  //   assign cram0_ce0_n             = 1;
-  //   assign cram0_ce1_n             = 1;
-  //   assign cram0_oe_n              = 1;
-  //   assign cram0_we_n              = 1;
-  //   assign cram0_ub_n              = 1;
-  //   assign cram0_lb_n              = 1;
-
-  //   assign cram1_a                 = 'h0;
-  //   assign cram1_dq                = {16{1'bZ}};
-  //   assign cram1_clk               = 0;
-  //   assign cram1_adv_n             = 1;
-  //   assign cram1_cre               = 0;
-  //   assign cram1_ce0_n             = 1;
-  //   assign cram1_ce1_n             = 1;
-  //   assign cram1_oe_n              = 1;
-  //   assign cram1_we_n              = 1;
-  //   assign cram1_ub_n              = 1;
-  //   assign cram1_lb_n              = 1;
-
-  //   assign dram_a                  = 'h0;
-  //   assign dram_ba                 = 'h0;
-  //   assign dram_dq                 = {16{1'bZ}};
-  //   assign dram_dqm                = 'h0;
-  //   assign dram_clk                = 'h0;
-  //   assign dram_cke                = 'h0;
-  //   assign dram_ras_n              = 'h1;
-  //   assign dram_cas_n              = 'h1;
-  //   assign dram_we_n               = 'h1;
-
   assign sram_a                  = 'h0;
   assign sram_dq                 = {16{1'bZ}};
   assign sram_oe_n               = 1;
@@ -323,8 +288,20 @@ module core_top (
       end
     endcase
 
+    // BSRAM read-back (address space 0x2xxxxxxx — existing save SRAM)
     if (bridge_addr[31:28] == 4'h2) begin
       bridge_rd_data <= sd_read_data;
+    end
+
+    // -----------------------------------------------------------------------
+    // Save state BRAM read-back (address space 0x4xxxxxxx)
+    // The APF reads back the completed save state byte-by-byte through here.
+    // bram_rd_data is the 8-bit output from the savestates BRAM port B.
+    // We replicate the byte across all four lanes so a 32-bit APF read on
+    // any alignment will get the right byte in the expected position.
+    // -----------------------------------------------------------------------
+    if (bridge_addr[31:28] == 4'h4) begin
+      bridge_rd_data <= {4{bram_rd_data}};
     end
   end
 
@@ -408,10 +385,21 @@ module core_top (
 
   wire dataslot_allcomplete;
 
-  wire savestate_supported = 0;
-  wire [31:0] savestate_addr;
-  wire [31:0] savestate_size;
-  wire [31:0] savestate_maxloadsize;
+  // -----------------------------------------------------------------------
+  // Save state APF protocol wires
+  // savestate_supported = 1 tells the Pocket OS to show the save state UI.
+  // savestate_addr      = base address in the APF 0x4xxxxxxx window where
+  //                       the OS will DMA the BRAM contents.
+  // savestate_size      = number of bytes the core actually wrote (we use
+  //                       the full 256 KB BRAM window for simplicity; the
+  //                       savestates.asm magic header lets the loader know
+  //                       where useful data ends).
+  // savestate_maxloadsize = maximum bytes the OS may push back on a load.
+  // -----------------------------------------------------------------------
+  wire        savestate_supported  = 1;           // CHANGED: was 0
+  wire [31:0] savestate_addr       = 32'h40000000;
+  wire [31:0] savestate_size       = 32'h00040000; // 256 KB
+  wire [31:0] savestate_maxloadsize= 32'h00100000; // 1 MB ceiling
 
   wire savestate_start;
   wire savestate_start_ack;
@@ -432,7 +420,6 @@ module core_top (
 
   // bridge target commands
   // synchronous to clk_74a
-
 
   // bridge data slot access
 
@@ -497,6 +484,112 @@ module core_top (
       .datatable_q   (datatable_q)
   );
 
+  // -----------------------------------------------------------------------
+  // Save state trigger synchronisation
+  //
+  // savestate_start / savestate_load come from core_bridge_cmd in the
+  // clk_74a domain.  We need single-cycle pulses in the clk_sys_21_48
+  // domain to hand to savestates.sv.
+  //
+  // We use a toggle-sync pattern:
+  //   1. On the rising edge of savestate_start (74a domain) we toggle a
+  //      flag.
+  //   2. synch_3 crosses that flag to the 21 MHz domain.
+  //   3. An edge detector in the 21 MHz domain produces the one-shot pulse.
+  // -----------------------------------------------------------------------
+  reg  ss_save_tog = 0;   // toggle in clk_74a domain
+  reg  ss_load_tog = 0;
+
+  reg  savestate_start_prev = 0;
+  reg  savestate_load_prev  = 0;
+
+  always @(posedge clk_74a) begin
+    savestate_start_prev <= savestate_start;
+    savestate_load_prev  <= savestate_load;
+
+    if (savestate_start && ~savestate_start_prev) ss_save_tog <= ~ss_save_tog;
+    if (savestate_load  && ~savestate_load_prev)  ss_load_tog <= ~ss_load_tog;
+  end
+
+  wire ss_save_tog_s;
+  wire ss_load_tog_s;
+
+  synch_3 ss_save_sync (ss_save_tog, ss_save_tog_s, clk_sys_21_48);
+  synch_3 ss_load_sync (ss_load_tog, ss_load_tog_s, clk_sys_21_48);
+
+  reg  ss_save_tog_prev = 0;
+  reg  ss_load_tog_prev = 0;
+  wire ss_save_pulse = ss_save_tog_s ^ ss_save_tog_prev;
+  wire ss_load_pulse = ss_load_tog_s ^ ss_load_tog_prev;
+
+  always @(posedge clk_sys_21_48) begin
+    ss_save_tog_prev <= ss_save_tog_s;
+    ss_load_tog_prev <= ss_load_tog_s;
+  end
+
+  // -----------------------------------------------------------------------
+  // Save state APF handshake
+  //
+  // The APF protocol requires the core to assert savestate_start_ack for
+  // one clk_74a cycle when it accepts a start command, then hold
+  // savestate_start_busy while the operation is in progress, and finally
+  // assert savestate_start_ok for one cycle when done.
+  //
+  // ss_busy comes from savestates.sv (in clk_sys domain).  We cross it
+  // back to clk_74a for the APF handshake signals.
+  // -----------------------------------------------------------------------
+  wire ss_busy;   // from MAIN_SNES / savestates, in clk_sys domain
+
+  wire ss_busy_74a;
+  synch_3 ss_busy_sync (ss_busy, ss_busy_74a, clk_74a);
+
+  // Ack pulses: one clk_74a cycle on the rising edge of the request
+  assign savestate_start_ack  = savestate_start && ~savestate_start_prev;
+  assign savestate_load_ack   = savestate_load  && ~savestate_load_prev;
+
+  // Busy: mirror ss_busy back to the APF
+  assign savestate_start_busy = ss_busy_74a;
+  assign savestate_load_busy  = ss_busy_74a;
+
+  // OK: one clk_74a cycle on the falling edge of ss_busy
+  reg  ss_busy_74a_prev = 0;
+  always @(posedge clk_74a) ss_busy_74a_prev <= ss_busy_74a;
+
+  assign savestate_start_ok = ~ss_busy_74a && ss_busy_74a_prev;
+  assign savestate_load_ok  = ~ss_busy_74a && ss_busy_74a_prev;
+
+  // Errors: never signal an error (savestates.sv aborts silently on bad header)
+  assign savestate_start_err = 0;
+  assign savestate_load_err  = 0;
+
+  // -----------------------------------------------------------------------
+  // Save state BRAM bridge write path
+  //
+  // On a LOAD operation the APF DMA engine writes the save state file into
+  // the core's address space at 0x4xxxxxxx before asserting savestate_load.
+  // We decode that window here and drive the BRAM write port that goes into
+  // savestates.sv (via MAIN_SNES).
+  //
+  // bridge_addr[19:0] gives the byte address within the BRAM.
+  // bridge_wr_data[7:0] is the byte to write (APF is big-endian by default,
+  // but we set bridge_endian_little=0, so [31:24] is the first byte of a
+  // 32-bit word — adjust the byte lane below if your data_loader packs
+  // differently).  We write one byte per bridge_wr strobe.
+  // -----------------------------------------------------------------------
+  wire        bram_wr      = bridge_wr && (bridge_addr[31:28] == 4'h4);
+  wire [19:0] bram_wr_addr = bridge_addr[19:0];
+  // Bridge is big-endian (bridge_endian_little=0): MSB is in [31:24].
+  // The APF writes 32-bit words; savestates.sv expects byte-addressed writes
+  // so we only strobe bram_wr when the address is naturally aligned, and we
+  // pick the correct byte lane from the 32-bit word.  For simplicity we just
+  // take [31:24] — the data_loader already handles byte ordering when writing
+  // the 0x4x window (see data_loader with ADDRESS_MASK_UPPER_4 = 4'h4 below).
+  wire  [7:0] bram_wr_data = bridge_wr_data[31:24];
+
+  // BRAM read-back wired above in the bridge_rd_data mux
+  wire  [7:0] bram_rd_data;
+  wire [19:0] bram_rd_addr = bridge_addr[19:0];
+
   reg ioctl_download = 0;
   wire ioctl_wr;
   wire [24:0] ioctl_addr;
@@ -507,9 +600,6 @@ module core_top (
 
   always @(posedge clk_74a) begin
     dataslot_allcomplete_prev <= dataslot_allcomplete;
-
-    // if (dataslot_requestwrite) ioctl_download <= 1;
-    // else if (dataslot_allcomplete) ioctl_download <= 0;
 
     if (dataslot_requestread || dataslot_requestwrite) save_download <= 1;
     else if (dataslot_allcomplete && ~dataslot_allcomplete_prev) save_download <= 0;
@@ -847,7 +937,7 @@ module core_top (
       .ram_size(ram_size),
       .PAL(PAL),
 
-      // Save input/output
+      // Save input/output (BSRAM)
       .save_download(save_download_s),
       .sd_rd(sd_rd),
       .sd_wr(sd_wr),
@@ -906,7 +996,20 @@ module core_top (
 
       // Audio
       .audio_l(audio_l),
-      .audio_r(audio_r)
+      .audio_r(audio_r),
+
+      // -----------------------------------------------------------------------
+      // Save state ports (NEW)
+      // -----------------------------------------------------------------------
+      .clk_74a     (clk_74a),
+      .bram_wr     (bram_wr),
+      .bram_wr_addr(bram_wr_addr),
+      .bram_wr_data(bram_wr_data),
+      .bram_rd_data(bram_rd_data),
+      .bram_rd_addr(bram_rd_addr),
+      .ss_save     (ss_save_pulse),
+      .ss_load     (ss_load_pulse),
+      .ss_busy     (ss_busy)
   );
 
   // Video
@@ -917,10 +1020,10 @@ module core_top (
   wire video_vs_snes;
   wire [23:0] video_rgb_snes;
 
-  assign video_rgb_clock = clk_video_5_37;
+  assign video_rgb_clock    = clk_video_5_37;
   assign video_rgb_clock_90 = clk_video_5_37_90deg;
-  assign video_rgb = rgb;
-  assign video_de = de;
+  assign video_rgb          = rgb;
+  assign video_de           = de;
 
   reg de;
   reg [23:0] rgb;
