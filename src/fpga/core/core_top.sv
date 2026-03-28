@@ -258,12 +258,8 @@ module core_top (
   assign port_tran_sd            = 1'bz;
   assign port_tran_sd_dir        = 1'b0;  // SD is input and not used
 
-  assign sram_a                  = 'h0;
-  assign sram_dq                 = {16{1'bZ}};
-  assign sram_oe_n               = 1;
-  assign sram_we_n               = 1;
-  assign sram_ub_n               = 1;
-  assign sram_lb_n               = 1;
+  // sram_* are driven by the SRAM arbitration logic further below.
+  // (SNES side via MAIN_SNES when ss_busy, bridge side when ~ss_busy.)
 
   assign dbg_tx                  = 1'bZ;
   assign user1                   = 1'bZ;
@@ -294,14 +290,13 @@ module core_top (
     end
 
     // -----------------------------------------------------------------------
-    // Save state BRAM read-back (address space 0x4xxxxxxx)
+    // Save state SRAM read-back (address space 0x4xxxxxxx)
     // The APF reads back the completed save state byte-by-byte through here.
-    // bram_rd_data is the 8-bit output from the savestates BRAM port B.
-    // We replicate the byte across all four lanes so a 32-bit APF read on
-    // any alignment will get the right byte in the expected position.
+    // br_sram_rd_data is the registered SRAM output byte from the bridge-side
+    // SRAM reader (clk_74a domain).  Replicate across all four lanes.
     // -----------------------------------------------------------------------
     if (bridge_addr[31:28] == 4'h4) begin
-      bridge_rd_data <= {4{bram_rd_data}};
+      bridge_rd_data <= {4{br_sram_rd_data}};
     end
   end
 
@@ -563,32 +558,80 @@ module core_top (
   assign savestate_load_err  = 0;
 
   // -----------------------------------------------------------------------
-  // Save state BRAM bridge write path
+  // On-board SRAM arbitration for savestate storage
   //
-  // On a LOAD operation the APF DMA engine writes the save state file into
-  // the core's address space at 0x4xxxxxxx before asserting savestate_load.
-  // We decode that window here and drive the BRAM write port that goes into
-  // savestates.sv (via MAIN_SNES).
+  // The Analogue Pocket has a 128 KB 16-bit async SRAM (sram_a[16:0],
+  // sram_dq[15:0]) which replaces the former on-chip BRAM for savestates.
   //
-  // bridge_addr[19:0] gives the byte address within the BRAM.
-  // bridge_wr_data[7:0] is the byte to write (APF is big-endian by default,
-  // but we set bridge_endian_little=0, so [31:24] is the first byte of a
-  // 32-bit word — adjust the byte lane below if your data_loader packs
-  // differently).  We write one byte per bridge_wr strobe.
+  // Ownership is split by ss_busy_74a (already computed above):
+  //   ss_busy_74a = 1 → SNES side (savestates.sv via MAIN_SNES) owns SRAM
+  //   ss_busy_74a = 0 → APF bridge side (this block, clk_74a domain) owns SRAM
+  //
+  // Bridge byte address → SRAM: word addr = bridge_addr[16:1], bit[0] selects
+  // upper (odd) or lower (even) byte lane via sram_ub_n / sram_lb_n.
+  // Write data is bridge_wr_data[31:24] (big-endian, MSB first).
   // -----------------------------------------------------------------------
-  wire        bram_wr      = bridge_wr && (bridge_addr[31:28] == 4'h4);
-  wire [19:0] bram_wr_addr = bridge_addr[19:0];
-  // Bridge is big-endian (bridge_endian_little=0): MSB is in [31:24].
-  // The APF writes 32-bit words; savestates.sv expects byte-addressed writes
-  // so we only strobe bram_wr when the address is naturally aligned, and we
-  // pick the correct byte lane from the 32-bit word.  For simplicity we just
-  // take [31:24] — the data_loader already handles byte ordering when writing
-  // the 0x4x window (see data_loader with ADDRESS_MASK_UPPER_4 = 4'h4 below).
-  wire  [7:0] bram_wr_data = bridge_wr_data[31:24];
 
-  // BRAM read-back wired above in the bridge_rd_data mux
-  wire  [7:0] bram_rd_data;
-  wire [19:0] bram_rd_addr = bridge_addr[19:0];
+  // Wires from MAIN_SNES SRAM port (savestates.sv outputs in clk domain)
+  wire [16:0] snes_sram_a;
+  wire [15:0] snes_sram_dq_o;
+  wire        snes_sram_oe_n;
+  wire        snes_sram_we_n;
+  wire        snes_sram_ub_n;
+  wire        snes_sram_lb_n;
+
+  // Bridge side — byte write/read to SRAM address space 0x4xxxxxxx
+  wire        br_sram_wr    = bridge_wr && (bridge_addr[31:28] == 4'h4);
+  wire [16:0] br_sram_a     = {bridge_addr[16:1], 1'b0};
+  wire  [7:0] br_sram_byte  = bridge_wr_data[31:24];  // APF big-endian byte
+  wire        br_sram_ub_n  = ~bridge_addr[0];
+  wire        br_sram_lb_n  =  bridge_addr[0];
+
+  // Extend bridge write strobe to meet SRAM tWP (≥30 ns).
+  // clk_74a period ≈ 13.5 ns; loading counter at 3 gives exactly 3 active
+  // cycles of we_n (counter states 3→2→1→0, or_reduce=1 while nonzero).
+  reg [1:0] br_wr_cnt = 2'd0;
+  always @(posedge clk_74a) begin
+    if (~ss_busy_74a) begin
+      if (br_sram_wr) br_wr_cnt <= 2'd3;
+      else if (br_wr_cnt > 0) br_wr_cnt <= br_wr_cnt - 1;
+    end else begin
+      br_wr_cnt <= 2'd0;
+    end
+  end
+
+  wire br_sram_we_n = ~|br_wr_cnt;       // low while counter nonzero
+  wire br_sram_oe_n = |br_wr_cnt;        // keep oe_n high during write
+
+  // MUX SRAM control: SNES side when ss_busy, bridge side otherwise
+  assign sram_a    = ss_busy_74a ? snes_sram_a    : br_sram_a;
+  assign sram_oe_n = ss_busy_74a ? snes_sram_oe_n : br_sram_oe_n;
+  assign sram_we_n = ss_busy_74a ? snes_sram_we_n : br_sram_we_n;
+  assign sram_ub_n = ss_busy_74a ? snes_sram_ub_n : br_sram_ub_n;
+  assign sram_lb_n = ss_busy_74a ? snes_sram_lb_n : br_sram_lb_n;
+
+  // Drive sram_dq: tri-state when reading (sram_we_n=1), drive during write
+  assign sram_dq = sram_we_n ? {16{1'bZ}}
+                              : (ss_busy_74a ? snes_sram_dq_o
+                                             : {br_sram_byte, br_sram_byte});
+
+  // Feed SRAM read data back to the SNES side
+  wire [15:0] snes_sram_dq_i = sram_dq;
+
+  // Bridge read: register SRAM output in clk_74a domain.
+  // The async SRAM drives sram_dq after tAA (≤45 ns) once address and oe_n
+  // are stable.  One clk_74a cycle of hold (≈13.5 ns) is used as a pipeline
+  // register for timing closure; the APF DMA holds address stable for many
+  // cycles before sampling bridge_rd_data, so this 1-cycle delay is safe.
+  // Byte selection mirrors the byte-enable logic above:
+  //   bridge_addr[0]=0 → lower byte DQ[7:0]  was written/read (br_sram_lb_n=0)
+  //   bridge_addr[0]=1 → upper byte DQ[15:8] was written/read (br_sram_ub_n=0)
+  reg [15:0] br_sram_dq_reg = 16'h0;
+  always @(posedge clk_74a) begin
+    if (~ss_busy_74a) br_sram_dq_reg <= sram_dq;
+  end
+  wire [7:0] br_sram_rd_data = bridge_addr[0] ? br_sram_dq_reg[15:8]
+                                               : br_sram_dq_reg[7:0];
 
   reg ioctl_download = 0;
   wire ioctl_wr;
@@ -999,14 +1042,15 @@ module core_top (
       .audio_r(audio_r),
 
       // -----------------------------------------------------------------------
-      // Save state ports (NEW)
+      // Save state ports
       // -----------------------------------------------------------------------
-      .clk_74a     (clk_74a),
-      .bram_wr     (bram_wr),
-      .bram_wr_addr(bram_wr_addr),
-      .bram_wr_data(bram_wr_data),
-      .bram_rd_data(bram_rd_data),
-      .bram_rd_addr(bram_rd_addr),
+      .sram_a      (snes_sram_a),
+      .sram_dq_o   (snes_sram_dq_o),
+      .sram_dq_i   (snes_sram_dq_i),
+      .sram_oe_n   (snes_sram_oe_n),
+      .sram_we_n   (snes_sram_we_n),
+      .sram_ub_n   (snes_sram_ub_n),
+      .sram_lb_n   (snes_sram_lb_n),
       .ss_save     (ss_save_pulse),
       .ss_load     (ss_load_pulse),
       .ss_busy     (ss_busy)

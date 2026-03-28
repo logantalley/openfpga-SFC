@@ -1,32 +1,39 @@
 // savestates.sv — Analogue Pocket adaptation of MiSTer SNES_MiSTer savestates.sv
 //
-// Replaces the DDR/HPS backend with a byte-addressable BRAM that the APF
-// bridge can read/write directly through main.v.
+// Uses the on-board 128 KB async SRAM chip instead of on-chip M10K BRAM to
+// avoid FPGA fitment errors on the Cyclone V 5CEBA4.
 //
-// Interface contract (matches what main.v already expects from MiSTer minus
-// the DDR signals):
+// Interface contract:
 //
 //   SAVE path:  APF triggers ss_save pulse → savestates.sv waits for the
 //               next NMI/IRQ vector read → hijacks it to $8000 (Save_start)
 //               → SNES CPU runs savestates.asm → each byte written to
-//               $C06000 lands in bram[] at bram_wr_addr → when $C0600E
+//               $C06000 lands in the external SRAM → when $C0600E
 //               (SS_END) is written the module de-asserts ss_busy.
-//               APF can then DMA the BRAM out to SD.
+//               APF can then DMA the SRAM out to SD via the bridge SRAM
+//               access ports (sram_* pins driven by core_top when ~ss_busy).
 //
-//   LOAD path:  APF fills BRAM via bram_wr / bram_wr_addr / bram_wr_data
-//               (bridge clock domain), then pulses ss_load → savestates.sv
+//   LOAD path:  APF fills SRAM via bridge SRAM access ports (core_top drives
+//               sram_* when ~ss_busy), then pulses ss_load → savestates.sv
 //               waits for next NMI/IRQ vector read → hijacks it to $8004
 //               (Load_start) → SNES CPU runs load path → each $C06000 read
-//               returns bram[bram_rd_addr] → RTI at $8008 ends the session.
+//               returns SRAM[addr] → RTI at $8008 ends the session.
 //
-// BRAM size:  The largest save state (WRAM 128 KB + VRAM 64 KB + …) fits
-//             comfortably in 512 KB.  We allocate 20-bit addresses (1 MB
-//             address space) so the same BRAM can be used for all mappers.
-//             Actual data written never exceeds ~200 KB in practice.
+// SRAM size:  128 KB (17-bit byte address space).  Savestates for most
+//             mappers fit within this.  Saves that would exceed 128 KB are
+//             silently truncated — preferable to the design not fitting at all.
 //
-// Clock domains:
-//   clk        — master SNES clock (21.477 MHz), all SNES bus logic
-//   clk_74a    — APF bridge clock (74.25 MHz), BRAM write port from APF
+// Clock domain:
+//   clk        — master SNES clock (21.477 MHz), all SNES bus logic and
+//                SRAM access during ss_busy.
+//
+// SRAM access notes:
+//   The on-board SRAM is 16-bit wide.  Byte access uses sram_a[16:1] as the
+//   word address and sram_ub_n/sram_lb_n to select the byte lane.
+//   Byte address N → word addr = N[16:1], upper byte when N[0]=1, lower when
+//   N[0]=0.  Write data is replicated on both sram_dq halves.
+//   Read data is sampled (registered) one clk cycle after address/oe_n change,
+//   matching the former one-cycle BRAM read latency.
 //
 // -----------------------------------------------------------------------------
 
@@ -39,14 +46,15 @@ module savestates
     input  wire        ss_save,       // pulse: begin save
     input  wire        ss_load,       // pulse: begin load
 
-    // BRAM bridge — APF writes here to stage a load, reads here after a save.
-    // These signals are in clk_74a domain; the BRAM is true dual-port.
-    input  wire        clk_74a,
-    input  wire        bram_wr,
-    input  wire [19:0] bram_wr_addr,
-    input  wire  [7:0] bram_wr_data,
-    output wire  [7:0] bram_rd_data,  // APF read-back after save
-    input  wire [19:0] bram_rd_addr,
+    // External async SRAM interface (active during ss_busy and header validation).
+    // core_top muxes these with its bridge-side SRAM drivers based on ss_busy.
+    output wire [16:0] sram_a,        // word address; bit[0] always 0
+    output wire [15:0] sram_dq_o,     // write data (byte replicated on both halves)
+    input  wire [15:0] sram_dq_i,     // SRAM data output (read path)
+    output wire        sram_oe_n,     // output enable (0 = read)
+    output wire        sram_we_n,     // write enable (0 = write)
+    output wire        sram_ub_n,     // upper byte select (DQ[15:8]) — odd addr
+    output wire        sram_lb_n,     // lower byte select (DQ[7:0])  — even addr
 
     // ROM config (driven by mapper detection in main.v)
     input  wire  [3:0] ram_size,
@@ -217,52 +225,39 @@ always @(posedge clk) begin
 end
 
 // ---------------------------------------------------------------------------
-// BRAM — true dual-port, 20-bit address, 8-bit data
-//   Port A : SNES CPU clock domain (read during load, write during save)
-//   Port B : APF bridge clock domain (write during load staging, read back)
+// External SRAM — 128 KB byte-addressable via 16-bit wide async SRAM chip.
+//   BRAM_AW = 17 → 2^17 = 128 KB address space.
+//   Word address = byte_addr[16:1]; byte lane selected by ub_n/lb_n.
 //
-// We infer a simple dual-port RAM here.  Quartus will implement it in M10K.
-// Size: 2^20 = 1 MB.  For Cyclone V this costs ~512 M10K blocks; if that is
-// too large reduce to [17:0] (256 KB) — savestates never exceed ~200 KB.
+// Port A — SNES side (clk domain): reads during load, writes during save.
+// Bridge access is handled externally by core_top when ~ss_busy.
 // ---------------------------------------------------------------------------
-localparam BRAM_AW = 18;  // 256 KB — savestates never exceed ~200 KB
+localparam BRAM_AW = 17;  // 128 KB — on-board SRAM size
 
 // Port A — SNES side (clk domain)
 reg  [BRAM_AW-1:0] bram_a_addr;
 reg  [7:0]         bram_a_wdata;
 reg                bram_a_we;
-wire [7:0]         bram_a_rdata;   // ← changed from reg to wire
 
-// Port B — APF/bridge side (clk_74a domain)
-wire [7:0]         bram_b_rdata;   // ← changed from reg to wire
+// Registered SRAM read-data (1-cycle latency, matches former BRAM behaviour)
+reg  [7:0]         sram_rd_reg;
+always @(posedge clk)
+    sram_rd_reg <= bram_a_addr[0] ? sram_dq_i[15:8] : sram_dq_i[7:0];
 
-dpram_difclk #(
-    .addr_width_a (BRAM_AW),
-    .data_width_a (8),
-    .addr_width_b (BRAM_AW),
-    .data_width_b (8)
-) ss_bram (
-    .clock0    (clk),
-    .clock1    (clk_74a),
-
-    // Port A — SNES side
-    .address_a (bram_a_addr),
-    .data_a    (bram_a_wdata),
-    .wren_a    (bram_a_we),
-    .enable_a  (1'b1),
-    .q_a       (bram_a_rdata),
-    .cs_a      (1'b1),
-
-    // Port B — APF bridge side
-    .address_b (bram_wr ? bram_wr_addr[BRAM_AW-1:0] : bram_rd_addr[BRAM_AW-1:0]),
-    .data_b    (bram_wr_data),
-    .wren_b    (bram_wr),
-    .enable_b  (1'b1),
-    .q_b       (bram_b_rdata),
-    .cs_b      (1'b1)
-);
-
-assign bram_rd_data = bram_b_rdata;
+// SRAM combinatorial control driven by the SNES-side registers.
+// core_top overrides these with its bridge-side drivers when ~ss_busy.
+//   Word address: byte_addr >> 1 (SRAM has 16-bit words)
+//   Upper byte (DQ[15:8]) selected when byte address is odd (bit[0]=1)
+//   Lower byte (DQ[7:0])  selected when byte address is even (bit[0]=0)
+assign sram_a    = {bram_a_addr[BRAM_AW-1:1], 1'b0};
+assign sram_dq_o = {bram_a_wdata, bram_a_wdata};   // replicate byte on both lanes
+// Byte lane select (active-low enables):
+//   even byte address (bit[0]=0) → lower byte DQ[7:0]  → lb_n=0, ub_n=1
+//   odd  byte address (bit[0]=1) → upper byte DQ[15:8] → ub_n=0, lb_n=1
+assign sram_ub_n = ~bram_a_addr[0];  // 0 when odd addr  → enables upper byte
+assign sram_lb_n =  bram_a_addr[0];  // 0 when even addr → enables lower byte
+assign sram_oe_n = ~load_en;         // assert during header validation + load
+assign sram_we_n = ~bram_a_we;       // assert for one clk cycle per save byte
 
 // ---------------------------------------------------------------------------
 // SNES-side address counter
@@ -362,25 +357,25 @@ always @(posedge clk or negedge reset_n) begin
                 val_state   <= VAL_B1;
             end
             VAL_B1: begin
-                val_buf[7:0] <= bram_a_rdata;
+                val_buf[7:0] <= sram_rd_reg;
                 bram_a_addr  <= {{(BRAM_AW-4){1'b0}}, 4'd9};
                 val_state    <= VAL_B2;
             end
             VAL_B2: begin
-                val_buf[15:8] <= bram_a_rdata;
+                val_buf[15:8] <= sram_rd_reg;
                 bram_a_addr   <= {{(BRAM_AW-4){1'b0}}, 4'd10};
                 val_state     <= VAL_B3;
             end
             VAL_B3: begin
-                val_buf[23:16] <= bram_a_rdata;
+                val_buf[23:16] <= sram_rd_reg;
                 bram_a_addr    <= {{(BRAM_AW-4){1'b0}}, 4'd11};
                 val_state      <= VAL_DONE;
             end
             VAL_DONE: begin
-                val_buf[31:24] <= bram_a_rdata;
+                val_buf[31:24] <= sram_rd_reg;
                 val_state      <= VAL_IDLE;
                 // "SNES" in little-endian: 'S'=53, 'N'=4E, 'E'=45, 'S'=53
-                if ({bram_a_rdata, val_buf[23:0]} == 32'h53_45_4E_53) begin
+                if ({sram_rd_reg, val_buf[23:0]} == 32'h53_45_4E_53) begin
                     load_ready <= 1'b1;
                 end else begin
                     load_en <= 1'b0;   // no valid state — abort
@@ -594,7 +589,7 @@ wire ss_oe = ss_data_sel | ss_status_sel | nmi_vect | irq_vect |
 always @(posedge clk) begin
     ss_do <= 8'h00;
     // LOAD: byte from BRAM (registered read, address set by cpurd_ce logic)
-    if (ss_data_sel & load_en)  ss_do <= bram_a_rdata;
+    if (ss_data_sel & load_en)  ss_do <= sram_rd_reg;
     // STATUS: bit1=not_ready(during validation), bit0=save_en
     if (ss_status_sel)          ss_do <= {6'd0, (load_en & ~load_ready), save_en};
     if (nmi_vect_l | irq_vect_l) ss_do <= nmi_vect_addr[7:0];
