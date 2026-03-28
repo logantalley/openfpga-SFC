@@ -225,9 +225,9 @@ end
 // Size: 2^20 = 1 MB.  For Cyclone V this costs ~512 M10K blocks; if that is
 // too large reduce to [17:0] (256 KB) — savestates never exceed ~200 KB.
 // ---------------------------------------------------------------------------
-localparam BRAM_AW = 20;  // adjust down to 18 if block RAM budget is tight
+localparam BRAM_AW = 18;  // 256 KB — savestates never exceed ~200 KB
 
-reg [7:0] bram [(1<<BRAM_AW)-1:0];
+(* ramstyle = "M10K" *) reg [7:0] bram [(1<<BRAM_AW)-1:0];
 
 // Port A — SNES side (clk domain)
 reg  [BRAM_AW-1:0] bram_a_addr;
@@ -236,18 +236,18 @@ reg                bram_a_we;
 reg  [7:0]         bram_a_rdata;
 
 always @(posedge clk) begin
+    bram_a_rdata <= bram[bram_a_addr];
     if (bram_a_we)
         bram[bram_a_addr] <= bram_a_wdata;
-    bram_a_rdata <= bram[bram_a_addr];
 end
 
 // Port B — APF/bridge side (clk_74a domain)
 reg  [7:0] bram_b_rdata;
 
 always @(posedge clk_74a) begin
+    bram_b_rdata <= bram[bram_rd_addr[BRAM_AW-1:0]];
     if (bram_wr)
         bram[bram_wr_addr[BRAM_AW-1:0]] <= bram_wr_data;
-    bram_b_rdata <= bram[bram_rd_addr[BRAM_AW-1:0]];
 end
 
 assign bram_rd_data = bram_b_rdata;
