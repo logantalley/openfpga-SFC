@@ -117,24 +117,33 @@ module main #(
     input         MSU_ENABLE,
 
     output [15:0] AUDIO_L,
-    output [15:0] AUDIO_R
+    output [15:0] AUDIO_R,
+
+    // -----------------------------------------------------------------------
+    // Save state CPU bus observation outputs (NEW)
+    // These are the internal SNES bus signals promoted to ports so that
+    // SNES.sv can wire them into savestates.sv without modifying any logic.
+    // -----------------------------------------------------------------------
+    output wire [23:0] CA,
+    output wire        CPURD_N,
+    output wire        CPUWR_N,
+    output wire  [7:0] PA,
+    output wire        PARD_N,
+    output wire        PAWR_N,
+    output wire  [7:0] DO,
+    output wire        ROMSEL_N,
+    output wire        SYSCLKF_CE,
+    output wire        SYSCLKR_CE
+    // -----------------------------------------------------------------------
 );
 
   parameter USE_DLH = 1'b1;
 
-  wire [23:0] CA;
-  wire        CPURD_N;
-  wire        CPUWR_N;
+  // CA, CPURD_N, CPUWR_N, PA, PARD_N, PAWR_N, DO, ROMSEL_N, SYSCLKF_CE,
+  // SYSCLKR_CE are now ports (output wires) — no local declarations needed.
   reg  [ 7:0] DI;
-  wire [ 7:0] DO;
   wire        RAMSEL_N;
-  wire        ROMSEL_N;
   reg         IRQ_N;
-  wire [ 7:0] PA;
-  wire        PARD_N;
-  wire        PAWR_N;
-  wire        SYSCLKF_CE;
-  wire        SYSCLKR_CE;
   wire        REFRESH;
 
   wire [ 5:0] MAP_ACTIVE;
@@ -714,7 +723,6 @@ module main #(
           .rom_mask  (ROM_MASK),
           .bsram_mask(RAM_MASK),
 
-
           .ext_rtc(EXT_RTC)
       );
     end else assign MAP_ACTIVE[5] = 0;
@@ -839,5 +847,6 @@ module main #(
 
     if (MSU_SEL) DI = MSU_DO;
   end
+
 
 endmodule
