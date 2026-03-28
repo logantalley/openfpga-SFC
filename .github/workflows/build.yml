@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        core: ["main", "pal", "spc", "none", "none_pal"]
+        core: ["none", "none_pal"]
 
     steps:
       - name: "🧰 Checkout Repository"
