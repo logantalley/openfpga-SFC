@@ -147,17 +147,18 @@ module MAIN_SNES (
     output wire [15:0] audio_l,
     output wire [15:0] audio_r,
 
-    // ---------- Save state ports (NEW) ----------
-    input  wire        clk_74a,
-    input  wire        bram_wr,
-    input  wire [19:0] bram_wr_addr,
-    input  wire  [7:0] bram_wr_data,
-    output wire  [7:0] bram_rd_data,
-    input  wire [19:0] bram_rd_addr,
+    // ---------- Save state ports ----------
+    output wire [16:0] sram_a,
+    output wire [15:0] sram_dq_o,
+    input  wire [15:0] sram_dq_i,
+    output wire        sram_oe_n,
+    output wire        sram_we_n,
+    output wire        sram_ub_n,
+    output wire        sram_lb_n,
     input  wire        ss_save,
     input  wire        ss_load,
     output wire        ss_busy
-    // --------------------------------------------
+    // --------------------------------------
 );
   parameter USE_CX4 = 1'b0;
   parameter USE_SDD1 = 1'b0;
@@ -693,13 +694,14 @@ module MAIN_SNES (
       .ss_save     (ss_save),
       .ss_load     (ss_load),
 
-      // BRAM bridge (clk_74a domain)
-      .clk_74a     (clk_74a),
-      .bram_wr     (bram_wr),
-      .bram_wr_addr(bram_wr_addr),
-      .bram_wr_data(bram_wr_data),
-      .bram_rd_data(bram_rd_data),
-      .bram_rd_addr(bram_rd_addr),
+      // External async SRAM interface
+      .sram_a      (sram_a),
+      .sram_dq_o   (sram_dq_o),
+      .sram_dq_i   (sram_dq_i),
+      .sram_oe_n   (sram_oe_n),
+      .sram_we_n   (sram_we_n),
+      .sram_ub_n   (sram_ub_n),
+      .sram_lb_n   (sram_lb_n),
 
       // ROM config
       .ram_size    (ram_size),
