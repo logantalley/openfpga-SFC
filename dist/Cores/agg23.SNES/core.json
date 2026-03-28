@@ -7,7 +7,7 @@
       ],
       "shortname": "SNES",
       "description": "Super Nintendo and Super Famicom. Nintendo's second major home console",
-      "author": "agg23+logantalley",
+      "author": "agg23logantalley",
       "url": "https://github.com/logantalley/openfpga-SFC",
       "version": "0.0.1",
       "date_release": "2026-04-01"
