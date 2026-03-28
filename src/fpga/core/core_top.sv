@@ -480,30 +480,72 @@ module core_top (
   );
 
   // -----------------------------------------------------------------------
-  // Save state trigger synchronisation
+  // Save state trigger synchronisation and APF handshake
   //
   // savestate_start / savestate_load come from core_bridge_cmd in the
   // clk_74a domain.  We need single-cycle pulses in the clk_sys_21_48
   // domain to hand to savestates.sv.
   //
-  // We use a toggle-sync pattern:
-  //   1. On the rising edge of savestate_start (74a domain) we toggle a
-  //      flag.
+  // Request path (74a → sys): toggle-sync pattern.
+  //   1. On the rising edge of savestate_start/load (74a domain) we toggle
+  //      a flag, but only when no operation is already in progress.
   //   2. synch_3 crosses that flag to the 21 MHz domain.
   //   3. An edge detector in the 21 MHz domain produces the one-shot pulse.
+  //
+  // Completion path (sys → 74a): ss_busy is synchronised back to clk_74a
+  // via synch_3.  A "pending" register bridges the ACK→busy latency gap so
+  // that BUSY is asserted continuously from the ACK cycle until the engine
+  // deasserts ss_busy.
+  //
+  // APF handshake contract enforced here:
+  //   *_ack  : one clk_74a cycle, only when no operation is in progress.
+  //   *_busy : held from ACK until ss_busy_74a falls (no gap).
+  //   *_ok   : one clk_74a cycle on falling edge of ss_busy_74a, issued
+  //            only for the operation type that was actually started.
+  //   *_err  : not used (savestates.sv aborts silently on bad header).
   // -----------------------------------------------------------------------
+
+  // Bring ss_busy (clk_sys domain) into clk_74a so we can gate new requests.
+  wire ss_busy;   // from MAIN_SNES / savestates, in clk_sys domain
+  wire ss_busy_74a;
+  synch_3 ss_busy_sync (ss_busy, ss_busy_74a, clk_74a);
+
   reg  ss_save_tog = 0;   // toggle in clk_74a domain
   reg  ss_load_tog = 0;
 
   reg  savestate_start_prev = 0;
   reg  savestate_load_prev  = 0;
 
+  // ss_pending: set on ACK, cleared once ss_busy_74a goes high.
+  // Ensures BUSY is asserted with no gap between ACK and the engine's busy.
+  reg  ss_pending    = 0;
+
+  // ss_op_is_load: tracks whether the accepted operation was a load (1) or
+  // a save (0) so the correct *_ok pulse is issued on completion.
+  reg  ss_op_is_load = 0;
+
+  // Combined "any busy" view used to block re-entry.
+  wire ss_any_busy = ss_busy_74a | ss_pending;
+
   always @(posedge clk_74a) begin
     savestate_start_prev <= savestate_start;
     savestate_load_prev  <= savestate_load;
 
-    if (savestate_start && ~savestate_start_prev) ss_save_tog <= ~ss_save_tog;
-    if (savestate_load  && ~savestate_load_prev)  ss_load_tog <= ~ss_load_tog;
+    // Only accept new requests when not already busy or pending.
+    if (~ss_any_busy) begin
+      if (savestate_start && ~savestate_start_prev) begin
+        ss_save_tog   <= ~ss_save_tog;
+        ss_op_is_load <= 1'b0;
+        ss_pending    <= 1'b1;
+      end else if (savestate_load && ~savestate_load_prev) begin
+        ss_load_tog   <= ~ss_load_tog;
+        ss_op_is_load <= 1'b1;
+        ss_pending    <= 1'b1;
+      end
+    end
+
+    // Clear pending once the engine asserts ss_busy_74a.
+    if (ss_busy_74a) ss_pending <= 1'b0;
   end
 
   wire ss_save_tog_s;
@@ -522,38 +564,25 @@ module core_top (
     ss_load_tog_prev <= ss_load_tog_s;
   end
 
-  // -----------------------------------------------------------------------
-  // Save state APF handshake
-  //
-  // The APF protocol requires the core to assert savestate_start_ack for
-  // one clk_74a cycle when it accepts a start command, then hold
-  // savestate_start_busy while the operation is in progress, and finally
-  // assert savestate_start_ok for one cycle when done.
-  //
-  // ss_busy comes from savestates.sv (in clk_sys domain).  We cross it
-  // back to clk_74a for the APF handshake signals.
-  // -----------------------------------------------------------------------
-  wire ss_busy;   // from MAIN_SNES / savestates, in clk_sys domain
+  // Ack: one clk_74a cycle on the rising edge of the request, only when idle.
+  assign savestate_start_ack  = savestate_start && ~savestate_start_prev && ~ss_any_busy;
+  assign savestate_load_ack   = savestate_load  && ~savestate_load_prev  && ~ss_any_busy;
 
-  wire ss_busy_74a;
-  synch_3 ss_busy_sync (ss_busy, ss_busy_74a, clk_74a);
+  // Busy: held from ACK (ss_pending) through engine completion (ss_busy_74a).
+  assign savestate_start_busy = ss_any_busy;
+  assign savestate_load_busy  = ss_any_busy;
 
-  // Ack pulses: one clk_74a cycle on the rising edge of the request
-  assign savestate_start_ack  = savestate_start && ~savestate_start_prev;
-  assign savestate_load_ack   = savestate_load  && ~savestate_load_prev;
-
-  // Busy: mirror ss_busy back to the APF
-  assign savestate_start_busy = ss_busy_74a;
-  assign savestate_load_busy  = ss_busy_74a;
-
-  // OK: one clk_74a cycle on the falling edge of ss_busy
+  // OK: one clk_74a cycle on the falling edge of ss_busy_74a, gated by
+  // which operation was accepted so the correct signal fires.
   reg  ss_busy_74a_prev = 0;
   always @(posedge clk_74a) ss_busy_74a_prev <= ss_busy_74a;
 
-  assign savestate_start_ok = ~ss_busy_74a && ss_busy_74a_prev;
-  assign savestate_load_ok  = ~ss_busy_74a && ss_busy_74a_prev;
+  wire ss_done = ~ss_busy_74a && ss_busy_74a_prev;   // falling edge of busy
 
-  // Errors: never signal an error (savestates.sv aborts silently on bad header)
+  assign savestate_start_ok = ss_done && ~ss_op_is_load;
+  assign savestate_load_ok  = ss_done &&  ss_op_is_load;
+
+  // Errors: never signal an error (savestates.sv aborts silently on bad header).
   assign savestate_start_err = 0;
   assign savestate_load_err  = 0;
 
