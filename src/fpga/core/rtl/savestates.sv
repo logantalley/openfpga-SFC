@@ -227,28 +227,40 @@ end
 // ---------------------------------------------------------------------------
 localparam BRAM_AW = 18;  // 256 KB — savestates never exceed ~200 KB
 
-(* ramstyle = "M10K" *) reg [7:0] bram [(1<<BRAM_AW)-1:0];
-
 // Port A — SNES side (clk domain)
 reg  [BRAM_AW-1:0] bram_a_addr;
 reg  [7:0]         bram_a_wdata;
 reg                bram_a_we;
-reg  [7:0]         bram_a_rdata;
-
-always @(posedge clk) begin
-    bram_a_rdata <= bram[bram_a_addr];
-    if (bram_a_we)
-        bram[bram_a_addr] <= bram_a_wdata;
-end
+wire [7:0]         bram_a_rdata;   // ← changed from reg to wire
 
 // Port B — APF/bridge side (clk_74a domain)
-reg  [7:0] bram_b_rdata;
+wire [7:0]         bram_b_rdata;   // ← changed from reg to wire
 
-always @(posedge clk_74a) begin
-    bram_b_rdata <= bram[bram_rd_addr[BRAM_AW-1:0]];
-    if (bram_wr)
-        bram[bram_wr_addr[BRAM_AW-1:0]] <= bram_wr_data;
-end
+dpram_difclk #(
+    .addr_width_a (BRAM_AW),
+    .data_width_a (8),
+    .addr_width_b (BRAM_AW),
+    .data_width_b (8)
+) ss_bram (
+    .clock0    (clk),
+    .clock1    (clk_74a),
+
+    // Port A — SNES side
+    .address_a (bram_a_addr),
+    .data_a    (bram_a_wdata),
+    .wren_a    (bram_a_we),
+    .enable_a  (1'b1),
+    .q_a       (bram_a_rdata),
+    .cs_a      (1'b1),
+
+    // Port B — APF bridge side
+    .address_b (bram_wr ? bram_wr_addr[BRAM_AW-1:0] : bram_rd_addr[BRAM_AW-1:0]),
+    .data_b    (bram_wr_data),
+    .wren_b    (bram_wr),
+    .enable_b  (1'b1),
+    .q_b       (bram_b_rdata),
+    .cs_b      (1'b1)
+);
 
 assign bram_rd_data = bram_b_rdata;
 
