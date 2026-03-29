@@ -515,7 +515,7 @@ always @(posedge clk) begin
     ss_do <= 8'h00;
     // LOAD: byte from BRAM (registered read, address set by cpurd_ce logic)
     if (ss_data_sel & load_en)  ss_do <= sram_rd_reg;
-    // STATUS: bit1=busy, bit0=save_en
+    // STATUS: bit1=busy (high while save/load is in progress), bit0=save_en
     if (ss_status_sel)          ss_do <= {6'd0, ss_busy, save_en};
     if (nmi_vect_l | irq_vect_l) ss_do <= nmi_vect_addr[7:0];
     if (nmi_vect_h | irq_vect_h) ss_do <= nmi_vect_addr[15:8];
