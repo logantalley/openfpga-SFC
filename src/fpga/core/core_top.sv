@@ -638,18 +638,27 @@ module core_top (
 
   // Bridge side — byte write/read to SRAM address space 0x4xxxxxxx
   wire        br_sram_wr    = bridge_wr && (bridge_addr[31:28] == 4'h4);
-  wire [16:0] br_sram_a     = {bridge_addr[16:1], 1'b0};
-  wire  [7:0] br_sram_byte  = bridge_wr_data[31:24];  // APF big-endian byte
-  wire        br_sram_ub_n  = ~bridge_addr[0];
-  wire        br_sram_lb_n  =  bridge_addr[0];
+  wire [16:0] br_sram_a_rd  = {bridge_addr[16:1], 1'b0};
+  wire        br_sram_ub_n_rd = ~bridge_addr[0];
+  wire        br_sram_lb_n_rd =  bridge_addr[0];
 
   // Extend bridge write strobe to meet SRAM tWP (≥30 ns).
   // clk_74a period ≈ 13.5 ns; loading counter at 3 gives exactly 3 active
   // cycles of we_n (counter states 3→2→1→0, or_reduce=1 while nonzero).
   reg [1:0] br_wr_cnt = 2'd0;
+  reg [16:0] br_sram_a_wr = 17'd0;
+  reg [7:0]  br_sram_byte_wr = 8'd0;
+  reg        br_sram_ub_n_wr = 1'b1;
+  reg        br_sram_lb_n_wr = 1'b1;
   always @(posedge clk_74a) begin
     if (~ss_busy_74a) begin
-      if (br_sram_wr) br_wr_cnt <= 2'd3;
+      if (br_sram_wr) begin
+        br_wr_cnt       <= 2'd3;
+        br_sram_a_wr    <= {bridge_addr[16:1], 1'b0};
+        br_sram_byte_wr <= bridge_wr_data[31:24];  // APF big-endian byte
+        br_sram_ub_n_wr <= ~bridge_addr[0];
+        br_sram_lb_n_wr <=  bridge_addr[0];
+      end
       else if (br_wr_cnt > 0) br_wr_cnt <= br_wr_cnt - 1;
     end else begin
       br_wr_cnt <= 2'd0;
@@ -658,6 +667,9 @@ module core_top (
 
   wire br_sram_we_n = ~|br_wr_cnt;       // low while counter nonzero
   wire br_sram_oe_n = |br_wr_cnt;        // keep oe_n high during write
+  wire [16:0] br_sram_a = br_sram_we_n ? br_sram_a_rd : br_sram_a_wr;
+  wire        br_sram_ub_n = br_sram_we_n ? br_sram_ub_n_rd : br_sram_ub_n_wr;
+  wire        br_sram_lb_n = br_sram_we_n ? br_sram_lb_n_rd : br_sram_lb_n_wr;
 
   // MUX SRAM control: SNES side when ss_busy, bridge side otherwise
   assign sram_a    = ss_busy_74a ? snes_sram_a    : br_sram_a;
@@ -669,7 +681,7 @@ module core_top (
   // Drive sram_dq: tri-state when reading (sram_we_n=1), drive during write
   assign sram_dq = sram_we_n ? {16{1'bZ}}
                               : (ss_busy_74a ? snes_sram_dq_o
-                                             : {br_sram_byte, br_sram_byte});
+                                             : {br_sram_byte_wr, br_sram_byte_wr});
 
   // Feed SRAM read data back to the SNES side
   wire [15:0] snes_sram_dq_i = sram_dq;
