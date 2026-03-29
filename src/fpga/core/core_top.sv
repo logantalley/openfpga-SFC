@@ -500,8 +500,8 @@ module core_top (
   // APF handshake contract enforced here:
   //   *_ack  : one clk_74a cycle, only when no operation is in progress.
   //   *_busy : held from ACK until ss_busy_74a falls (no gap).
-  //   *_ok   : one clk_74a cycle on falling edge of ss_busy_74a, issued
-  //            only for the operation type that was actually started.
+  //   *_ok   : latched high on completion for the accepted operation and
+  //            held until the next accepted save/load command clears it.
   //   *_err  : not used (savestates.sv aborts silently on bad header).
   // -----------------------------------------------------------------------
 
@@ -521,11 +521,21 @@ module core_top (
   reg  ss_pending    = 0;
 
   // ss_op_is_load: tracks whether the accepted operation was a load (1) or
-  // a save (0) so the correct *_ok pulse is issued on completion.
+  // a save (0) so the correct completion status is reported.
   reg  ss_op_is_load = 0;
+
+  // Completion status is latched in clk_74a to match core_bridge_cmd's
+  // level-style status contract (OK/ERR stay asserted after completion
+  // until the next accepted request clears them).
+  reg  ss_start_ok_latched = 0;
+  reg  ss_load_ok_latched  = 0;
 
   // Combined "any busy" view used to block re-entry.
   wire ss_any_busy = ss_busy_74a | ss_pending;
+  wire ss_accept_start = savestate_start && ~savestate_start_prev && ~ss_any_busy;
+  wire ss_accept_load  = savestate_load  && ~savestate_load_prev  && ~ss_any_busy;
+  reg  ss_busy_74a_prev = 0;
+  wire ss_done = ~ss_busy_74a && ss_busy_74a_prev;   // falling edge of busy
 
   always @(posedge clk_74a) begin
     savestate_start_prev <= savestate_start;
@@ -533,19 +543,29 @@ module core_top (
 
     // Only accept new requests when not already busy or pending.
     if (~ss_any_busy) begin
-      if (savestate_start && ~savestate_start_prev) begin
+      if (ss_accept_start) begin
         ss_save_tog   <= ~ss_save_tog;
         ss_op_is_load <= 1'b0;
         ss_pending    <= 1'b1;
-      end else if (savestate_load && ~savestate_load_prev) begin
+        ss_start_ok_latched <= 1'b0;
+        ss_load_ok_latched  <= 1'b0;
+      end else if (ss_accept_load) begin
         ss_load_tog   <= ~ss_load_tog;
         ss_op_is_load <= 1'b1;
         ss_pending    <= 1'b1;
+        ss_start_ok_latched <= 1'b0;
+        ss_load_ok_latched  <= 1'b0;
       end
     end
 
     // Clear pending once the engine asserts ss_busy_74a.
     if (ss_busy_74a) ss_pending <= 1'b0;
+
+    // Latch completion status so host polling cannot miss it.
+    if (ss_done) begin
+      if (ss_op_is_load) ss_load_ok_latched <= 1'b1;
+      else               ss_start_ok_latched <= 1'b1;
+    end
   end
 
   wire ss_save_tog_s;
@@ -565,22 +585,18 @@ module core_top (
   end
 
   // Ack: one clk_74a cycle on the rising edge of the request, only when idle.
-  assign savestate_start_ack  = savestate_start && ~savestate_start_prev && ~ss_any_busy;
-  assign savestate_load_ack   = savestate_load  && ~savestate_load_prev  && ~ss_any_busy;
+  assign savestate_start_ack  = ss_accept_start;
+  assign savestate_load_ack   = ss_accept_load;
 
   // Busy: held from ACK (ss_pending) through engine completion (ss_busy_74a).
   assign savestate_start_busy = ss_any_busy;
   assign savestate_load_busy  = ss_any_busy;
 
-  // OK: one clk_74a cycle on the falling edge of ss_busy_74a, gated by
-  // which operation was accepted so the correct signal fires.
-  reg  ss_busy_74a_prev = 0;
+  // Completion edge in clk_74a domain.
   always @(posedge clk_74a) ss_busy_74a_prev <= ss_busy_74a;
 
-  wire ss_done = ~ss_busy_74a && ss_busy_74a_prev;   // falling edge of busy
-
-  assign savestate_start_ok = ss_done && ~ss_op_is_load;
-  assign savestate_load_ok  = ss_done &&  ss_op_is_load;
+  assign savestate_start_ok = ss_start_ok_latched;
+  assign savestate_load_ok  = ss_load_ok_latched;
 
   // Errors: never signal an error (savestates.sv aborts silently on bad header).
   assign savestate_start_err = 0;
