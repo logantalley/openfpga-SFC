@@ -385,16 +385,16 @@ module core_top (
   // savestate_supported = 1 tells the Pocket OS to show the save state UI.
   // savestate_addr      = base address in the APF 0x4xxxxxxx window where
   //                       the OS will DMA the BRAM contents.
-  // savestate_size      = number of bytes the core actually wrote (we use
-  //                       the full 256 KB BRAM window for simplicity; the
+  // savestate_size      = number of bytes the core actually wrote.
+  //                       This core uses the 128 KB external SRAM window;
   //                       savestates.asm magic header lets the loader know
   //                       where useful data ends).
   // savestate_maxloadsize = maximum bytes the OS may push back on a load.
   // -----------------------------------------------------------------------
   wire        savestate_supported  = 1;           // CHANGED: was 0
   wire [31:0] savestate_addr       = 32'h40000000;
-  wire [31:0] savestate_size       = 32'h00040000; // 256 KB
-  wire [31:0] savestate_maxloadsize= 32'h00100000; // 1 MB ceiling
+  wire [31:0] savestate_size       = 32'h00020000; // 128 KB
+  wire [31:0] savestate_maxloadsize= 32'h00020000; // 128 KB ceiling
 
   wire savestate_start;
   wire savestate_start_ack;
@@ -537,6 +537,15 @@ module core_top (
   reg  ss_busy_74a_prev = 0;
 
   always @(posedge clk_74a) begin
+    if (~reset_n) begin
+      savestate_start_prev <= 1'b0;
+      savestate_load_prev  <= 1'b0;
+      ss_pending           <= 1'b0;
+      ss_op_is_load        <= 1'b0;
+      ss_start_ok_latched  <= 1'b0;
+      ss_load_ok_latched   <= 1'b0;
+      ss_busy_74a_prev     <= 1'b0;
+    end else begin
     savestate_start_prev <= savestate_start;
     savestate_load_prev  <= savestate_load;
 
@@ -568,6 +577,7 @@ module core_top (
 
     // Track previous synchronized busy level for completion edge detect.
     ss_busy_74a_prev <= ss_busy_74a;
+    end
   end
 
   wire ss_save_tog_s;
