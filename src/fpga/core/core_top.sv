@@ -535,7 +535,6 @@ module core_top (
   wire ss_accept_start = savestate_start && ~savestate_start_prev && ~ss_any_busy;
   wire ss_accept_load  = savestate_load  && ~savestate_load_prev  && ~ss_any_busy;
   reg  ss_busy_74a_prev = 0;
-  wire ss_done = ~ss_busy_74a && ss_busy_74a_prev;   // falling edge of busy
 
   always @(posedge clk_74a) begin
     savestate_start_prev <= savestate_start;
@@ -562,10 +561,13 @@ module core_top (
     if (ss_busy_74a) ss_pending <= 1'b0;
 
     // Latch completion status so host polling cannot miss it.
-    if (ss_done) begin
+    if (~ss_busy_74a && ss_busy_74a_prev) begin
       if (ss_op_is_load) ss_load_ok_latched <= 1'b1;
       else               ss_start_ok_latched <= 1'b1;
     end
+
+    // Track previous synchronized busy level for completion edge detect.
+    ss_busy_74a_prev <= ss_busy_74a;
   end
 
   wire ss_save_tog_s;
@@ -591,9 +593,6 @@ module core_top (
   // Busy: held from ACK (ss_pending) through engine completion (ss_busy_74a).
   assign savestate_start_busy = ss_any_busy;
   assign savestate_load_busy  = ss_any_busy;
-
-  // Completion edge in clk_74a domain.
-  always @(posedge clk_74a) ss_busy_74a_prev <= ss_busy_74a;
 
   assign savestate_start_ok = ss_start_ok_latched;
   assign savestate_load_ok  = ss_load_ok_latched;
