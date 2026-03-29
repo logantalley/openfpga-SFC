@@ -170,7 +170,7 @@ reg save_end;
 //   $C0:6003   SS_BSRAMSIZE
 //   $C0:6004   SS_ROMTYPE
 //   $C0:600E   SS_END   — write signals end of save
-//   $C0:600F   SS_STATUS — read: bit1=busy, bit0=save_en
+//   $C0:600F   SS_STATUS — read: bit1=backend_busy, bit0=save_en
 //   $C0:61xx   DSPn register space
 //   $C0:62xx   GSU register space
 //   $C1:21xx   PPU shadow registers
@@ -318,6 +318,8 @@ always @(posedge clk or negedge reset_n) begin
                     ss_busy <= 1'b1;
                     // Reset data address to 8 (header already at 0–7 in ASM)
                     ss_data_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
+                    if (load_en)
+                        bram_a_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
                     ss_ext_addr  <= 20'd0;
                 end
             end
@@ -345,6 +347,8 @@ always @(posedge clk or negedge reset_n) begin
         if (cpuwr_ce & ss_busy) begin
             if (ss_addr_sel) begin
                 ss_data_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
+                if (load_en)
+                    bram_a_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
             end
 
             if (ss_ext_sel) begin
@@ -405,7 +409,7 @@ always @(posedge clk or negedge reset_n) begin
         // the CPU captures it.
         // ------------------------------------------------------------------
         if (cpurd_ce & ss_busy & ss_data_sel & load_en) begin
-            bram_a_addr <= ss_data_addr[BRAM_AW-1:0];
+            bram_a_addr <= ss_data_addr[BRAM_AW-1:0] + 1'b1;
         end
 
     end // ~reset
@@ -515,8 +519,9 @@ always @(posedge clk) begin
     ss_do <= 8'h00;
     // LOAD: byte from BRAM (registered read, address set by cpurd_ce logic)
     if (ss_data_sel & load_en)  ss_do <= sram_rd_reg;
-    // STATUS: bit1=busy (high while save/load is in progress), bit0=save_en
-    if (ss_status_sel)          ss_do <= {6'd0, ss_busy, save_en};
+    // STATUS: bit1=backend busy (DDRAM in MiSTer), bit0=save_en.
+    // SRAM backend has no transfer engine, so bit1 remains low.
+    if (ss_status_sel)          ss_do <= {6'd0, 1'b0, save_en};
     if (nmi_vect_l | irq_vect_l) ss_do <= nmi_vect_addr[7:0];
     if (nmi_vect_h | irq_vect_h) ss_do <= nmi_vect_addr[15:8];
     if (ss_ramsize_sel)          ss_do <= {4'd0, ram_size};
