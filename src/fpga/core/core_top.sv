@@ -538,6 +538,8 @@ module core_top (
 
   always @(posedge clk_74a) begin
     if (~reset_n) begin
+      ss_save_tog          <= 1'b0;
+      ss_load_tog          <= 1'b0;
       savestate_start_prev <= 1'b0;
       savestate_load_prev  <= 1'b0;
       ss_pending           <= 1'b0;
