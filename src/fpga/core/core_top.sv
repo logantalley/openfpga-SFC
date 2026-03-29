@@ -650,6 +650,8 @@ module core_top (
   reg [7:0]  br_sram_byte_wr = 8'd0;
   reg        br_sram_ub_n_wr = 1'b1;
   reg        br_sram_lb_n_wr = 1'b1;
+  // Latch write metadata at bridge_wr start and hold it for the full
+  // stretched WE pulse so address/data/lane cannot drift mid-write.
   always @(posedge clk_74a) begin
     if (~ss_busy_74a) begin
       if (br_sram_wr) begin
