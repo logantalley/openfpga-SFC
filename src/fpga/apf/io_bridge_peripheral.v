@@ -152,7 +152,7 @@ always @(posedge clk) begin
         pmp_wr <= 0;
         pmp_rd <= 0;
         pmp_addr_valid <= 0;
-        pmp_rd_data_buf <= pmp_rd_data_e;
+        pmp_rd_data_buf <= 32'd0;
         spis_tx <= 0;
         
         state <= ST_ADDR_0;
