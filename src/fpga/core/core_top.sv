@@ -385,16 +385,16 @@ module core_top (
   // savestate_supported = 1 tells the Pocket OS to show the save state UI.
   // savestate_addr      = base address in the APF 0x4xxxxxxx window where
   //                       the OS will DMA the BRAM contents.
-  // savestate_size      = number of bytes the core actually wrote (we use
-  //                       the full 256 KB BRAM window for simplicity; the
+  // savestate_size      = number of bytes the core actually wrote.
+  //                       This core uses the 128 KB external SRAM window;
   //                       savestates.asm magic header lets the loader know
   //                       where useful data ends).
   // savestate_maxloadsize = maximum bytes the OS may push back on a load.
   // -----------------------------------------------------------------------
   wire        savestate_supported  = 1;           // CHANGED: was 0
   wire [31:0] savestate_addr       = 32'h40000000;
-  wire [31:0] savestate_size       = 32'h00040000; // 256 KB
-  wire [31:0] savestate_maxloadsize= 32'h00100000; // 1 MB ceiling
+  wire [31:0] savestate_size       = 32'h00020000; // 128 KB
+  wire [31:0] savestate_maxloadsize= 32'h00020000; // 128 KB ceiling
 
   wire savestate_start;
   wire savestate_start_ack;
@@ -480,30 +480,106 @@ module core_top (
   );
 
   // -----------------------------------------------------------------------
-  // Save state trigger synchronisation
+  // Save state trigger synchronisation and APF handshake
   //
   // savestate_start / savestate_load come from core_bridge_cmd in the
   // clk_74a domain.  We need single-cycle pulses in the clk_sys_21_48
   // domain to hand to savestates.sv.
   //
-  // We use a toggle-sync pattern:
-  //   1. On the rising edge of savestate_start (74a domain) we toggle a
-  //      flag.
+  // Request path (74a → sys): toggle-sync pattern.
+  //   1. On the rising edge of savestate_start/load (74a domain) we toggle
+  //      a flag, but only when no operation is already in progress.
   //   2. synch_3 crosses that flag to the 21 MHz domain.
   //   3. An edge detector in the 21 MHz domain produces the one-shot pulse.
+  //
+  // Completion path (sys → 74a): ss_busy is synchronised back to clk_74a
+  // via synch_3.  A "pending" register bridges the ACK→busy latency gap so
+  // that BUSY is asserted continuously from the ACK cycle until the engine
+  // deasserts ss_busy.
+  //
+  // APF handshake contract enforced here:
+  //   *_ack  : one clk_74a cycle, only when no operation is in progress.
+  //   *_busy : held from ACK until ss_busy_74a falls (no gap).
+  //   *_ok   : latched high on completion for the accepted operation and
+  //            held until the next accepted save/load command clears it.
+  //   *_err  : not used (savestates.sv aborts silently on bad header).
   // -----------------------------------------------------------------------
+
+  // Bring ss_busy (clk_sys domain) into clk_74a so we can gate new requests.
+  wire ss_busy;   // from MAIN_SNES / savestates, in clk_sys domain
+  wire ss_busy_74a;
+  synch_3 ss_busy_sync (ss_busy, ss_busy_74a, clk_74a);
+
   reg  ss_save_tog = 0;   // toggle in clk_74a domain
   reg  ss_load_tog = 0;
 
   reg  savestate_start_prev = 0;
   reg  savestate_load_prev  = 0;
 
+  // ss_pending: set on ACK, cleared once ss_busy_74a goes high.
+  // Ensures BUSY is asserted with no gap between ACK and the engine's busy.
+  reg  ss_pending    = 0;
+
+  // ss_op_is_load: tracks whether the accepted operation was a load (1) or
+  // a save (0) so the correct completion status is reported.
+  reg  ss_op_is_load = 0;
+
+  // Completion status is latched in clk_74a to match core_bridge_cmd's
+  // level-style status contract (OK/ERR stay asserted after completion
+  // until the next accepted request clears them).
+  reg  ss_start_ok_latched = 0;
+  reg  ss_load_ok_latched  = 0;
+
+  // Combined "any busy" view used to block re-entry.
+  wire ss_any_busy = ss_busy_74a | ss_pending;
+  wire ss_accept_start = savestate_start && ~savestate_start_prev && ~ss_any_busy;
+  wire ss_accept_load  = savestate_load  && ~savestate_load_prev  && ~ss_any_busy;
+  reg  ss_busy_74a_prev = 0;
+
   always @(posedge clk_74a) begin
+    if (~reset_n) begin
+      ss_save_tog          <= 1'b0;
+      ss_load_tog          <= 1'b0;
+      savestate_start_prev <= 1'b0;
+      savestate_load_prev  <= 1'b0;
+      ss_pending           <= 1'b0;
+      ss_op_is_load        <= 1'b0;
+      ss_start_ok_latched  <= 1'b0;
+      ss_load_ok_latched   <= 1'b0;
+      ss_busy_74a_prev     <= 1'b0;
+    end else begin
     savestate_start_prev <= savestate_start;
     savestate_load_prev  <= savestate_load;
 
-    if (savestate_start && ~savestate_start_prev) ss_save_tog <= ~ss_save_tog;
-    if (savestate_load  && ~savestate_load_prev)  ss_load_tog <= ~ss_load_tog;
+    // Only accept new requests when not already busy or pending.
+    if (~ss_any_busy) begin
+      if (ss_accept_start) begin
+        ss_save_tog   <= ~ss_save_tog;
+        ss_op_is_load <= 1'b0;
+        ss_pending    <= 1'b1;
+        ss_start_ok_latched <= 1'b0;
+        ss_load_ok_latched  <= 1'b0;
+      end else if (ss_accept_load) begin
+        ss_load_tog   <= ~ss_load_tog;
+        ss_op_is_load <= 1'b1;
+        ss_pending    <= 1'b1;
+        ss_start_ok_latched <= 1'b0;
+        ss_load_ok_latched  <= 1'b0;
+      end
+    end
+
+    // Clear pending once the engine asserts ss_busy_74a.
+    if (ss_busy_74a) ss_pending <= 1'b0;
+
+    // Latch completion status so host polling cannot miss it.
+    if (~ss_busy_74a && ss_busy_74a_prev) begin
+      if (ss_op_is_load) ss_load_ok_latched <= 1'b1;
+      else               ss_start_ok_latched <= 1'b1;
+    end
+
+    // Track previous synchronized busy level for completion edge detect.
+    ss_busy_74a_prev <= ss_busy_74a;
+    end
   end
 
   wire ss_save_tog_s;
@@ -522,38 +598,18 @@ module core_top (
     ss_load_tog_prev <= ss_load_tog_s;
   end
 
-  // -----------------------------------------------------------------------
-  // Save state APF handshake
-  //
-  // The APF protocol requires the core to assert savestate_start_ack for
-  // one clk_74a cycle when it accepts a start command, then hold
-  // savestate_start_busy while the operation is in progress, and finally
-  // assert savestate_start_ok for one cycle when done.
-  //
-  // ss_busy comes from savestates.sv (in clk_sys domain).  We cross it
-  // back to clk_74a for the APF handshake signals.
-  // -----------------------------------------------------------------------
-  wire ss_busy;   // from MAIN_SNES / savestates, in clk_sys domain
+  // Ack: one clk_74a cycle on the rising edge of the request, only when idle.
+  assign savestate_start_ack  = ss_accept_start;
+  assign savestate_load_ack   = ss_accept_load;
 
-  wire ss_busy_74a;
-  synch_3 ss_busy_sync (ss_busy, ss_busy_74a, clk_74a);
+  // Busy: held from ACK (ss_pending) through engine completion (ss_busy_74a).
+  assign savestate_start_busy = ss_any_busy;
+  assign savestate_load_busy  = ss_any_busy;
 
-  // Ack pulses: one clk_74a cycle on the rising edge of the request
-  assign savestate_start_ack  = savestate_start && ~savestate_start_prev;
-  assign savestate_load_ack   = savestate_load  && ~savestate_load_prev;
+  assign savestate_start_ok = ss_start_ok_latched;
+  assign savestate_load_ok  = ss_load_ok_latched;
 
-  // Busy: mirror ss_busy back to the APF
-  assign savestate_start_busy = ss_busy_74a;
-  assign savestate_load_busy  = ss_busy_74a;
-
-  // OK: one clk_74a cycle on the falling edge of ss_busy
-  reg  ss_busy_74a_prev = 0;
-  always @(posedge clk_74a) ss_busy_74a_prev <= ss_busy_74a;
-
-  assign savestate_start_ok = ~ss_busy_74a && ss_busy_74a_prev;
-  assign savestate_load_ok  = ~ss_busy_74a && ss_busy_74a_prev;
-
-  // Errors: never signal an error (savestates.sv aborts silently on bad header)
+  // Errors: never signal an error (savestates.sv aborts silently on bad header).
   assign savestate_start_err = 0;
   assign savestate_load_err  = 0;
 
@@ -582,18 +638,29 @@ module core_top (
 
   // Bridge side — byte write/read to SRAM address space 0x4xxxxxxx
   wire        br_sram_wr    = bridge_wr && (bridge_addr[31:28] == 4'h4);
-  wire [16:0] br_sram_a     = {bridge_addr[16:1], 1'b0};
-  wire  [7:0] br_sram_byte  = bridge_wr_data[31:24];  // APF big-endian byte
-  wire        br_sram_ub_n  = ~bridge_addr[0];
-  wire        br_sram_lb_n  =  bridge_addr[0];
+  wire [16:0] br_sram_a_rd  = {bridge_addr[16:1], 1'b0};
+  wire        br_sram_ub_n_rd = ~bridge_addr[0];
+  wire        br_sram_lb_n_rd =  bridge_addr[0];
 
   // Extend bridge write strobe to meet SRAM tWP (≥30 ns).
   // clk_74a period ≈ 13.5 ns; loading counter at 3 gives exactly 3 active
   // cycles of we_n (counter states 3→2→1→0, or_reduce=1 while nonzero).
   reg [1:0] br_wr_cnt = 2'd0;
+  reg [16:0] br_sram_a_wr = 17'd0;
+  reg [7:0]  br_sram_byte_wr = 8'd0;
+  reg        br_sram_ub_n_wr = 1'b1;
+  reg        br_sram_lb_n_wr = 1'b1;
+  // Latch write metadata at bridge_wr start and hold it for the full
+  // stretched WE pulse so address/data/lane cannot drift mid-write.
   always @(posedge clk_74a) begin
     if (~ss_busy_74a) begin
-      if (br_sram_wr) br_wr_cnt <= 2'd3;
+      if (br_sram_wr) begin
+        br_wr_cnt       <= 2'd3;
+        br_sram_a_wr    <= {bridge_addr[16:1], 1'b0};
+        br_sram_byte_wr <= bridge_wr_data[31:24];  // APF big-endian byte
+        br_sram_ub_n_wr <= ~bridge_addr[0];
+        br_sram_lb_n_wr <=  bridge_addr[0];
+      end
       else if (br_wr_cnt > 0) br_wr_cnt <= br_wr_cnt - 1;
     end else begin
       br_wr_cnt <= 2'd0;
@@ -602,6 +669,9 @@ module core_top (
 
   wire br_sram_we_n = ~|br_wr_cnt;       // low while counter nonzero
   wire br_sram_oe_n = |br_wr_cnt;        // keep oe_n high during write
+  wire [16:0] br_sram_a = br_sram_we_n ? br_sram_a_rd : br_sram_a_wr;
+  wire        br_sram_ub_n = br_sram_we_n ? br_sram_ub_n_rd : br_sram_ub_n_wr;
+  wire        br_sram_lb_n = br_sram_we_n ? br_sram_lb_n_rd : br_sram_lb_n_wr;
 
   // MUX SRAM control: SNES side when ss_busy, bridge side otherwise
   assign sram_a    = ss_busy_74a ? snes_sram_a    : br_sram_a;
@@ -613,7 +683,7 @@ module core_top (
   // Drive sram_dq: tri-state when reading (sram_we_n=1), drive during write
   assign sram_dq = sram_we_n ? {16{1'bZ}}
                               : (ss_busy_74a ? snes_sram_dq_o
-                                             : {br_sram_byte, br_sram_byte});
+                                             : {br_sram_byte_wr, br_sram_byte_wr});
 
   // Feed SRAM read data back to the SNES side
   wire [15:0] snes_sram_dq_i = sram_dq;

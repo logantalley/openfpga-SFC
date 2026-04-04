@@ -160,7 +160,6 @@ wire pawr_ce_n  = ~pawr_n_old  &  pawr_n;
 reg save_en, load_en;
 reg rd_rti;
 reg save_end;
-reg load_ready;   // BRAM has been validated as containing a "SNES" header
 
 // ---------------------------------------------------------------------------
 // Address decode — mirrors savestates.asm constants
@@ -171,7 +170,7 @@ reg load_ready;   // BRAM has been validated as containing a "SNES" header
 //   $C0:6003   SS_BSRAMSIZE
 //   $C0:6004   SS_ROMTYPE
 //   $C0:600E   SS_END   — write signals end of save
-//   $C0:600F   SS_STATUS — read: bit1=busy, bit0=save_en
+//   $C0:600F   SS_STATUS — read: bit1=backend_busy, bit0=save_en
 //   $C0:61xx   DSPn register space
 //   $C0:62xx   GSU register space
 //   $C1:21xx   PPU shadow registers
@@ -280,36 +279,6 @@ reg        ss_ext_addr_inc;
 assign ext_addr = ss_ext_addr;
 
 // ---------------------------------------------------------------------------
-// Load validation — check that BRAM[8..11] == "SNES" before accepting load.
-// We do this synchronously on the clk domain after load is pulsed, by
-// reading four bytes from BRAM port A.
-//
-// State machine: VALIDATE_0..3 → either set load_ready or abort.
-// ---------------------------------------------------------------------------
-localparam [2:0]
-    VAL_IDLE  = 3'd0,
-    VAL_B0    = 3'd1,
-    VAL_B1    = 3'd2,
-    VAL_B2    = 3'd3,
-    VAL_B3    = 3'd4,
-    VAL_DONE  = 3'd5;
-
-reg [2:0] val_state;
-reg [31:0] val_buf;
-
-// ---------------------------------------------------------------------------
-// APF data-ready signal (exported so main.v / save_state_controller knows
-// the save is complete and BRAM is ready to DMA)
-// ---------------------------------------------------------------------------
-// ss_busy goes low at end of session — that is the "done" signal.
-// save_data_size is valid while ~ss_busy & ~save_en.
-
-// We also export the final byte count so the APF layer knows how large the
-// file is.  Wire it out via a dedicated port if needed; for now it is
-// readable as the first 4 bytes of BRAM written by savestates.asm itself
-// (the "SNES" magic + reserved bytes occupy bytes 0–7; data follows at 8).
-
-// ---------------------------------------------------------------------------
 // Main control FSM
 // ---------------------------------------------------------------------------
 always @(posedge clk or negedge reset_n) begin
@@ -319,15 +288,12 @@ always @(posedge clk or negedge reset_n) begin
         load_en          <= 1'b0;
         rd_rti           <= 1'b0;
         save_end         <= 1'b0;
-        load_ready       <= 1'b0;
         ss_data_addr     <= {BRAM_AW{1'b0}};
         ss_data_addr_inc <= 1'b0;
         ss_data_size     <= {BRAM_AW{1'b0}};
         ss_ext_addr      <= 20'd0;
         ss_ext_addr_inc  <= 1'b0;
         bram_a_we        <= 1'b0;
-        val_state        <= VAL_IDLE;
-        val_buf          <= 32'd0;
     end else begin
 
         bram_a_we <= 1'b0;  // default: no write
@@ -339,60 +305,21 @@ always @(posedge clk or negedge reset_n) begin
             if (~ss_save_old & ss_save) begin
                 save_en <= 1'b1;
             end else if (~ss_load_old & ss_load) begin
-                load_en    <= 1'b1;
-                load_ready <= 1'b0;
-                val_state  <= VAL_B0;   // start header validation
+                load_en <= 1'b1;
             end
         end
-
-        // ------------------------------------------------------------------
-        // Load header validation (reads BRAM port A sequentially)
-        // We stall here until we know the data is valid before letting
-        // the CPU intercept happen.
-        // ------------------------------------------------------------------
-        case (val_state)
-            VAL_B0: begin
-                // Set address, wait one cycle for BRAM read
-                bram_a_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
-                val_state   <= VAL_B1;
-            end
-            VAL_B1: begin
-                val_buf[7:0] <= sram_rd_reg;
-                bram_a_addr  <= {{(BRAM_AW-4){1'b0}}, 4'd9};
-                val_state    <= VAL_B2;
-            end
-            VAL_B2: begin
-                val_buf[15:8] <= sram_rd_reg;
-                bram_a_addr   <= {{(BRAM_AW-4){1'b0}}, 4'd10};
-                val_state     <= VAL_B3;
-            end
-            VAL_B3: begin
-                val_buf[23:16] <= sram_rd_reg;
-                bram_a_addr    <= {{(BRAM_AW-4){1'b0}}, 4'd11};
-                val_state      <= VAL_DONE;
-            end
-            VAL_DONE: begin
-                val_buf[31:24] <= sram_rd_reg;
-                val_state      <= VAL_IDLE;
-                // "SNES" in little-endian: 'S'=53, 'N'=4E, 'E'=45, 'S'=53
-                if ({sram_rd_reg, val_buf[23:0]} == 32'h53_45_4E_53) begin
-                    load_ready <= 1'b1;
-                end else begin
-                    load_en <= 1'b0;   // no valid state — abort
-                end
-            end
-            default: ; // VAL_IDLE — nothing
-        endcase
 
         // ------------------------------------------------------------------
         // CPU vector intercept: hook NMI (or IRQ if game doesn't use NMI)
         // ------------------------------------------------------------------
         if (cpurd_ce) begin
             if (nmi_vect_l | (~ss_use_nmi & irq_vect_l)) begin
-                if (~ss_busy & (save_en | (load_en & load_ready))) begin
+                if (~ss_busy & (save_en | load_en)) begin
                     ss_busy <= 1'b1;
                     // Reset data address to 8 (header already at 0–7 in ASM)
                     ss_data_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
+                    if (load_en)
+                        bram_a_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
                     ss_ext_addr  <= 20'd0;
                 end
             end
@@ -420,6 +347,8 @@ always @(posedge clk or negedge reset_n) begin
         if (cpuwr_ce & ss_busy) begin
             if (ss_addr_sel) begin
                 ss_data_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
+                if (load_en)
+                    bram_a_addr <= {{(BRAM_AW-4){1'b0}}, 4'd8};
             end
 
             if (ss_ext_sel) begin
@@ -480,7 +409,7 @@ always @(posedge clk or negedge reset_n) begin
         // the CPU captures it.
         // ------------------------------------------------------------------
         if (cpurd_ce & ss_busy & ss_data_sel & load_en) begin
-            bram_a_addr <= ss_data_addr[BRAM_AW-1:0];
+            bram_a_addr <= ss_data_addr[BRAM_AW-1:0] + 1'b1;
         end
 
     end // ~reset
@@ -590,8 +519,9 @@ always @(posedge clk) begin
     ss_do <= 8'h00;
     // LOAD: byte from BRAM (registered read, address set by cpurd_ce logic)
     if (ss_data_sel & load_en)  ss_do <= sram_rd_reg;
-    // STATUS: bit1=not_ready(during validation), bit0=save_en
-    if (ss_status_sel)          ss_do <= {6'd0, (load_en & ~load_ready), save_en};
+    // STATUS: bit1=backend busy (DDRAM in MiSTer), bit0=save_en.
+    // SRAM backend has no transfer engine, so bit1 remains low.
+    if (ss_status_sel)          ss_do <= {6'd0, 1'b0, save_en};
     if (nmi_vect_l | irq_vect_l) ss_do <= nmi_vect_addr[7:0];
     if (nmi_vect_h | irq_vect_h) ss_do <= nmi_vect_addr[15:8];
     if (ss_ramsize_sel)          ss_do <= {4'd0, ram_size};

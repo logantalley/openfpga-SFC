@@ -152,6 +152,7 @@ always @(posedge clk) begin
         pmp_wr <= 0;
         pmp_rd <= 0;
         pmp_addr_valid <= 0;
+        pmp_rd_data_buf <= pmp_rd_data_e;
         spis_tx <= 0;
         
         state <= ST_ADDR_0;
@@ -212,9 +213,9 @@ always @(posedge clk) begin
         // delay a few cycles 
         read_cnt <= read_cnt + 1'b1;
         if(read_cnt == 4-1) begin
-            // load the buffer with the current data
-            // and give the current buffer contents to bridge
-            spis_word_tx <= pmp_rd_data_e;
+            // return the buffered word immediately, then issue pmp_rd
+            // to refill the buffer for the next read transaction.
+            spis_word_tx <= pmp_rd_data_buf;
             spis_tx <= 1;
             
             state <= ST_READ_1;
@@ -225,6 +226,7 @@ always @(posedge clk) begin
         state <= ST_READ_2;
     end
     ST_READ_2: begin
+        if(pmp_rd) pmp_rd_data_buf <= pmp_rd_data_e;
         pmp_rd <= 0;
         if(spis_done) begin
             spis_tx <= 0;
