@@ -785,12 +785,12 @@ set_global_assignment -name SIGNALTAP_FILE core/stp1.stp
 set_global_assignment -name QIP_FILE core/mf_pllbase.qip
 set_global_assignment -name SIP_FILE core/mf_pllbase.sip
 set_parameter -name USE_CX4 '0 -entity MAIN_SNES
-set_parameter -name USE_SDD1 '0 -entity MAIN_SNES
+set_parameter -name USE_SDD1 '1 -entity MAIN_SNES
 set_parameter -name USE_GSU '0 -entity MAIN_SNES
 set_parameter -name USE_SA1 '0 -entity MAIN_SNES
 set_parameter -name USE_DSPn '0 -entity MAIN_SNES
-set_parameter -name USE_SPC7110 '0 -entity MAIN_SNES
-set_parameter -name USE_BSX '0 -entity MAIN_SNES
+set_parameter -name USE_SPC7110 '1 -entity MAIN_SNES
+set_parameter -name USE_BSX '1 -entity MAIN_SNES
 set_parameter -name USE_MSU '0 -entity MAIN_SNES
 set_global_assignment -name QIP_FILE core/mf_pllbase_pal.qip
 set_global_assignment -name SIP_FILE core/mf_pllbase_pal.sip
