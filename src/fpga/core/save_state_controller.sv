@@ -184,7 +184,7 @@ module save_state_controller (
   // ===== APF bridge read side (clk_74a domain) =====
   reg prev_bridge_rd;
   reg [1:0] save_read_state = 0;
-  reg [20:0] last_unloader_addr = 21'hFFFF;
+  reg [20:0] last_unloader_addr = 21'h1FFFFF;
 
   wire [27:0] bridge_save_addr = bridge_addr[27:0];
 
@@ -226,7 +226,7 @@ module save_state_controller (
 
   reg [7:0] state = NONE;
 
-  reg save_state_saving_req = 0;
+  reg load_ack_pending = 0;
   reg save_state_loading = 0;
   reg did_req = 0;
 
@@ -269,7 +269,7 @@ module save_state_controller (
       ss_save <= 1;
     end else if (savestate_load_s && ~prev_savestate_load) begin
       // APF signals load is ready (data already copied into FIFO)
-      save_state_saving_req <= 1;
+      load_ack_pending <= 1;
 
       savestate_load_ack <= 1;
       savestate_load_ok <= 0;
@@ -345,7 +345,7 @@ module save_state_controller (
       end
 
       LOAD_WAIT_APF_START: begin
-        if (save_state_saving_req) begin
+        if (load_ack_pending) begin
           // APF acknowledged load
           state <= LOAD_APF_COMPLETE;
           fifo_load_clr <= 1;
@@ -353,7 +353,7 @@ module save_state_controller (
           savestate_load_ack <= 0;
           savestate_load_busy <= 1;
 
-          save_state_saving_req <= 0;
+          load_ack_pending <= 0;
         end
       end
 
