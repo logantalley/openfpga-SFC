@@ -16,7 +16,8 @@ entity SPC700 is
         WE				: out std_logic;
 
 		  REG_DAT		: in std_logic_vector(55 downto 0);
-		  REG_SET		: in std_logic
+		  REG_SET		: in std_logic;
+		  S0			: out std_logic
     );
 end SPC700;
 
@@ -58,6 +59,7 @@ architecture rtl of SPC700 is
 
 begin
 	EN <= RDY and not STPExec;
+	S0 <= '1' when STATE = "0000" else '0';
 	
 	NextIR <= IR when (STATE /= "0000") else
 				 x"0F" when GotInterrupt = '1' else 

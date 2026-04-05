@@ -24,6 +24,7 @@ entity SMP is
 		CPU_DO			: out std_logic_vector(7 downto 0);
 		CS					: in std_logic;
 		CS_N				: in std_logic;
+		SPC_S0			: out std_logic;
 		
 		IO_ADDR     	: in std_logic_vector(16 downto 0);
 		IO_DAT  			: in std_logic_vector(15 downto 0);
@@ -189,12 +190,10 @@ begin
 		D_IN     	=> SPC700_D_IN,
 		D_OUT    	=> SPC700_D_OUT,
 		WE       	=> SPC700_R_WN,
+		S0       	=> SPC_S0,
 		
 		REG_SET	   => REG_SET, 
-		REG_DAT	   => SPC_REG_DAT,
-
-		SS_ADDR  	=> SS_ADDR,
-		SS_DO    	=> SS_SPC_DO
+		REG_DAT	   => SPC_REG_DAT
 	);
 	
 	
