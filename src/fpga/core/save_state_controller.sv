@@ -391,7 +391,8 @@ defparam
 	load_fifo.use_eab = "ON",
 	load_fifo.wrsync_delaypipe = 5;
 
-// Save FIFO: clk_sys (write) → clk_74a (read), 32-bit, 16 deep
+// Save FIFO: clk_sys (write) → clk_74a (read), 32-bit, 64 deep
+// 64 entries = 32 × 64-bit words; provides headroom when bridge reads are bursty.
 dcfifo save_fifo (
 	.data    (core_save_data),
 	.wrclk   (clk_sys),
@@ -410,11 +411,11 @@ dcfifo save_fifo (
 );
 defparam
 	save_fifo.intended_device_family = "Cyclone V",
-	save_fifo.lpm_numwords = 16,
+	save_fifo.lpm_numwords = 64,
 	save_fifo.lpm_showahead = "OFF",
 	save_fifo.lpm_type = "dcfifo",
 	save_fifo.lpm_width = 32,
-	save_fifo.lpm_widthu = 4,
+	save_fifo.lpm_widthu = 6,
 	save_fifo.overflow_checking = "ON",
 	save_fifo.rdsync_delaypipe = 5,
 	save_fifo.underflow_checking = "ON",

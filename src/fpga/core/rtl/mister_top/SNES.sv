@@ -428,8 +428,10 @@ module MAIN_SNES (
       .SS_BUSY    (ss_busy_int),
       .SS_REGS_SEL(ss_dsp_regs_sel),
       .SS_SMP_SEL (ss_smp_regs_sel),
-      .SS_WR      (1'b0),
-      .SS_DI      (8'h0),
+      // During load the DMA writes restored bytes to B-bus $85/$86; those
+      // bytes land on SS_DO_CPU and must be written into DSP/SMP via SS_WR.
+      .SS_WR      (~SS_PAWR_N),
+      .SS_DI      (SS_DO_CPU),
       .SS_SPC_DO  (SS_SPC_DO),
       .SS_PPU_DO  (SS_PPU_DO),
 
