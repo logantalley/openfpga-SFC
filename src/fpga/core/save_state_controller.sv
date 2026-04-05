@@ -10,7 +10,7 @@
 
 module save_state_controller #(
 	parameter ADDR_PREFIX = 4'h4,    // Bridge address prefix for save state data
-	parameter SS_DATA_SIZE = 524288  // 512 KB: covers WRAM(128K)+VRAM(64K)+ARAM(64K)+regs+BSRAM(up to 256K)
+	parameter SS_DATA_SIZE = 524288  // 512 KB: covers WRAM(128K)+VRAM(64K)+ARAM(64K)+regs+BSRAM(typical ≤256K; games with full 256K BSRAM require 1MB)
 ) (
 	input wire clk_74a,
 	input wire clk_sys,
@@ -392,7 +392,7 @@ defparam
 	load_fifo.wrsync_delaypipe = 5;
 
 // Save FIFO: clk_sys (write) → clk_74a (read), 32-bit, 64 deep
-// 64 entries = 32 × 64-bit words; provides headroom when bridge reads are bursty.
+// 64 × 32-bit entries = 32 × 64-bit core words; provides headroom when bridge reads are bursty.
 dcfifo save_fifo (
 	.data    (core_save_data),
 	.wrclk   (clk_sys),

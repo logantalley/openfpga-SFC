@@ -424,6 +424,7 @@ module MAIN_SNES (
       // Save states - register access bus
       // SS_ADDR/SS_REGS_SEL/SS_SMP_SEL are driven by the savestates module so
       // DSP and SMP register bytes are properly sequenced during saves/loads.
+      // Bits [8:0] suffice: DSP register space is 9 bits wide; SMP is 8 bits.
       .SS_ADDR    (ss_ext_addr_main[8:0]),
       .SS_BUSY    (ss_busy_int),
       .SS_REGS_SEL(ss_dsp_regs_sel),
