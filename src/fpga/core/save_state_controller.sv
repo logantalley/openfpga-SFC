@@ -172,6 +172,7 @@ always @(posedge clk_74a or negedge reset_n) begin
 					savestate_load_err <= 0;
 					load_fifo_aclr <= 1;
 					load_trigger_74a <= 1;
+					load_started <= 0;
 					br_state <= BR_LOAD_FILL;
 				end
 			end
@@ -279,7 +280,6 @@ always @(posedge clk_sys or negedge reset_n) begin
 		core_save_data <= 0;
 		core_rd_half <= 0;
 	end else begin
-		ss_req_prev <= ss_req;
 		core_load_rdreq <= 0;
 		core_save_wrreq <= 0;
 
@@ -294,11 +294,16 @@ always @(posedge clk_sys or negedge reset_n) begin
 							core_rd_half <= 0;
 							core_state <= CORE_RD_WAIT;
 						end
+						// else: FIFO empty, stay in IDLE and retry next cycle
+						// (ss_req_prev won't update to match ss_req until next iteration)
 					end else begin
 						// Save: write 64-bit as two 32-bit words to save FIFO
-						core_save_data <= ss_dout[31:0]; // Low 32 bits first
-						core_save_wrreq <= 1;
-						core_state <= CORE_WR_LO;
+						if (!save_fifo_wrfull) begin
+							core_save_data <= ss_dout[31:0]; // Low 32 bits first
+							core_save_wrreq <= 1;
+							core_state <= CORE_WR_LO;
+						end
+						// else: FIFO full, stay in IDLE and retry next cycle
 					end
 				end
 			end
@@ -314,11 +319,12 @@ always @(posedge clk_sys or negedge reset_n) begin
 					// Latch low 32 bits
 					ss_din[31:0] <= load_fifo_q;
 					core_rd_half <= 1;
-					// Request high 32 bits
+					// Request high 32 bits (wait if FIFO is empty)
 					if (!load_fifo_rdempty) begin
 						core_load_rdreq <= 1;
 						core_state <= CORE_RD_WAIT;
 					end
+					// else: stay in CORE_RD_LATCH, retry reading high half next cycle
 				end else begin
 					// Latch high 32 bits
 					ss_din[63:32] <= load_fifo_q;
@@ -328,12 +334,13 @@ always @(posedge clk_sys or negedge reset_n) begin
 
 			// ---- Save (write to FIFO) ----
 			CORE_WR_LO: begin
-				// Low 32 bits written, now write high 32 bits
+				// Low 32 bits written, now write high 32 bits (wait if FIFO full)
 				if (!save_fifo_wrfull) begin
 					core_save_data <= ss_dout[63:32];
 					core_save_wrreq <= 1;
 					core_state <= CORE_WR_HI;
 				end
+				// else: stay in CORE_WR_LO, retry next cycle
 			end
 
 			CORE_WR_HI: begin
@@ -343,6 +350,7 @@ always @(posedge clk_sys or negedge reset_n) begin
 			// ---- Complete ----
 			CORE_DONE: begin
 				ss_ack <= ss_req; // Match ss_req to acknowledge
+				ss_req_prev <= ss_req; // Update after acknowledgment
 				core_state <= CORE_IDLE;
 			end
 		endcase
