@@ -19,6 +19,14 @@
         "extensions": ["sav", "srm"],
         "address": "0x20000000",
         "size_maximum": "0x20000"
+      },
+      {
+        "name": "Savestates blob",
+        "id": 64,
+        "required": true,
+        "parameters": "0x100",
+        "address": "0x10FF8000",
+        "filename": "savestates.bin"
       }
     ]
   }
