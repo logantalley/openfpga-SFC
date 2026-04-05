@@ -195,7 +195,8 @@ always @(posedge clk) begin
 				save_en <= 1;
 			end else if (~load_old & load) begin
 				load_en <= 1;
-				load_ready <= 1; // APF manages validity; no header check needed
+				load_ready <= 1; // APF OS validates save state files before loading;
+				                 // no "SNES" magic header check needed unlike MiSTer DDR path
 			end
 		end
 
