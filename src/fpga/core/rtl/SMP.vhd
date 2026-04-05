@@ -447,7 +447,7 @@ begin
 		std_logic_vector(T1_CNT) when SS_ADDR(7 downto 0) = x"05" else
 		std_logic_vector(T2_CNT) when SS_ADDR(7 downto 0) = x"06" else
 		std_logic_vector(TM01_CNT(7 downto 0)) when SS_ADDR(7 downto 0) = x"07" else
-		"0000000" & std_logic_vector(TM01_CNT(8)) when SS_ADDR(7 downto 0) = x"08" else
+		"0000000" & std_logic(TM01_CNT(8)) when SS_ADDR(7 downto 0) = x"08" else
 		"00" & std_logic_vector(TM2_CNT) when SS_ADDR(7 downto 0) = x"09" else
 		CPUI(0) when SS_ADDR(7 downto 0) = x"0A" else
 		CPUI(1) when SS_ADDR(7 downto 0) = x"0B" else
