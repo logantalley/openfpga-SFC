@@ -4,9 +4,7 @@ module savestates
 	input clk,
 
 	input             save,
-	input             save_sd,
 	input             load,
-	input       [1:0] slot,
 
 	input       [3:0] ram_size,
 	input       [7:0] rom_type,
@@ -38,7 +36,7 @@ module savestates
 	input      [63:0] ddr_di,
 	output reg [63:0] ddr_do,
 	input             ddr_ack,
-	output     [21:3] ddr_addr,
+	output     [16:0] ddr_addr,
 	output reg        ddr_we,
 	output reg  [7:0] ddr_be,
 	output reg        ddr_req,
@@ -124,7 +122,6 @@ wire ss_reg_sel = (ca[23:16] == 8'hC0);
 reg [19:0] ss_data_addr;
 reg [19:0] ss_data_size;
 reg [19:0] ss_ddr_addr;
-reg [1:0] ss_slot;
 reg ss_data_addr_inc;
 wire ss_data_sel = ss_reg_sel & (ca[15:0] == 16'h6000);
 wire ss_addr_sel = ss_reg_sel & (ca[15:0] == 16'h6001);
@@ -158,10 +155,7 @@ reg load_ready;
 wire ddr_busy = ddr_req != ddr_ack;
 
 localparam DDR_IDLE = 4'd0, LOAD_DATA = 4'd1, WRITE_DATA = 4'd2,
-			WRITE_CNTSIZE = 4'd3, READ_HEAD = 4'd4,	READ_HEAD_END = 4'd5,
 			DDR_END = 4'd6;
-
-reg [31:0] ss_count = 0;
 
 // Detect if NMI is being used. Some games do not use NMI during game play.
 reg [15:0] nmi_cycle_cnt, nmi_read_sr;
@@ -197,12 +191,9 @@ always @(posedge clk) begin
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
 				save_en <= 1;
-				ss_slot <= slot;
 			end else if (~load_old & load) begin
 				load_en <= 1;
-				ss_slot <= slot;
-				ddr_state <= READ_HEAD; // Check header in RAM
-				load_ready <= 0;
+				load_ready <= 1; // APF handles file validity, no header check needed
 			end
 		end
 
@@ -210,9 +201,6 @@ always @(posedge clk) begin
 			if (nmi_vect_l | (~ss_use_nmi & irq_vect_l)) begin // Prefer to use NMI
 				if (~ss_busy & (save_en | (load_en & load_ready))) begin
 					ss_busy <= 1; // Override NMI/IRQ vector
-					if (save_en) begin
-						ss_count <= ss_count + 1'b1;
-					end
 				end
 			end
 
@@ -233,7 +221,7 @@ always @(posedge clk) begin
 
 		if (cpuwr_ce & ss_busy) begin
 			if (ss_addr_sel) begin // Reset save state address
-				ss_data_addr <= 20'd8;
+				ss_data_addr <= 20'd0;
 				if (load_en) begin
 					// Request new data when address is reset
 					ddr_state <= LOAD_DATA;
@@ -247,12 +235,9 @@ always @(posedge clk) begin
 			if (ss_end_sel) begin // Saving finished
 				save_end <= 1;
 				ss_data_size <= ss_data_addr;
-				// Write header to DDR so HPS can save it to SD card.
 				if (ss_data_addr[2:0] != 3'd0) begin
 					// Write remaining data first
 					ddr_state <= WRITE_DATA;
-				end else begin
-					ddr_state <= WRITE_CNTSIZE;
 				end
 			end
 		end
@@ -313,30 +298,7 @@ always @(posedge clk) begin
 					ss_ddr_addr <= ss_data_addr;
 					ddr_req <= ~ddr_req;
 					ddr_we <= 1;
-					ddr_state <= save_end ? WRITE_CNTSIZE : DDR_END;
-				end
-				WRITE_CNTSIZE: begin
-					ddr_do <= {14'd0, ss_data_size[19:2], ss_count[31:0]};
-					ss_ddr_addr <= 20'd0;
-					ddr_we <= 1;
-					ddr_req <= ~ddr_req;
-					if (~save_sd) begin
-						ddr_be <= 8'hF0; // Skip count write
-					end
 					ddr_state <= DDR_END;
-				end
-				READ_HEAD: begin
-					ss_ddr_addr <= 20'd8;
-					ddr_req <= ~ddr_req;
-					ddr_state <= READ_HEAD_END;
-				end
-				READ_HEAD_END: begin
-					ddr_state <= DDR_END;
-					if (ddr_di[31:0] == 32'h5345_4E53) begin // "SNES"
-						load_ready <= 1; // State found
-					end else begin
-						load_en <= 0;
-					end
 				end
 
 				DDR_END: begin
@@ -477,6 +439,6 @@ assign bsram_sel = ss_busy & (pa == 8'h87);
 assign dspn_ram_sel = ss_busy & (pa == 8'h88);
 assign ext_addr = ss_ext_addr;
 
-assign ddr_addr = { ss_slot[1:0], ss_ddr_addr[19:3] };
+assign ddr_addr = ss_ddr_addr[19:3];
 
 endmodule
