@@ -4,9 +4,7 @@ module savestates
 	input clk,
 
 	input             save,
-	input             save_sd,
 	input             load,
-	input       [1:0] slot,
 
 	input       [3:0] ram_size,
 	input       [7:0] rom_type,
@@ -35,13 +33,12 @@ module savestates
 
 	input       [7:0] spc_di,
 
-	input      [63:0] ddr_di,
-	output reg [63:0] ddr_do,
-	input             ddr_ack,
-	output     [21:3] ddr_addr,
-	output reg        ddr_we,
-	output reg  [7:0] ddr_be,
-	output reg        ddr_req,
+	// FIFO streaming interface (replaces DDR)
+	input      [63:0] ss_din,       // 64-bit data from load FIFO
+	output reg [63:0] ss_dout,      // 64-bit data to save FIFO
+	input             ss_ack,       // FIFO operation acknowledged
+	output reg        ss_req,       // FIFO request (toggle)
+	output reg        ss_we,        // 1=write to save FIFO, 0=read from load FIFO
 
 	output            aram_sel,
 	output            dsp_regs_sel,
@@ -123,8 +120,6 @@ wire ss_reg_sel = (ca[23:16] == 8'hC0);
 
 reg [19:0] ss_data_addr;
 reg [19:0] ss_data_size;
-reg [19:0] ss_ddr_addr;
-reg [1:0] ss_slot;
 reg ss_data_addr_inc;
 wire ss_data_sel = ss_reg_sel & (ca[15:0] == 16'h6000);
 wire ss_addr_sel = ss_reg_sel & (ca[15:0] == 16'h6001);
@@ -151,15 +146,14 @@ wire bsram_read = bsram_sel & ~pard_n;
 
 wire dspn_ram_read = dspn_ram_sel & ~pard_n;
 
-reg [3:0] ddr_state;
+reg [2:0] ss_state;
 reg [7:0] ddr_data;
 reg load_ready;
 
-wire ddr_busy = ddr_req != ddr_ack;
+wire ss_fifo_busy = ss_req != ss_ack;
 
-localparam DDR_IDLE = 4'd0, LOAD_DATA = 4'd1, WRITE_DATA = 4'd2,
-			WRITE_CNTSIZE = 4'd3, READ_HEAD = 4'd4,	READ_HEAD_END = 4'd5,
-			DDR_END = 4'd6;
+localparam SS_IDLE = 3'd0, SS_LOAD = 3'd1, SS_SAVE = 3'd2,
+			SS_DONE = 3'd3;
 
 reg [31:0] ss_count = 0;
 
@@ -192,17 +186,16 @@ always @(posedge clk) begin
 		ss_data_addr_inc <= 0;
 		ss_ext_addr <= 0;
 		ss_ext_addr_inc <= 0;
-		ddr_state <= DDR_IDLE;
+		ss_state <= SS_IDLE;
+		ss_req <= 0;
+		ss_we <= 0;
 	end else begin
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
 				save_en <= 1;
-				ss_slot <= slot;
 			end else if (~load_old & load) begin
 				load_en <= 1;
-				ss_slot <= slot;
-				ddr_state <= READ_HEAD; // Check header in RAM
-				load_ready <= 0;
+				load_ready <= 1; // APF manages validity; no header check needed
 			end
 		end
 
@@ -236,7 +229,7 @@ always @(posedge clk) begin
 				ss_data_addr <= 20'd8;
 				if (load_en) begin
 					// Request new data when address is reset
-					ddr_state <= LOAD_DATA;
+					ss_state <= SS_LOAD;
 				end
 			end
 
@@ -247,12 +240,11 @@ always @(posedge clk) begin
 			if (ss_end_sel) begin // Saving finished
 				save_end <= 1;
 				ss_data_size <= ss_data_addr;
-				// Write header to DDR so HPS can save it to SD card.
+				// Write remaining data to FIFO
 				if (ss_data_addr[2:0] != 3'd0) begin
-					// Write remaining data first
-					ddr_state <= WRITE_DATA;
+					ss_state <= SS_SAVE;
 				end else begin
-					ddr_state <= WRITE_CNTSIZE;
+					ss_state <= SS_DONE;
 				end
 			end
 		end
@@ -268,8 +260,8 @@ always @(posedge clk) begin
 				ss_data_addr <= ss_data_addr + 1'b1;
 				ss_data_addr_inc <= 0;
 				if (cpurd_ce_n & (ss_data_addr[2:0] == 3'd7)) begin
-					// Request next 8 bytes
-					ddr_state <= LOAD_DATA;
+					// Request next 8 bytes from load FIFO
+					ss_state <= SS_LOAD;
 				end
 			end
 		end
@@ -289,61 +281,33 @@ always @(posedge clk) begin
 
 		if (~cpuwr_n & sysclkf_ce & ss_busy & ss_data_sel) begin // Data write
 			if (ss_data_addr[2:0] == 3'd0) begin
-				ddr_do[63:8] <= 0; // Clear for possible partial last write
+				ss_dout[63:8] <= 0; // Clear for possible partial last write
 			end
 
-			ddr_do[ss_data_addr[2:0]*8 +:8] <= ddr_data;
+			ss_dout[ss_data_addr[2:0]*8 +:8] <= ddr_data;
 
 			if (ss_data_addr[2:0] == 3'd7) begin // 8 bytes written
-				ddr_state <= WRITE_DATA;
+				ss_state <= SS_SAVE;
 			end
 		end
 
-		ddr_we <= 0;
-		ddr_be <= 8'hFF;
+		ss_we <= 0;
 
-		if (ddr_req == ddr_ack) begin
-			case(ddr_state)
-				LOAD_DATA: begin
-					ss_ddr_addr <= ss_data_addr;
-					ddr_req <= ~ddr_req;
-					ddr_state <= DDR_END;
+		if (ss_req == ss_ack) begin
+			case(ss_state)
+				SS_LOAD: begin
+					ss_req <= ~ss_req;
+					ss_state <= SS_DONE;
 				end
-				WRITE_DATA: begin
-					ss_ddr_addr <= ss_data_addr;
-					ddr_req <= ~ddr_req;
-					ddr_we <= 1;
-					ddr_state <= save_end ? WRITE_CNTSIZE : DDR_END;
+				SS_SAVE: begin
+					ss_req <= ~ss_req;
+					ss_we <= 1;
+					ss_state <= SS_DONE;
 				end
-				WRITE_CNTSIZE: begin
-					ddr_do <= {14'd0, ss_data_size[19:2], ss_count[31:0]};
-					ss_ddr_addr <= 20'd0;
-					ddr_we <= 1;
-					ddr_req <= ~ddr_req;
-					if (~save_sd) begin
-						ddr_be <= 8'hF0; // Skip count write
-					end
-					ddr_state <= DDR_END;
-				end
-				READ_HEAD: begin
-					ss_ddr_addr <= 20'd8;
-					ddr_req <= ~ddr_req;
-					ddr_state <= READ_HEAD_END;
-				end
-				READ_HEAD_END: begin
-					ddr_state <= DDR_END;
-					if (ddr_di[31:0] == 32'h5345_4E53) begin // "SNES"
-						load_ready <= 1; // State found
-					end else begin
-						load_en <= 0;
-					end
-				end
-
-				DDR_END: begin
-					ddr_state <= DDR_IDLE;
+				SS_DONE: begin
+					ss_state <= SS_IDLE;
 				end
 			endcase
-
 		end
 	end
 end
@@ -437,8 +401,8 @@ wire ss_oe = ss_data_sel | ss_status_sel | nmi_vect | irq_vect |
 
 always @(posedge clk) begin
 	ss_do <= 8'h00;
-	if (ss_data_sel) ss_do <= ddr_di[ss_data_addr[2:0]*8 +:8];
-	if (ss_status_sel) ss_do <= { 6'd0, ddr_busy, save_en };
+	if (ss_data_sel) ss_do <= ss_din[ss_data_addr[2:0]*8 +:8];
+	if (ss_status_sel) ss_do <= { 6'd0, ss_fifo_busy, save_en };
 	if (nmi_vect_l | irq_vect_l) ss_do <= nmi_vect_addr[7:0];
 	if (nmi_vect_h | irq_vect_h) ss_do <= nmi_vect_addr[15:8];
 	if (ss_ramsize_sel) ss_do <= { 4'd0, ram_size };
@@ -459,7 +423,7 @@ always @(*) begin
 	end
 end
 
-// Data to DDRAM
+// Data to save FIFO
 always @(*) begin
 	ddr_data = di;
 	if (spc_read) ddr_data = spc_di;
@@ -476,7 +440,5 @@ assign smp_regs_sel = ss_busy & (pa == 8'h86);
 assign bsram_sel = ss_busy & (pa == 8'h87);
 assign dspn_ram_sel = ss_busy & (pa == 8'h88);
 assign ext_addr = ss_ext_addr;
-
-assign ddr_addr = { ss_slot[1:0], ss_ddr_addr[19:3] };
 
 endmodule
