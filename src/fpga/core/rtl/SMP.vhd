@@ -194,7 +194,7 @@ begin
 		REG_DAT	   => SPC_REG_DAT,
 
 		SS_ADDR  	=> SS_ADDR,
-		SS_DO    	=> SS_SPC_DO,
+		SS_DO    	=> SS_SPC_DO
 	);
 	
 	
