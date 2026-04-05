@@ -162,6 +162,14 @@ begin
 				CPUI(1) <= SMP_REG_DAT(31 downto 24);
 				CPUI(2) <= SMP_REG_DAT(39 downto 32);
 				CPUI(3) <= SMP_REG_DAT(47 downto 40);
+			elsif SS_WR = '1' then
+				case SS_ADDR(7 downto 0) is
+					when x"0A" => CPUI(0) <= SS_DI;
+					when x"0B" => CPUI(1) <= SS_DI;
+					when x"0C" => CPUI(2) <= SS_DI;
+					when x"0D" => CPUI(3) <= SS_DI;
+					when others => null;
+				end case;
 			elsif SPC700_CE = '1' then
 				if SPC700_A = x"00F1" and SPC700_R_WN = '0' then
 					if SPC700_D_OUT(4) = '1' then
@@ -262,11 +270,7 @@ begin
 					when x"08" => TM01_CNT(8) <= SS_DI(0);
 					when x"09" => TM2_CNT <= unsigned(SS_DI(5 downto 0));
 					
-					-- Port/Control state writes
-					when x"0A" => CPUI(0) <= SS_DI;
-					when x"0B" => CPUI(1) <= SS_DI;
-					when x"0C" => CPUI(2) <= SS_DI;
-					when x"0D" => CPUI(3) <= SS_DI;
+					-- Port/Control state writes (CPUI driven by first process)
 					when x"0E" => AUX(0) <= SS_DI;
 					when x"0F" => AUX(1) <= SS_DI;
 					
