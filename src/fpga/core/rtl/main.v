@@ -117,7 +117,17 @@ module main #(
     input         MSU_ENABLE,
 
     output [15:0] AUDIO_L,
-    output [15:0] AUDIO_R
+    output [15:0] AUDIO_R,
+
+    // Save state interface
+    input       [8:0] SS_ADDR,
+    input             SS_BUSY,
+    input             SS_REGS_SEL,
+    input             SS_SMP_SEL,
+    input             SS_WR,
+    input       [7:0] SS_DI,
+    output      [7:0] SS_SPC_DO,
+    output      [7:0] SS_PPU_DO
 );
 
   parameter USE_DLH = 1'b1;
@@ -229,7 +239,16 @@ module main #(
       .turbo(TURBO),
 
       .audio_l(AUDIO_L),
-      .audio_r(AUDIO_R)
+      .audio_r(AUDIO_R),
+
+      .ss_addr    (SS_ADDR),
+      .ss_busy    (SS_BUSY),
+      .ss_regs_sel(SS_REGS_SEL),
+      .ss_smp_sel (SS_SMP_SEL),
+      .ss_wr      (SS_WR),
+      .ss_di      (SS_DI),
+      .ss_spc_do  (SS_SPC_DO),
+      .ss_ppu_do  (SS_PPU_DO)
   );
 
   wire [7:0] MSU_DO;
