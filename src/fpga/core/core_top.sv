@@ -326,6 +326,10 @@ module core_top (
     if (bridge_addr[31:28] == 4'h2) begin
       bridge_rd_data <= sd_read_data;
     end
+
+    if (bridge_addr[31:28] == 4'h4) begin
+      bridge_rd_data <= ss_bridge_rd_data;
+    end
   end
 
   always @(posedge clk_74a) begin
@@ -408,7 +412,7 @@ module core_top (
 
   wire dataslot_allcomplete;
 
-  wire savestate_supported = 0;
+  wire savestate_supported;
   wire [31:0] savestate_addr;
   wire [31:0] savestate_size;
   wire [31:0] savestate_maxloadsize;
@@ -495,6 +499,60 @@ module core_top (
       .datatable_wren(datatable_wren),
       .datatable_data(datatable_data),
       .datatable_q   (datatable_q)
+  );
+
+  // ---- Save State Controller ----
+  wire        ss_save;
+  wire        ss_load;
+  wire [63:0] ss_din;
+  wire [63:0] ss_dout;
+  wire        ss_fifo_ack;
+  wire        ss_fifo_req;
+  wire        ss_fifo_we;
+  wire        ss_busy;
+  wire [31:0] ss_bridge_rd_data;
+
+  save_state_controller ss_ctrl (
+      .clk_74a (clk_74a),
+      .clk_sys (clk_sys_21_48),
+      .reset_n (reset_n),
+
+      // Bridge interface
+      .bridge_wr     (bridge_wr),
+      .bridge_rd     (bridge_rd),
+      .bridge_addr   (bridge_addr),
+      .bridge_wr_data(bridge_wr_data),
+      .bridge_rd_data(ss_bridge_rd_data),
+
+      // Savestate handshake with core_bridge_cmd
+      .savestate_supported  (savestate_supported),
+      .savestate_addr       (savestate_addr),
+      .savestate_size       (savestate_size),
+      .savestate_maxloadsize(savestate_maxloadsize),
+
+      .savestate_start     (savestate_start),
+      .savestate_start_ack (savestate_start_ack),
+      .savestate_start_busy(savestate_start_busy),
+      .savestate_start_ok  (savestate_start_ok),
+      .savestate_start_err (savestate_start_err),
+
+      .savestate_load     (savestate_load),
+      .savestate_load_ack (savestate_load_ack),
+      .savestate_load_busy(savestate_load_busy),
+      .savestate_load_ok  (savestate_load_ok),
+      .savestate_load_err (savestate_load_err),
+
+      // Core-side interface
+      .ss_save (ss_save),
+      .ss_load (ss_load),
+
+      .ss_dout (ss_dout),
+      .ss_din  (ss_din),
+      .ss_req  (ss_fifo_req),
+      .ss_ack  (ss_fifo_ack),
+      .ss_we   (ss_fifo_we),
+
+      .ss_busy (ss_busy)
   );
 
   reg ioctl_download = 0;
@@ -771,6 +829,16 @@ module core_top (
       // Settings
       .cpu_turbo_enabled(cpu_turbo_enabled_s),
       .gsu_turbo_enabled(gsu_turbo_enabled_s),
+
+      // Save states - FIFO streaming
+      .ss_save     (ss_save),
+      .ss_load     (ss_load),
+      .ss_din      (ss_din),
+      .ss_dout     (ss_dout),
+      .ss_fifo_ack (ss_fifo_ack),
+      .ss_fifo_req (ss_fifo_req),
+      .ss_fifo_we  (ss_fifo_we),
+      .ss_busy_out (ss_busy),
 
       .multitap_enabled(multitap_enabled_s),
       .lightgun_enabled(lightgun_enabled_s),

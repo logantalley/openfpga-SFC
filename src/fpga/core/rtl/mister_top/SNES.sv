@@ -10,15 +10,15 @@ module MAIN_SNES (
     input wire cpu_turbo_enabled,
     input wire gsu_turbo_enabled,
     
-    // Save states
-    input  wire        ss_busy,
-    input  wire  [8:0] ss_addr,
-    input  wire        ss_regs_sel,
-    input  wire        ss_smp_sel,
-    input  wire        ss_wr,
-    input  wire  [7:0] ss_di,
-    output wire  [7:0] ss_spc_do,
-    output wire  [7:0] ss_ppu_do,
+    // Save states - FIFO streaming interface
+    input  wire        ss_save,           // Save trigger from controller
+    input  wire        ss_load,           // Load trigger from controller
+    input  wire [63:0] ss_din,            // 64-bit load data from controller
+    output wire [63:0] ss_dout,           // 64-bit save data to controller
+    input  wire        ss_fifo_ack,       // FIFO acknowledge from controller
+    output wire        ss_fifo_req,       // FIFO request to controller
+    output wire        ss_fifo_we,        // FIFO write enable (1=save, 0=load)
+    output wire        ss_busy_out,       // Save state busy status
 
     input wire multitap_enabled,
     input wire lightgun_enabled,
@@ -421,15 +421,33 @@ module MAIN_SNES (
       .IO_DAT (ioctl_dout),
       .IO_WR  (spc_download & ioctl_wr),
 
-      // Save states
-      .SS_ADDR    (ss_addr),
-      .SS_BUSY    (ss_busy),
-      .SS_REGS_SEL(ss_regs_sel),
-      .SS_SMP_SEL (ss_smp_sel),
-      .SS_WR      (ss_wr),
-      .SS_DI      (ss_di),
-      .SS_SPC_DO  (ss_spc_do),
-      .SS_PPU_DO  (ss_ppu_do),
+      // Save states - register access bus
+      // Direct register bus is not used by the DMA-based savestates approach.
+      // Only SS_BUSY is needed to pause the DSP during save state operations.
+      .SS_ADDR    (9'd0),
+      .SS_BUSY    (ss_busy_int),
+      .SS_REGS_SEL(1'b0),
+      .SS_SMP_SEL (1'b0),
+      .SS_WR      (1'b0),
+      .SS_DI      (8'h0),
+      .SS_SPC_DO  (SS_SPC_DO),
+      .SS_PPU_DO  (SS_PPU_DO),
+
+      // Promoted CPU bus signals (for savestates module)
+      .SS_CA        (SS_CA),
+      .SS_CPURD_N   (SS_CPURD_N),
+      .SS_CPUWR_N   (SS_CPUWR_N),
+      .SS_PA        (SS_PA),
+      .SS_PARD_N    (SS_PARD_N),
+      .SS_PAWR_N    (SS_PAWR_N),
+      .SS_DO_CPU    (SS_DO_CPU),
+      .SS_ROMSEL_N  (SS_ROMSEL_N),
+      .SS_SYSCLKF_CE(SS_SYSCLKF_CE),
+      .SS_SYSCLKR_CE(SS_SYSCLKR_CE),
+
+      // Save state DI override
+      .SS_DI_DATA   (ss_di_data),
+      .SS_DI_DATA_EN(ss_di_data_en),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),
@@ -532,7 +550,7 @@ module MAIN_SNES (
       .init(0),  //~clock_locked),
       .clk(clk_mem),
 
-      .addr(cart_download ? ioctl_addr : ROM_ADDR),
+      .addr(cart_download ? ioctl_addr : rom_addr_muxed),
       .din (cart_download ? ioctl_dout : ROM_D),
       .dout(ROM_Q),
       .rd  (~cart_download & (RESET_N ? ~ROM_OE_N : RFSH)),
@@ -698,6 +716,114 @@ module MAIN_SNES (
       // .wren_b(sd_buff_wr & sd_ack),
       .q_b(sd_buff_din)
   );
+
+  ////////////////////////////  SAVE STATES  ////////////////////////////////
+
+  // CPU bus signals promoted from main.v
+  wire [23:0] SS_CA;
+  wire        SS_CPURD_N;
+  wire        SS_CPUWR_N;
+  wire [ 7:0] SS_PA;
+  wire        SS_PARD_N;
+  wire        SS_PAWR_N;
+  wire [ 7:0] SS_DO_CPU;
+  wire        SS_ROMSEL_N;
+  wire        SS_SYSCLKF_CE;
+  wire        SS_SYSCLKR_CE;
+
+  // Register access data from SNES.vhd
+  wire [ 7:0] SS_SPC_DO;
+  wire [ 7:0] SS_PPU_DO;
+
+  // Savestates module outputs
+  wire [ 7:0] ss_di_data;        // DI override data
+  wire        ss_di_data_en;     // DI override enable
+  wire        ss_busy_int;       // Internal ss_busy
+  wire [23:0] ss_rom_addr;       // ROM address override
+  wire        ss_rom_ovr;        // ROM address override enable
+  wire [19:0] ss_ext_addr_main;  // External address for SPC/BSRAM
+  wire        ss_aram_sel;
+  wire        ss_dsp_regs_sel;
+  wire        ss_smp_regs_sel;
+  wire        ss_bsram_sel;
+  wire        ss_dspn_regs_sel;
+  wire        ss_dspn_ram_sel;
+  wire        ss_gsu_regs_sel;
+
+  assign ss_busy_out = ss_busy_int;
+
+  savestates ss (
+      .reset_n  (RESET_N),
+      .clk      (clk_sys),
+
+      .save     (ss_save),
+      .load     (ss_load),
+
+      .ram_size (ram_size),
+      .rom_type (rom_type),
+
+      .sysclkf_ce(SS_SYSCLKF_CE),
+      .sysclkr_ce(SS_SYSCLKR_CE),
+
+      .romsel_n (SS_ROMSEL_N),
+
+      .rom_q    (ROM_Q),
+
+      .ca       (SS_CA),
+      .cpurd_n  (SS_CPURD_N),
+      .cpuwr_n  (SS_CPUWR_N),
+
+      .pa       (SS_PA),
+      .pard_n   (SS_PARD_N),
+      .pawr_n   (SS_PAWR_N),
+
+      .di       (SS_DO_CPU),
+      .ss_do    (ss_di_data),
+
+      .rom_addr (ss_rom_addr),
+
+      .ext_addr (ss_ext_addr_main),
+
+      .spc_di   (SS_SPC_DO),
+
+      // FIFO streaming interface
+      .ss_din   (ss_din),
+      .ss_dout  (ss_dout),
+      .ss_ack   (ss_fifo_ack),
+      .ss_req   (ss_fifo_req),
+      .ss_we    (ss_fifo_we),
+
+      .aram_sel     (ss_aram_sel),
+      .dsp_regs_sel (ss_dsp_regs_sel),
+      .smp_regs_sel (ss_smp_regs_sel),
+
+      .ppu_di   (SS_PPU_DO),
+
+      .bsram_sel    (ss_bsram_sel),
+      .bsram_di     (BSRAM_Q),
+
+      .dspn_regs_sel(ss_dspn_regs_sel),
+      .dspn_ram_sel (ss_dspn_ram_sel),
+      .dspn_di      (8'h00), // DSPn not wired yet
+
+      .gsu_regs_sel (ss_gsu_regs_sel),
+      .gsu_di       (8'h00), // GSU not wired yet
+
+      .sa1_active      (1'b0),
+      .sa1_a           (24'h0),
+      .sa1_di          (8'h0),
+      .sa1_rd_n        (1'b1),
+      .sa1_wr_n        (1'b1),
+      .sa1_sa1_romsel  (1'b0),
+      .sa1_sns_romsel  (1'b0),
+
+      .ss_do_ovr  (ss_di_data_en),
+      .ss_rom_ovr (ss_rom_ovr),
+      .ss_busy    (ss_busy_int)
+  );
+
+  // Override ROM address during save state to serve savestates.bin from SDRAM
+  wire [23:0] rom_addr_muxed = ss_rom_ovr ? ss_rom_addr : ROM_ADDR;
 
   ////////////////////////////  I/O PORTS  ////////////////////////////////
 
