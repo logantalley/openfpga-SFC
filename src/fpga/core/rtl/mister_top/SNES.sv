@@ -546,6 +546,12 @@ module MAIN_SNES (
   wire [15:0] ROM_D;
   wire [15:0] ROM_Q;
 
+  // Save state ROM address override (savestates module serves savestates.bin from SDRAM)
+  // These wires are driven by the savestates instantiation below.
+  wire [23:0] ss_rom_addr;
+  wire        ss_rom_ovr;
+  wire [23:0] rom_addr_muxed = ss_rom_ovr ? ss_rom_addr : ROM_ADDR;
+
   sdram sdram (
       .init(0),  //~clock_locked),
       .clk(clk_mem),
@@ -739,8 +745,6 @@ module MAIN_SNES (
   wire [ 7:0] ss_di_data;        // DI override data
   wire        ss_di_data_en;     // DI override enable
   wire        ss_busy_int;       // Internal ss_busy
-  wire [23:0] ss_rom_addr;       // ROM address override
-  wire        ss_rom_ovr;        // ROM address override enable
   wire [19:0] ss_ext_addr_main;  // External address for SPC/BSRAM
   wire        ss_aram_sel;
   wire        ss_dsp_regs_sel;
@@ -821,9 +825,6 @@ module MAIN_SNES (
       .ss_rom_ovr (ss_rom_ovr),
       .ss_busy    (ss_busy_int)
   );
-
-  // Override ROM address during save state to serve savestates.bin from SDRAM
-  wire [23:0] rom_addr_muxed = ss_rom_ovr ? ss_rom_addr : ROM_ADDR;
 
   ////////////////////////////  I/O PORTS  ////////////////////////////////
 

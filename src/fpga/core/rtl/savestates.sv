@@ -147,7 +147,7 @@ wire bsram_read = bsram_sel & ~pard_n;
 wire dspn_ram_read = dspn_ram_sel & ~pard_n;
 
 reg [2:0] ss_state;
-reg [7:0] ddr_data;
+reg [7:0] save_data;
 reg load_ready;
 
 wire ss_fifo_busy = ss_req != ss_ack;
@@ -284,7 +284,7 @@ always @(posedge clk) begin
 				ss_dout[63:8] <= 0; // Clear for possible partial last write
 			end
 
-			ss_dout[ss_data_addr[2:0]*8 +:8] <= ddr_data;
+			ss_dout[ss_data_addr[2:0]*8 +:8] <= save_data;
 
 			if (ss_data_addr[2:0] == 3'd7) begin // 8 bytes written
 				ss_state <= SS_SAVE;
@@ -425,10 +425,10 @@ end
 
 // Data to save FIFO
 always @(*) begin
-	ddr_data = di;
-	if (spc_read) ddr_data = spc_di;
-	if (bsram_read) ddr_data = bsram_di;
-	if (dspn_ram_read) ddr_data = dspn_di;
+	save_data = di;
+	if (spc_read) save_data = spc_di;
+	if (bsram_read) save_data = bsram_di;
+	if (dspn_ram_read) save_data = dspn_di;
 end
 
 assign ss_do_ovr = ss_busy & ss_oe;
