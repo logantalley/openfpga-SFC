@@ -326,6 +326,10 @@ module core_top (
     if (bridge_addr[31:28] == 4'h2) begin
       bridge_rd_data <= sd_read_data;
     end
+
+    if (bridge_addr[31:28] == 4'h4) begin
+      bridge_rd_data <= save_state_bridge_read_data;
+    end
   end
 
   always @(posedge clk_74a) begin
@@ -408,10 +412,10 @@ module core_top (
 
   wire dataslot_allcomplete;
 
-  wire savestate_supported = 0;
-  wire [31:0] savestate_addr;
-  wire [31:0] savestate_size;
-  wire [31:0] savestate_maxloadsize;
+  wire savestate_supported = 1;
+  wire [31:0] savestate_addr = 32'h40000000;
+  wire [31:0] savestate_size = 32'h80000;  // 512KB max
+  wire [31:0] savestate_maxloadsize = 32'h80000;
 
   wire savestate_start;
   wire savestate_start_ack;
@@ -495,6 +499,62 @@ module core_top (
       .datatable_wren(datatable_wren),
       .datatable_data(datatable_data),
       .datatable_q   (datatable_q)
+  );
+
+  // ===== Save State Controller =====
+  wire ss_busy;
+  wire [63:0] ss_din;
+  wire [63:0] ss_dout;
+  wire [16:0] ss_ddr_addr;
+  wire ss_rnw;
+  wire ss_req;
+  wire [7:0] ss_be;
+  wire ss_ack;
+  wire ss_we;
+
+  wire ss_save;
+  wire ss_load;
+
+  wire [31:0] save_state_bridge_read_data;
+
+  save_state_controller save_state_controller (
+      .clk_74a(clk_74a),
+      .clk_sys(clk_sys_21_48),
+
+      // APF Bridge
+      .bridge_wr(bridge_wr),
+      .bridge_rd(bridge_rd),
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr(bridge_addr),
+      .bridge_wr_data(bridge_wr_data),
+      .save_state_bridge_read_data(save_state_bridge_read_data),
+
+      // APF Save State Handshake
+      .savestate_load(savestate_load),
+      .savestate_load_ack_s(savestate_load_ack),
+      .savestate_load_busy_s(savestate_load_busy),
+      .savestate_load_ok_s(savestate_load_ok),
+      .savestate_load_err_s(savestate_load_err),
+
+      .savestate_start(savestate_start),
+      .savestate_start_ack_s(savestate_start_ack),
+      .savestate_start_busy_s(savestate_start_busy),
+      .savestate_start_ok_s(savestate_start_ok),
+      .savestate_start_err_s(savestate_start_err),
+
+      // Core-side savestate control
+      .ss_save(ss_save),
+      .ss_load(ss_load),
+
+      .ss_din (ss_din),
+      .ss_dout(ss_dout),
+      .ss_addr(ss_ddr_addr),
+      .ss_rnw (~ss_we),
+      .ss_req (ss_req),
+      .ss_be  (ss_be),
+      .ss_ack (ss_ack),
+
+      .ss_busy(ss_busy)
   );
 
   reg ioctl_download = 0;
@@ -779,6 +839,18 @@ module core_top (
       .mouse_enabled(mouse_enabled_s),
 
       .blend_enabled(blend_enabled_s),
+
+      // Save states — APF bridge interface
+      .ss_save(ss_save),
+      .ss_load(ss_load),
+      .ss_din(ss_dout),         // save_state_controller output → SNES input (load)
+      .ss_dout(ss_din),         // SNES output → save_state_controller input (save)
+      .ss_ack(ss_ack),
+      .ss_ddr_addr(ss_ddr_addr),
+      .ss_we(ss_we),
+      .ss_be(ss_be),
+      .ss_req(ss_req),
+      .ss_busy_out(ss_busy),
 
       // Input
       .p1_button_a(cont1_key_s[4]),

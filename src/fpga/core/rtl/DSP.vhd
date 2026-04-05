@@ -823,35 +823,35 @@ begin
 					when "0"&x"BF" => INTERP_POS(7)(15 downto 8) <= unsigned(SS_DI);
 					when "0"&x"C0" => ENV(0)(7 downto 0) <= signed(SS_DI);
 					when "0"&x"C1" =>
-						ENV_MODE(0) <= SS_DI(5 downto 4);
+						ENV_MODE(0) <= EnvMode_t'val(to_integer(unsigned(SS_DI(5 downto 4))));
 						ENV(0)(11 downto 8) <= signed(SS_DI(3 downto 0));
 					when "0"&x"C2" => ENV(1)(7 downto 0) <= signed(SS_DI);
 					when "0"&x"C3" =>
-						ENV_MODE(1) <= SS_DI(5 downto 4);
+						ENV_MODE(1) <= EnvMode_t'val(to_integer(unsigned(SS_DI(5 downto 4))));
 						ENV(1)(11 downto 8) <= signed(SS_DI(3 downto 0));
 					when "0"&x"C4" => ENV(2)(7 downto 0) <= signed(SS_DI);
 					when "0"&x"C5" =>
-						ENV_MODE(2) <= SS_DI(5 downto 4);
+						ENV_MODE(2) <= EnvMode_t'val(to_integer(unsigned(SS_DI(5 downto 4))));
 						ENV(2)(11 downto 8) <= signed(SS_DI(3 downto 0));
 					when "0"&x"C6" => ENV(3)(7 downto 0) <= signed(SS_DI);
 					when "0"&x"C7" =>
-						ENV_MODE(3) <= SS_DI(5 downto 4);
+						ENV_MODE(3) <= EnvMode_t'val(to_integer(unsigned(SS_DI(5 downto 4))));
 						ENV(3)(11 downto 8) <= signed(SS_DI(3 downto 0));
 					when "0"&x"C8" => ENV(4)(7 downto 0) <= signed(SS_DI);
 					when "0"&x"C9" =>
-						ENV_MODE(4) <= SS_DI(5 downto 4);
+						ENV_MODE(4) <= EnvMode_t'val(to_integer(unsigned(SS_DI(5 downto 4))));
 						ENV(4)(11 downto 8) <= signed(SS_DI(3 downto 0));
 					when "0"&x"CA" => ENV(5)(7 downto 0) <= signed(SS_DI);
 					when "0"&x"CB" =>
-						ENV_MODE(5) <= SS_DI(5 downto 4);
+						ENV_MODE(5) <= EnvMode_t'val(to_integer(unsigned(SS_DI(5 downto 4))));
 						ENV(5)(11 downto 8) <= signed(SS_DI(3 downto 0));
 					when "0"&x"CC" => ENV(6)(7 downto 0) <= signed(SS_DI);
 					when "0"&x"CD" =>
-						ENV_MODE(6) <= SS_DI(5 downto 4);
+						ENV_MODE(6) <= EnvMode_t'val(to_integer(unsigned(SS_DI(5 downto 4))));
 						ENV(6)(11 downto 8) <= signed(SS_DI(3 downto 0));
 					when "0"&x"CE" => ENV(7)(7 downto 0) <= signed(SS_DI);
 					when "0"&x"CF" =>
-						ENV_MODE(7) <= SS_DI(5 downto 4);
+						ENV_MODE(7) <= EnvMode_t'val(to_integer(unsigned(SS_DI(5 downto 4))));
 						ENV(7)(11 downto 8) <= signed(SS_DI(3 downto 0));
 					when "0"&x"D0" => LAST_ENV( 7 downto 0) <= signed(SS_DI);
 					when "0"&x"D1" => LAST_ENV(11 downto 8) <= signed(SS_DI(3 downto 0));
@@ -1427,21 +1427,21 @@ begin
 					when "0"&x"BE" => SS_REGS_DO <= std_logic_vector(INTERP_POS(7)(7 downto 0));
 					when "0"&x"BF" => SS_REGS_DO <= std_logic_vector(INTERP_POS(7)(15 downto 8));
 					when "0"&x"C0" => SS_REGS_DO <= std_logic_vector(ENV(0)(7 downto 0));
-					when "0"&x"C1" => SS_REGS_DO <= "00" & ENV_MODE(0) & std_logic_vector(ENV(0)(11 downto 8));
+					when "0"&x"C1" => SS_REGS_DO <= "00" & std_logic_vector(to_unsigned(EnvMode_t'pos(ENV_MODE(0)), 2)) & std_logic_vector(ENV(0)(11 downto 8));
 					when "0"&x"C2" => SS_REGS_DO <= std_logic_vector(ENV(1)(7 downto 0));
-					when "0"&x"C3" => SS_REGS_DO <= "00" & ENV_MODE(1) & std_logic_vector(ENV(1)(11 downto 8));
+					when "0"&x"C3" => SS_REGS_DO <= "00" & std_logic_vector(to_unsigned(EnvMode_t'pos(ENV_MODE(1)), 2)) & std_logic_vector(ENV(1)(11 downto 8));
 					when "0"&x"C4" => SS_REGS_DO <= std_logic_vector(ENV(2)(7 downto 0));
-					when "0"&x"C5" => SS_REGS_DO <= "00" & ENV_MODE(2) & std_logic_vector(ENV(2)(11 downto 8));
+					when "0"&x"C5" => SS_REGS_DO <= "00" & std_logic_vector(to_unsigned(EnvMode_t'pos(ENV_MODE(2)), 2)) & std_logic_vector(ENV(2)(11 downto 8));
 					when "0"&x"C6" => SS_REGS_DO <= std_logic_vector(ENV(3)(7 downto 0));
-					when "0"&x"C7" => SS_REGS_DO <= "00" & ENV_MODE(3) & std_logic_vector(ENV(3)(11 downto 8));
+					when "0"&x"C7" => SS_REGS_DO <= "00" & std_logic_vector(to_unsigned(EnvMode_t'pos(ENV_MODE(3)), 2)) & std_logic_vector(ENV(3)(11 downto 8));
 					when "0"&x"C8" => SS_REGS_DO <= std_logic_vector(ENV(4)(7 downto 0));
-					when "0"&x"C9" => SS_REGS_DO <= "00" & ENV_MODE(4) & std_logic_vector(ENV(4)(11 downto 8));
+					when "0"&x"C9" => SS_REGS_DO <= "00" & std_logic_vector(to_unsigned(EnvMode_t'pos(ENV_MODE(4)), 2)) & std_logic_vector(ENV(4)(11 downto 8));
 					when "0"&x"CA" => SS_REGS_DO <= std_logic_vector(ENV(5)(7 downto 0));
-					when "0"&x"CB" => SS_REGS_DO <= "00" & ENV_MODE(5) & std_logic_vector(ENV(5)(11 downto 8));
+					when "0"&x"CB" => SS_REGS_DO <= "00" & std_logic_vector(to_unsigned(EnvMode_t'pos(ENV_MODE(5)), 2)) & std_logic_vector(ENV(5)(11 downto 8));
 					when "0"&x"CC" => SS_REGS_DO <= std_logic_vector(ENV(6)(7 downto 0));
-					when "0"&x"CD" => SS_REGS_DO <= "00" & ENV_MODE(6) & std_logic_vector(ENV(6)(11 downto 8));
+					when "0"&x"CD" => SS_REGS_DO <= "00" & std_logic_vector(to_unsigned(EnvMode_t'pos(ENV_MODE(6)), 2)) & std_logic_vector(ENV(6)(11 downto 8));
 					when "0"&x"CE" => SS_REGS_DO <= std_logic_vector(ENV(7)(7 downto 0));
-					when "0"&x"CF" => SS_REGS_DO <= "00" & ENV_MODE(7) & std_logic_vector(ENV(7)(11 downto 8));
+					when "0"&x"CF" => SS_REGS_DO <= "00" & std_logic_vector(to_unsigned(EnvMode_t'pos(ENV_MODE(7)), 2)) & std_logic_vector(ENV(7)(11 downto 8));
 					when "0"&x"D0" => SS_REGS_DO <= std_logic_vector(LAST_ENV(7 downto 0));
 					when "0"&x"D1" => SS_REGS_DO <= "0000" & std_logic_vector(LAST_ENV(11 downto 8));
 					when "0"&x"D2" => SS_REGS_DO <= TENVX(0);

@@ -127,7 +127,23 @@ module main #(
     input             SS_WR,
     input       [7:0] SS_DI,
     output      [7:0] SS_SPC_DO,
-    output      [7:0] SS_PPU_DO
+    output      [7:0] SS_PPU_DO,
+
+    // Save state CPU bus outputs (for savestates.sv observation)
+    output     [23:0] SS_CA,
+    output             SS_CPURD_N,
+    output             SS_CPUWR_N,
+    output      [7:0] SS_PA,
+    output             SS_PARD_N,
+    output             SS_PAWR_N,
+    output      [7:0] SS_DO,
+    output             SS_ROMSEL_N,
+    output             SS_SYSCLKF_CE,
+    output             SS_SYSCLKR_CE,
+
+    // Save state DI override (from savestates.sv)
+    input       [7:0] SS_DI_DATA,
+    input              SS_DI_DATA_EN
 );
 
   parameter USE_DLH = 1'b1;
@@ -146,6 +162,18 @@ module main #(
   wire        SYSCLKF_CE;
   wire        SYSCLKR_CE;
   wire        REFRESH;
+
+  // Expose CPU bus signals for savestates.sv observation
+  assign SS_CA = CA;
+  assign SS_CPURD_N = CPURD_N;
+  assign SS_CPUWR_N = CPUWR_N;
+  assign SS_PA = PA;
+  assign SS_PARD_N = PARD_N;
+  assign SS_PAWR_N = PAWR_N;
+  assign SS_DO = DO;
+  assign SS_ROMSEL_N = ROMSEL_N;
+  assign SS_SYSCLKF_CE = SYSCLKF_CE;
+  assign SS_SYSCLKR_CE = SYSCLKR_CE;
 
   wire [ 5:0] MAP_ACTIVE;
 
@@ -857,6 +885,9 @@ module main #(
     endcase
 
     if (MSU_SEL) DI = MSU_DO;
+
+    // Save state DI override — highest priority, from savestates.sv
+    if (SS_DI_DATA_EN) DI = SS_DI_DATA;
   end
 
 endmodule

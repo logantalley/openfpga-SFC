@@ -2301,7 +2301,7 @@ begin
 			when x"00" => SS_DO <= FORCE_BLANK & "000" & MB;
 			when x"01" => SS_DO <= OBJSIZE & OBJNAME & OBJADDR;
 			when x"02" => SS_DO <= OAMADD(7 downto 0);
-			when x"03" => SS_DO <= OAMPRIO & "000000" & OAMADD(8);
+			when x"03" => SS_DO <= OAM_PRIO & "000000" & OAMADD(8);
 			when x"05" => SS_DO <= BG_SIZE & BG3PRIO & BG_MODE;
 			when x"06" => SS_DO <= MOSAIC_SIZE & BG_MOSAIC_EN;
 			when x"07" => SS_DO <= BG_SC_ADDR(BG1) & BG_SC_SIZE(BG1);
