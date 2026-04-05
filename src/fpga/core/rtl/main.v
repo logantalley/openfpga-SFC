@@ -119,34 +119,63 @@ module main #(
     output [15:0] AUDIO_L,
     output [15:0] AUDIO_R,
 
-    // -----------------------------------------------------------------------
-    // Save state CPU bus observation outputs (NEW)
-    // These are the internal SNES bus signals promoted to ports so that
-    // SNES.sv can wire them into savestates.sv without modifying any logic.
-    // -----------------------------------------------------------------------
-    output wire [23:0] CA,
-    output wire        CPURD_N,
-    output wire        CPUWR_N,
-    output wire  [7:0] PA,
-    output wire        PARD_N,
-    output wire        PAWR_N,
-    output wire  [7:0] DO,
-    output wire        ROMSEL_N,
-    output wire        SYSCLKF_CE,
-    output wire        SYSCLKR_CE
-    // -----------------------------------------------------------------------
+    // Save state interface (register access to SPC/DSP/PPU)
+    input       [8:0] SS_ADDR,
+    input             SS_BUSY,
+    input             SS_REGS_SEL,
+    input             SS_SMP_SEL,
+    input             SS_WR,
+    input       [7:0] SS_DI,
+    output      [7:0] SS_SPC_DO,
+    output      [7:0] SS_PPU_DO,
+
+    // Promoted CPU bus signals (for savestates module in SNES.sv)
+    output     [23:0] SS_CA,
+    output             SS_CPURD_N,
+    output             SS_CPUWR_N,
+    output      [7:0] SS_PA,
+    output             SS_PARD_N,
+    output             SS_PAWR_N,
+    output      [7:0] SS_DO_CPU,
+    output             SS_ROMSEL_N,
+    output             SS_SYSCLKF_CE,
+    output             SS_SYSCLKR_CE,
+
+    // Save state DI override (from savestates module)
+    input       [7:0] SS_DI_DATA,
+    input              SS_DI_DATA_EN
 );
 
   parameter USE_DLH = 1'b1;
 
-  // CA, CPURD_N, CPUWR_N, PA, PARD_N, PAWR_N, DO, ROMSEL_N, SYSCLKF_CE,
-  // SYSCLKR_CE are now ports (output wires) — no local declarations needed.
+  wire [23:0] CA;
+  wire        CPURD_N;
+  wire        CPUWR_N;
   reg  [ 7:0] DI;
+  wire [ 7:0] DO;
   wire        RAMSEL_N;
+  wire        ROMSEL_N;
   reg         IRQ_N;
+  wire [ 7:0] PA;
+  wire        PARD_N;
+  wire        PAWR_N;
+  wire        SYSCLKF_CE;
+  wire        SYSCLKR_CE;
   wire        REFRESH;
 
   wire [ 5:0] MAP_ACTIVE;
+
+  // Promote CPU bus signals for savestates module
+  assign SS_CA = CA;
+  assign SS_CPURD_N = CPURD_N;
+  assign SS_CPUWR_N = CPUWR_N;
+  assign SS_PA = PA;
+  assign SS_PARD_N = PARD_N;
+  assign SS_PAWR_N = PAWR_N;
+  assign SS_DO_CPU = DO;
+  assign SS_ROMSEL_N = ROMSEL_N;
+  assign SS_SYSCLKF_CE = SYSCLKF_CE;
+  assign SS_SYSCLKR_CE = SYSCLKR_CE;
 
   SNES SNES (
       .mclk  (MCLK),
@@ -238,7 +267,16 @@ module main #(
       .turbo(TURBO),
 
       .audio_l(AUDIO_L),
-      .audio_r(AUDIO_R)
+      .audio_r(AUDIO_R),
+
+      .ss_addr    (SS_ADDR),
+      .ss_busy    (SS_BUSY),
+      .ss_regs_sel(SS_REGS_SEL),
+      .ss_smp_sel (SS_SMP_SEL),
+      .ss_wr      (SS_WR),
+      .ss_di      (SS_DI),
+      .ss_spc_do  (SS_SPC_DO),
+      .ss_ppu_do  (SS_PPU_DO)
   );
 
   wire [7:0] MSU_DO;
@@ -723,6 +761,7 @@ module main #(
           .rom_mask  (ROM_MASK),
           .bsram_mask(RAM_MASK),
 
+
           .ext_rtc(EXT_RTC)
       );
     end else assign MAP_ACTIVE[5] = 0;
@@ -846,7 +885,9 @@ module main #(
     endcase
 
     if (MSU_SEL) DI = MSU_DO;
-  end
 
+    // Save state DI override (final priority, after all mapper and MSU muxing)
+    if (SS_DI_DATA_EN) DI = SS_DI_DATA;
+  end
 
 endmodule

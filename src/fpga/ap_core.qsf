@@ -755,10 +755,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/mister_top/data_loader.s
 set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/mister_top/psram.sv
 set_global_assignment -name QIP_FILE core/rtl/SPC700/SPC700.qip
 set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/mister_top/SNES.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/savestates.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/savestates_regs.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/savestates_map.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/savestates_sa1.sv
 set_global_assignment -name QIP_FILE core/rtl/65C816/65C816.qip
 set_global_assignment -name VHDL_FILE core/rtl/SWRAM.vhd
 set_global_assignment -name VHDL_FILE core/rtl/SNES.vhd
@@ -780,6 +776,11 @@ set_global_assignment -name VHDL_FILE core/rtl/bram.vhd
 set_global_assignment -name QIP_FILE core/rtl/chip/chip.qip
 set_global_assignment -name QIP_FILE apf/apf.qip
 set_global_assignment -name VERILOG_FILE core/core_bridge_cmd.v
+set_global_assignment -name SYSTEMVERILOG_FILE core/save_state_controller.sv
+set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/savestates.sv
+set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/savestates_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/savestates_map.sv
+set_global_assignment -name SYSTEMVERILOG_FILE core/rtl/savestates_sa1.sv
 set_global_assignment -name SDC_FILE core/core_constraints.sdc
 set_global_assignment -name SIGNALTAP_FILE core/stp1.stp
 set_global_assignment -name QIP_FILE core/mf_pllbase.qip

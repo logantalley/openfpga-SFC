@@ -9,6 +9,16 @@ module MAIN_SNES (
     // Settings
     input wire cpu_turbo_enabled,
     input wire gsu_turbo_enabled,
+    
+    // Save states - FIFO streaming interface
+    input  wire        ss_save,           // Save trigger from controller
+    input  wire        ss_load,           // Load trigger from controller
+    input  wire [63:0] ss_din,            // 64-bit load data from controller
+    output wire [63:0] ss_dout,           // 64-bit save data to controller
+    input  wire        ss_fifo_ack,       // FIFO acknowledge from controller
+    output wire        ss_fifo_req,       // FIFO request to controller
+    output wire        ss_fifo_we,        // FIFO write enable (1=save, 0=load)
+    output wire        ss_busy_out,       // Save state busy status
 
     input wire multitap_enabled,
     input wire lightgun_enabled,
@@ -145,20 +155,7 @@ module MAIN_SNES (
 
     // Audio
     output wire [15:0] audio_l,
-    output wire [15:0] audio_r,
-
-    // ---------- Save state ports ----------
-    output wire [16:0] sram_a,
-    output wire [15:0] sram_dq_o,
-    input  wire [15:0] sram_dq_i,
-    output wire        sram_oe_n,
-    output wire        sram_we_n,
-    output wire        sram_ub_n,
-    output wire        sram_lb_n,
-    input  wire        ss_save,
-    input  wire        ss_load,
-    output wire        ss_busy
-    // --------------------------------------
+    output wire [15:0] audio_r
 );
   parameter USE_CX4 = 1'b0;
   parameter USE_SDD1 = 1'b0;
@@ -229,6 +226,55 @@ module MAIN_SNES (
   //////////////////////////  ROM DETECT  /////////////////////////////////
 
   reg [23:0] rom_mask, ram_mask;
+  // Replaced by rom_parser
+  // always @(posedge clk_sys) begin
+  // 	reg [3:0] rom_size;
+  // 	reg [3:0] ram_size;
+  // 	reg       rom_region = 0;
+
+  // 	if (cart_download) begin
+  // 		if(ioctl_wr) begin
+  // 			if (ioctl_addr == 0) begin
+  // 				rom_size <= 4'hC;
+  // 				ram_size <= 4'h0;
+  // 				if(!LHRom_type && ioctl_dout[7:0]) {ram_size,rom_size} <= ioctl_dout[7:0];
+
+  // 				case(LHRom_type)
+  // 					1: rom_type <= 0;
+  // 					2: rom_type <= 0;
+  // 					3: rom_type <= 1;
+  // 					4: rom_type <= 2;
+  // 					default: rom_type <= ioctl_dout[15:8];
+  // 				endcase
+  // 			end
+
+  // 			if (ioctl_addr == 2) begin
+  // 				rom_region <= ioctl_dout[8];
+  // 			end
+
+  // 			if(LHRom_type == 2) begin
+  // 				if(ioctl_addr == ('h7FD6+'h200)) rom_size <= ioctl_dout[11:8];
+  // 				if(ioctl_addr == ('h7FD8+'h200)) ram_size <= ioctl_dout[3:0];
+  // 			end
+  // 			else if(LHRom_type == 3) begin
+  // 				if(ioctl_addr == ('hFFD6+'h200)) rom_size <= ioctl_dout[11:8];
+  // 				if(ioctl_addr == ('hFFD8+'h200)) ram_size <= ioctl_dout[3:0];
+  // 			end
+  // 			else if(LHRom_type == 4) begin
+  // 				if(ioctl_addr == ('h40FFD6+'h200)) rom_size <= ioctl_dout[11:8];
+  // 				if(ioctl_addr == ('h40FFD8+'h200)) ram_size <= ioctl_dout[3:0];
+  // 			end
+
+  // 			rom_mask <= (24'd1024 << rom_size) - 1'd1;
+  // 			ram_mask <= ram_size ? (24'd1024 << ram_size) - 1'd1 : 24'd0;
+
+  // 			sram_size <= ram_size;
+  // 		end
+  // 	end
+  // 	else begin
+  // 		PAL <= (!status[15:14]) ? rom_region : status[15];
+  // 	end
+  // end
 
   reg prev_cart_download;
   reg [2:0] parser_delay = 7;
@@ -277,43 +323,6 @@ module MAIN_SNES (
   wire [7:0] G;
   wire [7:0] B;
 
-  // ---------- Save state internal wires (NEW) ----------
-  // Signals savestates needs from the main CPU bus
-  wire [23:0] SS_CA;
-  wire        SS_CPURD_N;
-  wire        SS_CPUWR_N;
-  wire  [7:0] SS_PA;
-  wire        SS_PARD_N;
-  wire        SS_PAWR_N;
-  wire  [7:0] SS_DO;        // CPU data-out (what CPU is writing)
-  wire        SS_ROMSEL_N;
-  wire        SS_SYSCLKF_CE;
-  wire        SS_SYSCLKR_CE;
-
-  // Outputs from savestates back into the bus
-  wire  [7:0] ss_do_out;
-  wire        ss_do_ovr;
-  wire [23:0] ss_rom_addr;
-  wire        ss_rom_ovr;
-  wire [19:0] ss_ext_addr;
-
-  // ROM bus with save-state address/data override applied
-  wire [23:0] ROM_ADDR;
-  wire        ROM_OE_N;
-  wire        ROM_WE_N;
-  wire        ROM_WORD;
-  wire [15:0] ROM_D;
-  wire [15:0] ROM_Q_raw;   // raw data back from SDRAM
-
-  // When savestates is driving the CPU, replace ROM_Q low byte with ss_do
-  wire [15:0] ROM_Q = ss_do_ovr ? {ROM_Q_raw[15:8], ss_do_out} : ROM_Q_raw;
-
-  // When savestates needs to redirect ROM access (to savestates.bin at $FF:8000)
-  wire [23:0] sdram_addr = cart_download ? {1'b0, ioctl_addr}
-                         : ss_rom_ovr    ? ss_rom_addr
-                         :                ROM_ADDR;
-  // -----------------------------------------------------
-
   main #(
       .USE_CX4(USE_CX4),
       .USE_SDD1(USE_SDD1),
@@ -340,7 +349,7 @@ module MAIN_SNES (
 
       .ROM_ADDR(ROM_ADDR),
       .ROM_D(ROM_D),
-      .ROM_Q(ROM_Q),       // <-- now carries ss_do override when active
+      .ROM_Q(ROM_Q),
       .ROM_OE_N(ROM_OE_N),
       .ROM_WE_N(ROM_WE_N),
       .ROM_WORD(ROM_WORD),
@@ -412,6 +421,34 @@ module MAIN_SNES (
       .IO_DAT (ioctl_dout),
       .IO_WR  (spc_download & ioctl_wr),
 
+      // Save states - register access bus
+      // SS_ADDR/SS_REGS_SEL/SS_SMP_SEL are driven by the savestates module so
+      // DSP and SMP register bytes are properly sequenced during saves/loads.
+      .SS_ADDR    (ss_ext_addr_main[8:0]),
+      .SS_BUSY    (ss_busy_int),
+      .SS_REGS_SEL(ss_dsp_regs_sel),
+      .SS_SMP_SEL (ss_smp_regs_sel),
+      .SS_WR      (1'b0),
+      .SS_DI      (8'h0),
+      .SS_SPC_DO  (SS_SPC_DO),
+      .SS_PPU_DO  (SS_PPU_DO),
+
+      // Promoted CPU bus signals (for savestates module)
+      .SS_CA        (SS_CA),
+      .SS_CPURD_N   (SS_CPURD_N),
+      .SS_CPUWR_N   (SS_CPUWR_N),
+      .SS_PA        (SS_PA),
+      .SS_PARD_N    (SS_PARD_N),
+      .SS_PAWR_N    (SS_PAWR_N),
+      .SS_DO_CPU    (SS_DO_CPU),
+      .SS_ROMSEL_N  (SS_ROMSEL_N),
+      .SS_SYSCLKF_CE(SS_SYSCLKF_CE),
+      .SS_SYSCLKR_CE(SS_SYSCLKR_CE),
+
+      // Save state DI override
+      .SS_DI_DATA   (ss_di_data),
+      .SS_DI_DATA_EN(ss_di_data_en),
+
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),
 
@@ -423,23 +460,24 @@ module MAIN_SNES (
       .DBG_CPU_EN(1'b1),
 `endif
 
+      // MSU register handling
+      // .MSU_TRACK_NUM(msu_track_num),
+      // .MSU_TRACK_REQUEST(msu_track_request),
+      // .MSU_TRACK_MOUNTING(msu_track_mounting),
+      // .MSU_TRACK_MISSING(msu_track_missing),
+      // .MSU_VOLUME(msu_volume),
+      // .MSU_AUDIO_REPEAT(msu_audio_repeat),
+      // .MSU_AUDIO_STOP(msu_audio_stop),
+      // .MSU_AUDIO_PLAYING(msu_audio_playing),
+      // .MSU_DATA_ADDR(msu_data_addr),
+      // .MSU_DATA(msu_data),
+      // .MSU_DATA_ACK(msu_data_ack),
+      // .MSU_DATA_SEEK(msu_data_seek),
+      // .MSU_DATA_REQ(msu_data_req),
       .MSU_ENABLE(0),  // TODO
 
       .AUDIO_L(audio_l),
-      .AUDIO_R(audio_r),
-
-      // ---------- CPU bus outputs for savestates (NEW) ----------
-      .CA         (SS_CA),
-      .CPURD_N    (SS_CPURD_N),
-      .CPUWR_N    (SS_CPUWR_N),
-      .PA         (SS_PA),
-      .PARD_N     (SS_PARD_N),
-      .PAWR_N     (SS_PAWR_N),
-      .DO         (SS_DO),
-      .ROMSEL_N   (SS_ROMSEL_N),
-      .SYSCLKF_CE (SS_SYSCLKF_CE),
-      .SYSCLKR_CE (SS_SYSCLKR_CE)
-      // ----------------------------------------------------------
+      .AUDIO_R(audio_r)
   );
 
   wire reset = core_reset | cart_download | spc_download | bk_loading | clearing_ram | msu_data_download | parser_delay != 0;
@@ -501,18 +539,26 @@ module MAIN_SNES (
     endcase
   end
 
-  // ROM_ADDR, ROM_OE_N, ROM_WE_N, ROM_WORD, ROM_D declared above with
-  // the save state wires. ROM_Q_raw declared there too; ROM_Q is the
-  // override-capable version fed back into main.
+  wire [23:0] ROM_ADDR;
+  wire ROM_OE_N;
+  wire ROM_WE_N;
+  wire ROM_WORD;
+  wire [15:0] ROM_D;
+  wire [15:0] ROM_Q;
+
+  // Save state ROM address override (savestates module serves savestates.bin from SDRAM)
+  // These wires are driven by the savestates instantiation below.
+  wire [23:0] ss_rom_addr;
+  wire        ss_rom_ovr;
+  wire [23:0] rom_addr_muxed = ss_rom_ovr ? ss_rom_addr : ROM_ADDR;
 
   sdram sdram (
       .init(0),  //~clock_locked),
       .clk(clk_mem),
 
-      // Use sdram_addr so savestates can redirect to $FF:8000 (savestates.bin)
-      .addr(sdram_addr),
+      .addr(cart_download ? ioctl_addr : rom_addr_muxed),
       .din (cart_download ? ioctl_dout : ROM_D),
-      .dout(ROM_Q_raw),    // raw output; ROM_Q mux applied above
+      .dout(ROM_Q),
       .rd  (~cart_download & (RESET_N ? ~ROM_OE_N : RFSH)),
       .wr  (cart_download ? ioctl_wr : ~ROM_WE_N),
       .word(cart_download | ROM_WORD),
@@ -660,114 +706,154 @@ module MAIN_SNES (
   wire        BSRAM_OE_N;
   wire        BSRAM_WE_N;
   wire [7:0] BSRAM_Q, BSRAM_D;
-
-  // savestates drives bsram_sel when it needs to stream BSRAM over the
-  // peripheral bus.  Gate the normal mapper write-enable so the two
-  // drivers don't fight.
-  wire ss_bsram_sel;
-  wire bsram_write_en = clearing_ram ? 1'b1
-                      : ss_bsram_sel ? 1'b0          // ss owns the bus
-                      : ~BSRAM_CE_N & ~BSRAM_WE_N;
-
   dpram_dif #(BSRAM_BITS, 8, BSRAM_BITS - 1, 16) bsram (
       .clock(clk_sys),
 
       //Thrash the BSRAM upon ROM loading
       .address_a(clearing_ram ? mem_fill_addr[BSRAM_BITS-1:0] : BSRAM_ADDR[BSRAM_BITS-1:0]),
       .data_a(clearing_ram ? 8'hFF : BSRAM_D),
-      .wren_a(bsram_write_en),
+      .wren_a(clearing_ram ? 1'b1 : ~BSRAM_CE_N & ~BSRAM_WE_N),
       .q_a(BSRAM_Q),
 
+      // .address_b({sd_lba[BSRAM_BITS-10:0],sd_buff_addr}),
       .address_b(sd_buff_addr),
       .data_b(sd_buff_dout),
       .wren_b(sd_wr),
+      // .wren_b(sd_buff_wr & sd_ack),
       .q_b(sd_buff_din)
   );
 
-  ////////////////////////////  SAVE STATES  //////////////////////////////
+  ////////////////////////////  SAVE STATES  ////////////////////////////////
 
-  savestates savestates (
-      .reset_n     (RESET_N),
-      .clk         (clk_sys),
+  // CPU bus signals promoted from main.v
+  wire [23:0] SS_CA;
+  wire        SS_CPURD_N;
+  wire        SS_CPUWR_N;
+  wire [ 7:0] SS_PA;
+  wire        SS_PARD_N;
+  wire        SS_PAWR_N;
+  wire [ 7:0] SS_DO_CPU;
+  wire        SS_ROMSEL_N;
+  wire        SS_SYSCLKF_CE;
+  wire        SS_SYSCLKR_CE;
 
-      // APF triggers (already in clk_sys domain — caller synchronises)
-      .ss_save     (ss_save),
-      .ss_load     (ss_load),
+  // Register access data from SNES.vhd
+  wire [ 7:0] SS_SPC_DO;
+  wire [ 7:0] SS_PPU_DO;
 
-      // External async SRAM interface
-      .sram_a      (sram_a),
-      .sram_dq_o   (sram_dq_o),
-      .sram_dq_i   (sram_dq_i),
-      .sram_oe_n   (sram_oe_n),
-      .sram_we_n   (sram_we_n),
-      .sram_ub_n   (sram_ub_n),
-      .sram_lb_n   (sram_lb_n),
+  // Savestates module outputs
+  wire [ 7:0] ss_di_data;        // DI override data
+  wire        ss_di_data_en;     // DI override enable
+  wire        ss_busy_int;       // Internal ss_busy
+  wire [19:0] ss_ext_addr_main;  // External address for SPC/BSRAM
+  wire        ss_aram_sel;
+  wire        ss_dsp_regs_sel;
+  wire        ss_smp_regs_sel;
+  wire        ss_bsram_sel;
+  wire        ss_dspn_regs_sel;
+  wire        ss_dspn_ram_sel;
+  wire        ss_gsu_regs_sel;
 
-      // ROM config
-      .ram_size    (ram_size),
-      .rom_type    (rom_type),
+  assign ss_busy_out = ss_busy_int;
 
-      // SNES clock enables
-      .sysclkf_ce  (SS_SYSCLKF_CE),
-      .sysclkr_ce  (SS_SYSCLKR_CE),
+  savestates ss (
+      .reset_n  (RESET_N),
+      .clk      (clk_sys),
 
-      // SNES CPU bus
-      .romsel_n    (SS_ROMSEL_N),
-      .ca          (SS_CA),
-      .cpurd_n     (SS_CPURD_N),
-      .cpuwr_n     (SS_CPUWR_N),
+      .save     (ss_save),
+      .load     (ss_load),
 
-      // SNES peripheral bus
-      .pa          (SS_PA),
-      .pard_n      (SS_PARD_N),
-      .pawr_n      (SS_PAWR_N),
+      .ram_size (ram_size),
+      .rom_type (rom_type),
 
-      // Data bus
-      .di          (SS_DO),        // what the CPU is writing
-      .ss_do       (ss_do_out),    // override data back to CPU
+      .sysclkf_ce(SS_SYSCLKF_CE),
+      .sysclkr_ce(SS_SYSCLKR_CE),
 
-      // ROM address override
-      .rom_addr    (ss_rom_addr),
-      .ext_addr    (ss_ext_addr),
+      .romsel_n (SS_ROMSEL_N),
 
-      // SPC700 / APU
-      .spc_di      (ARAM_Q),
+      .rom_q    (ROM_Q),
 
-      // PPU register readback — ROM_Q_raw low byte is valid during $C1:21xx
-      // reads because savestates itself drives the address; use raw here so
-      // we don't create a combinational loop through the ROM_Q mux.
-      .ppu_di      (ROM_Q_raw[7:0]),
+      .ca       (SS_CA),
+      .cpurd_n  (SS_CPURD_N),
+      .cpuwr_n  (SS_CPUWR_N),
 
-      // BSRAM
-      .bsram_sel   (ss_bsram_sel),
-      .bsram_di    (BSRAM_Q),
+      .pa       (SS_PA),
+      .pard_n   (SS_PARD_N),
+      .pawr_n   (SS_PAWR_N),
 
-      // DSPn — tie off when not present; savestates_map handles gating
-      .dspn_regs_sel(),
-      .dspn_ram_sel (),
-      .dspn_di     (8'h00),
+      .di       (SS_DO_CPU),
+      .ss_do    (ss_di_data),
 
-      // GSU (SuperFX)
-      .gsu_regs_sel(),
-      .gsu_di      (8'h00),
+      .rom_addr (ss_rom_addr),
 
-      // SA-1 — disabled for now
+      .ext_addr (ss_ext_addr_main),
+
+      .spc_di   (SS_SPC_DO),
+
+      // FIFO streaming interface
+      .ss_din   (ss_din),
+      .ss_dout  (ss_dout),
+      .ss_ack   (ss_fifo_ack),
+      .ss_req   (ss_fifo_req),
+      .ss_we    (ss_fifo_we),
+
+      .aram_sel     (ss_aram_sel),
+      .dsp_regs_sel (ss_dsp_regs_sel),
+      .smp_regs_sel (ss_smp_regs_sel),
+
+      .ppu_di   (SS_PPU_DO),
+
+      .bsram_sel    (ss_bsram_sel),
+      .bsram_di     (BSRAM_Q),
+
+      .dspn_regs_sel(ss_dspn_regs_sel),
+      .dspn_ram_sel (ss_dspn_ram_sel),
+      .dspn_di      (8'h00), // DSPn not wired yet
+
+      .gsu_regs_sel (ss_gsu_regs_sel),
+      .gsu_di       (8'h00), // GSU not wired yet
+
       .sa1_active      (1'b0),
       .sa1_a           (24'h0),
-      .sa1_di          (8'h00),
+      .sa1_di          (8'h0),
       .sa1_rd_n        (1'b1),
       .sa1_wr_n        (1'b1),
-      .sa1_sa1_romsel  (1'b1),
-      .sa1_sns_romsel  (1'b1),
+      .sa1_sa1_romsel  (1'b0),
+      .sa1_sns_romsel  (1'b0),
 
-      // Bus override qualifiers
-      .ss_do_ovr   (ss_do_ovr),
-      .ss_rom_ovr  (ss_rom_ovr),
-      .ss_busy     (ss_busy)
+      .ss_do_ovr  (ss_di_data_en),
+      .ss_rom_ovr (ss_rom_ovr),
+      .ss_busy    (ss_busy_int)
   );
 
   ////////////////////////////  I/O PORTS  ////////////////////////////////
 
+  // assign {UART_RTS, UART_DTR} = 1;
+  // wire [15:0] uart_data;
+  // wire piano_joypad_do;
+  // wire piano = status[43];
+  // miraclepiano miracle(
+  // 	.clk(clk_sys),
+  // 	.reset(reset || !piano),
+  // 	.strobe(JOY_STRB),
+  // 	.joypad_o(piano_joypad_do),
+  // 	.joypad_clock(JOY1_CLK),
+  // 	.data_o(uart_data),
+  // 	.txd(UART_TXD),
+  // 	.rxd(UART_RXD)
+  // );
+  // Trigger r = 9,
+  // Trigger l = 8
+  // x = 6
+  // a = 4
+  // right = 0
+  // left = 1
+  // down = 2
+  // up = 3
+  // start = 11
+  // select = 10
+  // y = 7
+  // b = 5
   wire [11:0] joy0 = {
     p1_button_start,
     p1_button_select,
@@ -909,6 +995,18 @@ module MAIN_SNES (
       .PORT_DO(LG_DO)
   );
 
+  // 1 [oooo|ooo) 7 - 1:+5V  2:Clk  3:Strobe   4:D0  5:D1  6: I/O  7:Gnd
+
+  // Indexes:
+  // IDXDIR   Function    USBPIN
+  // 0  OUT   Strobe      D+
+  // 1  OUT   Clk (P1)    D-
+  // 2  IN    D1          TX-
+  // 3  OUT   CLK (P2)    GND_d
+  // 4  BI    I/O         RX+
+  // 5  IN    P1D0        RX-
+  // 6  IN    P2D0        TX+
+
   wire raw_serial = status[8];
   reg                          snac_p2 = 0;
 
@@ -954,19 +1052,178 @@ module MAIN_SNES (
 
   /////////////////////////  STATE SAVE/LOAD  /////////////////////////////
 
+  // wire bk_save_write = ~BSRAM_CE_N & ~BSRAM_WE_N;
+  // reg bk_pending;
+
+  // always @(posedge clk_sys) begin
+  // 	if (bk_ena && ~OSD_STATUS && bk_save_write)
+  // 		bk_pending <= 1'b1;
+  // 	else if (bk_state | ~bk_ena)
+  // 		bk_pending <= 1'b0;
+  // end
+
   reg bk_ena = 0;
   reg old_downloading = 0;
   always @(posedge clk_sys) begin
     old_downloading <= cart_download;
     if (~old_downloading & cart_download) bk_ena <= 0;
+
+    //Save file always mounted in the end of downloading state.
+    // if(cart_download && img_mounted && !img_readonly) bk_ena <= |ram_mask; // TODO
   end
 
+  // wire bk_load    = status[12];
+  // wire bk_save    = status[13] | (bk_pending & OSD_STATUS && status[23]);
   reg bk_loading = 0;
   reg bk_state = 0;
 
+  // always @(posedge clk_sys) begin
+  // 	reg old_load = 0, old_save = 0, old_ack;
+
+  // 	old_load <= bk_load & bk_ena;
+  // 	old_save <= bk_save & bk_ena;
+  // 	old_ack  <= sd_ack;
+
+  // 	if(~old_ack & sd_ack) {sd_rd, sd_wr} <= 0;
+
+  // 	if(!bk_state) begin
+  // 		if((~old_load & bk_load) | (~old_save & bk_save)) begin
+  // 			bk_state <= 1;
+  // 			bk_loading <= bk_load;
+  // 			sd_lba <= 0;
+  // 			sd_rd <=  bk_load;
+  // 			sd_wr <= ~bk_load;
+  // 		end
+  // 		if(old_downloading & ~cart_download & |img_size & bk_ena) begin
+  // 			bk_state <= 1;
+  // 			bk_loading <= 1;
+  // 			sd_lba <= 0;
+  // 			sd_rd <= 1;
+  // 			sd_wr <= 0;
+  // 		end
+  // 	end else begin
+  // 		if(old_ack & ~sd_ack) begin
+  // 			if(sd_lba >= ram_mask[23:9]) begin
+  // 				bk_loading <= 0;
+  // 				bk_state <= 0;
+  // 			end else begin
+  // 				sd_lba <= sd_lba + 1'd1;
+  // 				sd_rd  <=  bk_loading;
+  // 				sd_wr  <= ~bk_loading;
+  // 			end
+  // 		end
+  // 	end
+  // end
+
   ///////////////////////////  MSU1  ///////////////////////////////////
 
+  // wire msu_enable;
+  // wire msu_audio_download = ioctl_download & ioctl_index[5:0] == 6'h02;
+  // wire msu_data_download  = ioctl_download & ioctl_index[5:0] == 6'h03;
   wire msu_data_download = 0;
 
+  // // EXT bus is used to communicate with the HPS for MSU functionality
+  // wire [35:0] EXT_BUS;
+  // hps_ext hps_ext
+  // (
+  // 	.reset(reset),
+  // 	.clk_sys(clk_sys),
+  // 	.EXT_BUS(EXT_BUS),
+
+  // 	.msu_enable(msu_enable),
+
+  // 	.msu_track_mounting(msu_track_mounting),
+  // 	.msu_track_missing(msu_track_missing),
+  // 	.msu_track_num(msu_track_num),
+  // 	.msu_track_request(msu_track_request),
+
+  // 	.msu_audio_size(msu_audio_size),
+  // 	.msu_audio_ack(msu_audio_ack),
+  // 	.msu_audio_req(msu_audio_req),
+  // 	.msu_audio_seek(msu_audio_seek),
+  // 	.msu_audio_sector(msu_audio_sector),
+  // 	.msu_audio_download(msu_audio_download),
+
+  // 	.msu_data_base(msu_data_base)
+  // );
+
+  // wire        msu_track_mounting;
+  // wire        msu_track_missing;
+  // wire [15:0] msu_track_num;
+  // wire        msu_track_request;
+  // wire [31:0] msu_audio_size;
+
+  // wire  [7:0] msu_volume;
+  // wire        msu_audio_repeat;
+  // wire        msu_audio_playing;
+  // wire        msu_audio_stop;
+
+  // wire        msu_audio_ack;
+  // wire        msu_audio_req;
+  // wire        msu_audio_seek;
+  // wire [21:0] msu_audio_sector;
+
+  // wire [15:0] msu_l;
+  // wire [15:0] msu_r;
+
+  // msu_audio msu_audio
+  // (
+  // 	.reset(reset),
+
+  // 	.clk(clk_sys),
+  // 	.clk_rate(PAL ? 21281370 : 21477270),
+
+  // 	.ctl_volume(msu_volume),
+  // 	.ctl_stop(msu_audio_stop),
+  // 	.ctl_play(msu_audio_playing),
+  // 	.ctl_repeat(msu_audio_repeat),
+
+  // 	.track_size(msu_audio_size),
+  // 	.track_processing(msu_track_missing | msu_track_mounting | msu_track_request),
+
+  // 	.audio_download(msu_audio_download),
+  // 	.audio_data(ioctl_dout),
+  // 	.audio_data_wr(ioctl_wr),
+
+  // 	.audio_ack(msu_audio_ack),
+  // 	.audio_sector(msu_audio_sector),
+  // 	.audio_req(msu_audio_req),
+  // 	.audio_seek(msu_audio_seek),
+
+  // 	.audio_l(msu_l),
+  // 	.audio_r(msu_r)
+  // );
+
+  // reg [15:0] audio_l, audio_r;
+
+  // always @(posedge clk_sys) begin
+  // 	reg [16:0] mix_l, mix_r;
+
+  // 	mix_l = $signed({main_audio_l[15], main_audio_l}) + $signed({msu_l[15], msu_l});
+  // 	mix_r = $signed({main_audio_r[15], main_audio_r}) + $signed({msu_r[15], msu_r});
+
+  // 	audio_l <= (^mix_l[16:15]) ? {mix_l[16], {15{mix_l[15]}}} : mix_l[15:0];
+  // 	audio_r <= (^mix_r[16:15]) ? {mix_r[16], {15{mix_r[15]}}} : mix_r[15:0];
+  // end
+
+  // wire [31:0] msu_data_addr;
+  // wire  [7:0] msu_data;
+  // wire        msu_data_ack;
+  // wire        msu_data_seek;
+  // wire        msu_data_req;
+  // wire [31:0] msu_data_base;
+
+  // assign DDRAM_CLK = clk_mem;
+
+  // msu_data_store msu_data_store
+  // (
+  // 	.*,
+  // 	.rd_next(msu_data_req),
+  // 	.rd_seek(msu_data_seek),
+  // 	.rd_seek_done(msu_data_ack),
+  // 	.rd_addr(msu_data_addr),
+  // 	.rd_dout(msu_data),
+  // 	.base_addr(msu_data_base)
+  // );
 
 endmodule
