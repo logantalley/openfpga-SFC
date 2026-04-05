@@ -166,6 +166,8 @@ architecture rtl of SNES is
 
 	signal SS_DSP_DO  : std_logic_vector(7 downto 0);
 	signal SS_SMP_DO  : std_logic_vector(7 downto 0);
+	signal SPC_S0     : std_logic;
+	signal DSP_EN     : std_logic;
 
 	component CODES is
 		generic(
@@ -376,6 +378,7 @@ begin
 		CPU_DO		=> SMP_CPU_DO,
 		CS				=> INT_PA(6),
 		CS_N			=> INT_PA(7),
+		SPC_S0		=> SPC_S0,
  
 		IO_ADDR		=> IO_ADDR,
 		IO_DAT  		=> IO_DAT,
@@ -388,11 +391,12 @@ begin
 	);
 
 	-- DSP 
+	DSP_EN <= ENABLE and not (SS_BUSY and SPC_S0);
 	DSP: entity work.DSP 
 	port map (
 		CLK			=> DSPCLK,
 		RST_N			=> RST_N,
-		ENABLE		=> ENABLE,
+		ENABLE		=> DSP_EN,
 		PAL			=> PAL,
 				
 		SMP_EN    	=> SMP_EN,
