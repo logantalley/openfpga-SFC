@@ -404,7 +404,9 @@ module save_state_controller (
           sram_word_idx        <= 2'd0;
           // Set up first write: address + data, assert WE_n
           sram_a       <= {core_sram_base, 2'b00};
-          sram_dq_out  <= {core_wr_data[23:16], core_wr_data[31:24]}; // word 0, direct compute
+          // Use core_wr_data directly (not core_wr_word_0) because
+          // latched_core_wr_data is non-blocking and not yet updated this cycle
+          sram_dq_out  <= {core_wr_data[23:16], core_wr_data[31:24]}; // word 0
           sram_dq_oe   <= 1;
           sram_we_n    <= 0;
           sram_state   <= SRAM_CORE_WR;
