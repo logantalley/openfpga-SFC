@@ -287,8 +287,11 @@ module save_state_controller (
 
         if (new_ddr_req) begin
           // First request from savestates.sv — data available
+          // Signal ok immediately so APF starts reading (streaming, matching GBC)
           state <= SAVE_WAIT_REQ_DELAY;
           fifo_save_write_req <= 1;
+          savestate_start_busy <= 0;
+          savestate_start_ok <= 1;
         end else if (prev_ss_busy && ~ss_busy) begin
           // Save ended before any DDR stream request completed
           state <= NONE;
@@ -302,11 +305,9 @@ module save_state_controller (
         if (new_ddr_req) begin
           state <= SAVE_WAIT_REQ_DELAY;
           fifo_save_write_req <= 1;
-        end else if (prev_ss_busy && ~ss_busy) begin
-          // Core finished saving
+        end else if (~ss_busy) begin
+          // Core finished saving — all data streamed through FIFO
           state <= NONE;
-          savestate_start_busy <= 0;
-          savestate_start_ok <= 1;
         end
       end
 
@@ -318,8 +319,13 @@ module save_state_controller (
       SAVE_WAIT_ACK: begin
         // Wait for bridge to drain save FIFO word
         if (fifo_save_wr_empty) begin
-          state <= SAVE_WAIT_REQ;
           ss_ack <= ~ss_ack;  // Toggle ack back to savestates.sv
+          if (~ss_busy) begin
+            // Save already completed while draining last FIFO entry
+            state <= NONE;
+          end else begin
+            state <= SAVE_WAIT_REQ;
+          end
         end
       end
 
