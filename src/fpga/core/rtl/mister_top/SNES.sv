@@ -321,32 +321,6 @@ module MAIN_SNES (
   assign vblank = ~vblank_n;
   assign hblank = ~hblank_n;
 
-  // Savestate internal wires
-  wire        ss_busy_int;
-  wire  [8:0] ss_addr_int;
-  wire        ss_regs_sel_int;
-  wire        ss_smp_sel_int;
-  wire        ss_wr_int;
-  wire  [7:0] ss_di_int;
-  wire  [7:0] ss_spc_do_int;
-  wire  [7:0] ss_ppu_do_int;
-
-  // CPU bus signals from main.v for savestates.sv observation
-  wire [23:0] main_ca;
-  wire        main_cpurd_n;
-  wire        main_cpuwr_n;
-  wire  [7:0] main_pa;
-  wire        main_pard_n;
-  wire        main_pawr_n;
-  wire  [7:0] main_do;
-  wire        main_romsel_n;
-  wire        main_sysclkf_ce;
-  wire        main_sysclkr_ce;
-
-  // Savestate DI override
-  wire  [7:0] ss_di_data_ovr;
-  wire        ss_di_data_ovr_en;
-
   wire [7:0] R;
   wire [7:0] G;
   wire [7:0] B;
@@ -372,6 +346,7 @@ module MAIN_SNES (
       .ROM_TYPE(rom_type),
       .ROM_MASK(rom_mask),
       .RAM_MASK(ram_mask),
+      .RAM_SIZE(ram_size),
       .PAL(PAL),
       .BLEND(blend_enabled),
 
@@ -449,31 +424,17 @@ module MAIN_SNES (
       .IO_DAT (ioctl_dout),
       .IO_WR  (spc_download & ioctl_wr),
 
-      // Save states — internal interface to SNES.vhd
-      .SS_ADDR    (ss_addr_int),
-      .SS_BUSY    (ss_busy_int),
-      .SS_REGS_SEL(ss_regs_sel_int),
-      .SS_SMP_SEL (ss_smp_sel_int),
-      .SS_WR      (ss_wr_int),
-      .SS_DI      (ss_di_int),
-      .SS_SPC_DO  (ss_spc_do_int),
-      .SS_PPU_DO  (ss_ppu_do_int),
-
-      // Save states — CPU bus outputs for savestates.sv
-      .SS_CA        (main_ca),
-      .SS_CPURD_N   (main_cpurd_n),
-      .SS_CPUWR_N   (main_cpuwr_n),
-      .SS_PA        (main_pa),
-      .SS_PARD_N    (main_pard_n),
-      .SS_PAWR_N    (main_pawr_n),
-      .SS_DO        (main_do),
-      .SS_ROMSEL_N  (main_romsel_n),
-      .SS_SYSCLKF_CE(main_sysclkf_ce),
-      .SS_SYSCLKR_CE(main_sysclkr_ce),
-
-      // Save states — DI override from savestates.sv
-      .SS_DI_DATA   (ss_di_data_ovr),
-      .SS_DI_DATA_EN(ss_di_data_ovr_en),
+      // Save states — DDR interface (to save_state_controller via core_top)
+      .SS_SAVE    (ss_save),
+      .SS_LOAD    (ss_load),
+      .SS_DDR_DI  (ss_din),
+      .SS_DDR_ACK (ss_ack),
+      .SS_DDR_DO  (ss_dout),
+      .SS_DDR_ADDR(ss_ddr_addr),
+      .SS_DDR_WE  (ss_we),
+      .SS_DDR_BE  (ss_be),
+      .SS_DDR_REQ (ss_req),
+      .SS_BUSY_OUT(ss_busy_out),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),
@@ -525,108 +486,6 @@ module MAIN_SNES (
     video_b <= (LG_TARGET && lightgun_enabled) ? {8{LG_TARGET[2]}} : B;
   end
 
-  /////////////////////////  SAVE STATES  ///////////////////////////////
-
-  wire [23:0] ss_rom_addr;
-  wire        ss_rom_ovr;
-  wire        ss_do_ovr_int;
-  wire  [7:0] ss_do_int;
-  wire [19:0] ss_ext_addr;
-  wire        ss_aram_sel;
-  wire        ss_dsp_regs_sel;
-  wire        ss_smp_regs_sel;
-  wire        ss_bsram_sel;
-  wire        ss_dspn_regs_sel;
-  wire        ss_dspn_ram_sel;
-  wire        ss_gsu_regs_sel;
-
-  // Drive SS_* signals for main.v → SNES.vhd from savestates.sv
-  assign ss_addr_int = ss_ext_addr[8:0];
-  assign ss_busy_int = ss_busy_out;
-  assign ss_regs_sel_int = ss_dsp_regs_sel;
-  assign ss_smp_sel_int = ss_smp_regs_sel;
-  // SS_WR: active during PA bus writes to SMP/DSP register space
-  assign ss_wr_int = (ss_smp_regs_sel | ss_dsp_regs_sel) & ~main_pawr_n;
-  // SS_DI: CPU data output during register writes
-  assign ss_di_int = main_do;
-
-  // DI override for main.v — savestates.sv provides data when ss_do_ovr is active
-  assign ss_di_data_ovr = ss_do_int;
-  assign ss_di_data_ovr_en = ss_do_ovr_int;
-
-  assign ss_busy_out = ss_busy_w;
-  wire ss_busy_w;
-
-  savestates ss_inst (
-      .reset_n(RESET_N),
-      .clk(clk_sys),
-
-      .save(ss_save),
-      .load(ss_load),
-
-      .ram_size(ram_size),
-      .rom_type(rom_type),
-
-      .sysclkf_ce(main_sysclkf_ce),
-      .sysclkr_ce(main_sysclkr_ce),
-
-      .romsel_n(main_romsel_n),
-
-      .rom_q(ROM_Q),
-
-      .ca(main_ca),
-      .cpurd_n(main_cpurd_n),
-      .cpuwr_n(main_cpuwr_n),
-
-      .pa(main_pa),
-      .pard_n(main_pard_n),
-      .pawr_n(main_pawr_n),
-
-      .di(main_do),
-      .ss_do(ss_do_int),
-
-      .rom_addr(ss_rom_addr),
-      .ext_addr(ss_ext_addr),
-
-      .spc_di(ss_spc_do_int),
-
-      .ddr_di(ss_din),
-      .ddr_do(ss_dout),
-      .ddr_ack(ss_ack),
-      .ddr_addr(ss_ddr_addr),
-      .ddr_we(ss_we),
-      .ddr_be(ss_be),
-      .ddr_req(ss_req),
-
-      .aram_sel(ss_aram_sel),
-      .dsp_regs_sel(ss_dsp_regs_sel),
-      .smp_regs_sel(ss_smp_regs_sel),
-
-      .ppu_di(ss_ppu_do_int),
-
-      .bsram_sel(ss_bsram_sel),
-      .bsram_di(BSRAM_Q),
-
-      .dspn_regs_sel(ss_dspn_regs_sel),
-      .dspn_ram_sel(ss_dspn_ram_sel),
-      .dspn_di(8'h00),
-
-      .gsu_regs_sel(ss_gsu_regs_sel),
-      .gsu_di(8'h00),
-
-      .sa1_active(1'b0),
-      .sa1_a(24'h000000),
-      .sa1_di(8'h00),
-      .sa1_rd_n(1'b1),
-      .sa1_wr_n(1'b1),
-      .sa1_sa1_romsel(1'b0),
-      .sa1_sns_romsel(1'b0),
-
-      .ss_do_ovr(ss_do_ovr_int),
-      .ss_rom_ovr(ss_rom_ovr),
-      .ss_busy(ss_busy_w)
-  );
-
   ////////////////////////////  MEMORY  ///////////////////////////////////
 
   reg [16:0] mem_fill_addr;
@@ -674,14 +533,11 @@ module MAIN_SNES (
   wire [15:0] ROM_D;
   wire [15:0] ROM_Q;
 
-  // Override ROM address with savestates.bin address when ss_rom_ovr is active
-  wire [23:0] rom_addr_final = ss_rom_ovr ? ss_rom_addr : ROM_ADDR;
-
   sdram sdram (
       .init(0),  //~clock_locked),
       .clk(clk_mem),
 
-      .addr(cart_download ? ioctl_addr : rom_addr_final),
+      .addr(cart_download ? ioctl_addr : ROM_ADDR),
       .din (cart_download ? ioctl_dout : ROM_D),
       .dout(ROM_Q),
       .rd  (~cart_download & (RESET_N ? ~ROM_OE_N : RFSH)),
