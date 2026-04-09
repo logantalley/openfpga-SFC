@@ -169,7 +169,7 @@ module save_state_controller (
   );
   defparam fifo_save.intended_device_family = "Cyclone V",
       fifo_save.lpm_numwords = 4,
-      fifo_save.lpm_showahead = "OFF",
+      fifo_save.lpm_showahead = "ON",
       fifo_save.lpm_type = "dcfifo_mixed_widths",
       fifo_save.lpm_width = 64,
       fifo_save.lpm_widthu = 2,
@@ -289,9 +289,11 @@ module save_state_controller (
           // First request from savestates.sv — data available
           state <= SAVE_WAIT_REQ_DELAY;
           fifo_save_write_req <= 1;
-
+        end else if (prev_ss_busy && ~ss_busy) begin
+          // Save ended before any DDR stream request completed
+          state <= NONE;
           savestate_start_busy <= 0;
-          savestate_start_ok <= 1;
+          savestate_start_err <= 1;
         end
       end
 
@@ -303,6 +305,8 @@ module save_state_controller (
         end else if (prev_ss_busy && ~ss_busy) begin
           // Core finished saving
           state <= NONE;
+          savestate_start_busy <= 0;
+          savestate_start_ok <= 1;
         end
       end
 

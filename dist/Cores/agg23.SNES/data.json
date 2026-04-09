@@ -25,7 +25,7 @@
         "id": 64,
         "required": true,
         "parameters": "0x100",
-        "address": "0x10FF8000",
+        "address": "0x10FF0000",
         "filename": "savestates.bin"
       }
     ]
