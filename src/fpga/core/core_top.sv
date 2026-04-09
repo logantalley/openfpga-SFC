@@ -293,12 +293,8 @@ module core_top (
   //   assign dram_cas_n              = 'h1;
   //   assign dram_we_n               = 'h1;
 
-  assign sram_a                  = 'h0;
-  assign sram_dq                 = {16{1'bZ}};
-  assign sram_oe_n               = 1;
-  assign sram_we_n               = 1;
-  assign sram_ub_n               = 1;
-  assign sram_lb_n               = 1;
+  // SRAM pins routed to save_state_controller (declared as wires, driven by module)
+  // assign sram_a, sram_dq, sram_oe_n, sram_we_n, sram_ub_n, sram_lb_n below
 
   assign dbg_tx                  = 1'bZ;
   assign user1                   = 1'bZ;
@@ -414,8 +410,8 @@ module core_top (
 
   wire savestate_supported = 1;
   wire [31:0] savestate_addr = 32'h40000000;
-  wire [31:0] savestate_size = 32'h80000;  // 512KB max
-  wire [31:0] savestate_maxloadsize = 32'h80000;
+  wire [31:0] savestate_size = 32'h40000;  // 256KB — matches SRAM capacity
+  wire [31:0] savestate_maxloadsize = 32'h40000;
 
   wire savestate_start;
   wire savestate_start_ack;
@@ -554,7 +550,15 @@ module core_top (
       .ss_be  (ss_be),
       .ss_ack (ss_ack),
 
-      .ss_busy(ss_busy)
+      .ss_busy(ss_busy),
+
+      // SRAM interface
+      .sram_a   (sram_a),
+      .sram_dq  (sram_dq),
+      .sram_oe_n(sram_oe_n),
+      .sram_we_n(sram_we_n),
+      .sram_ub_n(sram_ub_n),
+      .sram_lb_n(sram_lb_n)
   );
 
   reg ioctl_download = 0;
