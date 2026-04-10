@@ -157,6 +157,22 @@ wire ddr_busy = ddr_req != ddr_ack;
 localparam DDR_IDLE = 4'd0, LOAD_DATA = 4'd1, WRITE_DATA = 4'd2,
 			DDR_END = 4'd6;
 
+// ===== Load double-buffer =====
+// During DMA-based load, the savestates.bin code reads $C06000 continuously
+// without polling ddr_busy between 8-byte chunks.  The SRAM fetch via CDC
+// takes ~487 ns, but the next DMA byte arrives in ~372 ns, so ddr_di still
+// has the OLD chunk when byte 0 of the next chunk is read.
+//
+// Fix: buffer the current chunk in load_buf; prefetch the next chunk into
+// ddr_di in the background.  Swap at each 8-byte boundary.
+reg [63:0] load_buf;        // Current chunk data being read by CPU
+reg        load_buf_valid;  // load_buf contains valid data
+reg        load_pf_ready;   // Prefetch completed, ddr_di has next chunk
+reg [19:0] load_pf_addr;    // Address for next LOAD_DATA during prefetch
+reg        prev_ddr_busy_r; // For falling-edge detection
+
+wire load_fetch_done = load_en & prev_ddr_busy_r & ~ddr_busy;
+
 // Detect if NMI is being used. Some games do not use NMI during game play.
 reg [15:0] nmi_cycle_cnt, nmi_read_sr;
 wire ss_use_nmi = |nmi_read_sr;
@@ -187,13 +203,21 @@ always @(posedge clk) begin
 		ss_ext_addr <= 0;
 		ss_ext_addr_inc <= 0;
 		ddr_state <= DDR_IDLE;
+		load_buf_valid <= 0;
+		load_pf_ready <= 0;
+		load_pf_addr <= 0;
+		prev_ddr_busy_r <= 0;
 	end else begin
+		prev_ddr_busy_r <= ddr_busy;
+
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
 				save_en <= 1;
 			end else if (~load_old & load) begin
 				load_en <= 1;
 				load_ready <= 1; // APF handles file validity, no header check needed
+				load_buf_valid <= 0;
+				load_pf_ready <= 0;
 			end
 		end
 
@@ -223,7 +247,10 @@ always @(posedge clk) begin
 			if (ss_addr_sel) begin // Reset save state address
 				ss_data_addr <= 20'd0;
 				if (load_en) begin
-					// Request new data when address is reset
+					// Request first chunk when address is reset
+					load_pf_addr <= 20'd0;
+					load_buf_valid <= 0;
+					load_pf_ready <= 0;
 					ddr_state <= LOAD_DATA;
 				end
 			end
@@ -253,8 +280,19 @@ always @(posedge clk) begin
 				ss_data_addr <= ss_data_addr + 1'b1;
 				ss_data_addr_inc <= 0;
 				if (cpurd_ce_n & (ss_data_addr[2:0] == 3'd7)) begin
-					// Request next 8 bytes
-					ddr_state <= LOAD_DATA;
+					if (load_en) begin
+						// Swap pre-fetched data into load_buf and start
+						// prefetch for the following chunk.  The prefetch
+						// always completes in ~487 ns while reading 8 bytes
+						// takes ~2976 ns, so load_pf_ready is guaranteed
+						// true here under normal timing.
+						load_buf <= ddr_di;
+						load_pf_ready <= 0;
+						ddr_state <= LOAD_DATA;
+					end else begin
+						// Original path (should not occur — reads are load-only)
+						ddr_state <= LOAD_DATA;
+					end
 				end
 			end
 		end
@@ -290,7 +328,12 @@ always @(posedge clk) begin
 		if (ddr_req == ddr_ack) begin
 			case(ddr_state)
 				LOAD_DATA: begin
-					ss_ddr_addr <= ss_data_addr;
+					if (load_en) begin
+						ss_ddr_addr <= load_pf_addr;
+						load_pf_addr <= load_pf_addr + 20'd8;
+					end else begin
+						ss_ddr_addr <= ss_data_addr;
+					end
 					ddr_req <= ~ddr_req;
 					ddr_state <= DDR_END;
 				end
@@ -306,6 +349,23 @@ always @(posedge clk) begin
 				end
 			endcase
 
+		end
+
+		// ---- Load prefetch completion handler ----
+		// Detects ddr_busy falling edge (prev_ddr_busy_r was 1, ddr_busy is 0).
+		// This fires on the same cycle as DDR_END → DDR_IDLE.  Because this
+		// block appears AFTER the case block above, its ddr_state assignment
+		// overrides DDR_END's DDR_IDLE (last non-blocking write wins).
+		if (load_fetch_done) begin
+			if (~load_buf_valid) begin
+				// First chunk arrived — copy to read buffer and prefetch next
+				load_buf       <= ddr_di;
+				load_buf_valid <= 1;
+				ddr_state      <= LOAD_DATA; // prefetch chunk 1
+			end else begin
+				// Subsequent prefetch completed — mark ready for byte-7 swap
+				load_pf_ready <= 1;
+			end
 		end
 	end
 end
@@ -399,8 +459,21 @@ wire ss_oe = ss_data_sel | ss_status_sel | nmi_vect | irq_vect |
 
 always @(posedge clk) begin
 	ss_do <= 8'h00;
-	if (ss_data_sel) ss_do <= ddr_di[ss_data_addr[2:0]*8 +:8];
-	if (ss_status_sel) ss_do <= { 6'd0, ddr_busy, save_en };
+	if (ss_data_sel) begin
+		if (load_en)
+			ss_do <= load_buf[ss_data_addr[2:0]*8 +:8];
+		else
+			ss_do <= ddr_di[ss_data_addr[2:0]*8 +:8];
+	end
+	if (ss_status_sel) begin
+		if (load_en)
+			// During load, report ~load_buf_valid as the busy bit so that
+			// the savestates.bin polling loop (AND #$02, BNE) still works:
+			// 0 = buffer ready (proceed), 1 = waiting for first chunk.
+			ss_do <= { 6'd0, ~load_buf_valid, 1'b0 };
+		else
+			ss_do <= { 6'd0, ddr_busy, save_en };
+	end
 	if (nmi_vect_l | irq_vect_l) ss_do <= nmi_vect_addr[7:0];
 	if (nmi_vect_h | irq_vect_h) ss_do <= nmi_vect_addr[15:8];
 	if (ss_ramsize_sel) ss_do <= { 4'd0, ram_size };
