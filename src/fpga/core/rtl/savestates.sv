@@ -467,6 +467,9 @@ always @(posedge clk) begin
 	end
 	if (ss_status_sel) begin
 		if (load_en)
+			// During load, report ~load_buf_valid as the busy bit so that
+			// the savestates.bin polling loop (AND #$02, BNE) still works:
+			// 0 = buffer ready (proceed), 1 = waiting for first chunk.
 			ss_do <= { 6'd0, ~load_buf_valid, 1'b0 };
 		else
 			ss_do <= { 6'd0, ddr_busy, save_en };
