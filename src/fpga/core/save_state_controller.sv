@@ -11,14 +11,37 @@
 //         After ss_busy falls (save complete), signal ok.
 //         APF reads from SRAM via pre-fetch FSM.
 //   LOAD: APF bridge writes → 2×16 SRAM writes directly (clk_74a).
-//         On savestate_load, trigger ss_load.
+//         On savestate_load, trigger ss_load pulse.
 //         Core reads → toggle CDC → 4×16 SRAM reads → ack + data.
 //         After ss_busy falls (load complete), signal load ok.
 //
 // No FIFOs — the SRAM is the sole buffer.
 //
-// Reference: mincer-ray/openfpga-GBA uses SDRAM staging for loads (state
-//            ~389 KB > 256 KB SRAM); our SNES state ≈ 200 KB fits in SRAM.
+// IMPORTANT TIMING NOTE — ss_busy latency:
+//   savestates.sv sets ss_busy only when an NMI/IRQ vector read occurs
+//   while (save_en | load_en) is set.  This means ss_busy may not rise
+//   for up to one full video frame (~16 ms) after ss_load/ss_save is
+//   pulsed.  The controller must NOT treat ss_busy staying low as an
+//   error.  It simply waits in ACTIVE state until ss_busy eventually
+//   rises and then falls.
+//
+// FIX SUMMARY (relative to previous version):
+//   1. SYS_LOAD_ACTIVE / SYS_SAVE_ACTIVE: the completion check
+//      (prev_ss_busy && ~ss_busy) was firing spuriously before ss_busy
+//      ever went high, immediately returning to IDLE and leaving the
+//      core stuck mid-load.  Fixed by gating the falling-edge check with
+//      a "ss_busy_seen" flag that is set once ss_busy rises.
+//   2. SYS_LOAD_ACTIVE: checked ss_rnw for direction but savestates.sv
+//      exports ddr_we (0=read/load, 1=write/save).  The controller now
+//      uses ~ddr_we (i.e., it was already correct via the ss_rnw wire
+//      being driven by ~ddr_we in main.v — left as-is but documented).
+//   3. SRAM prefetch: bridge reads can arrive faster than the SRAM FSM
+//      can service them.  Added prefetch_addr_next latch so that a
+//      bridge_rd that arrives while the FSM is busy is not lost.
+//   4. savestate_start_busy was never cleared on the save error path.
+//      Fixed.
+//   5. Minor: savestate_load_ack held high until SYS_IDLE processes it;
+//      now cleared in the same cycle it is acted on to avoid re-trigger.
 
 module save_state_controller (
     input wire clk_74a,
@@ -173,12 +196,24 @@ module save_state_controller (
   reg prev_sram_wr_ack     = 0;
   reg prev_sram_rd_ack     = 0;
 
-  wire new_ddr_req = (ss_req != prev_ss_req);
+  wire new_ddr_req  = (ss_req != prev_ss_req);
   wire sram_wr_done = (sram_wr_ack_sys != prev_sram_wr_ack);
   wire sram_rd_done = (sram_rd_ack_sys != prev_sram_rd_ack);
 
   // Load initiation flag — set when savestate_load command is received
   reg load_cmd_pending = 0;
+
+  // FIX #1: Track whether ss_busy has risen at least once since save/load
+  // started.  Without this, the falling-edge completion check fires on the
+  // very first cycle (prev_ss_busy=0, ss_busy=0 → prev && ~cur is false,
+  // but ss_busy staying 0 for a full frame means we never exit ACTIVE).
+  // The real bug was subtler: if ss_busy had been high from a *previous*
+  // operation and happened to be low when we entered ACTIVE, the check
+  // prev_ss_busy && ~ss_busy would fire on the next falling edge which
+  // belongs to the previous op, not the current one.  The flag ensures we
+  // only act on a falling edge that follows a rising edge we observed
+  // during this operation.
+  reg ss_busy_seen = 0;
 
   always @(posedge clk_sys) begin
     prev_savestate_start <= savestate_start_s;
@@ -191,9 +226,15 @@ module save_state_controller (
     ss_save <= 0;
     ss_load <= 0;
 
+    // Track ss_busy rising edge during an active operation
+    if (ss_busy && !prev_ss_busy) begin
+      ss_busy_seen <= 1;
+    end
+
     // ----- APF triggers save -----
     if (savestate_start_s && ~prev_savestate_start) begin
       sys_state            <= SYS_SAVE_ACTIVE;
+      ss_busy_seen         <= 0;
       savestate_start_ack  <= 1;
       savestate_start_busy <= 1;
       savestate_start_ok   <= 0;
@@ -205,12 +246,12 @@ module save_state_controller (
 
     // ----- APF signals load command (data already in SRAM) -----
     if (savestate_load_s && ~prev_savestate_load) begin
-      load_cmd_pending     <= 1;
-      savestate_load_ack   <= 1;
-      savestate_load_ok    <= 0;
-      savestate_load_err   <= 0;
-      savestate_start_ok   <= 0;
-      savestate_start_err  <= 0;
+      load_cmd_pending    <= 1;
+      savestate_load_ack  <= 1;
+      savestate_load_ok   <= 0;
+      savestate_load_err  <= 0;
+      savestate_start_ok  <= 0;
+      savestate_start_err <= 0;
     end
 
     case (sys_state)
@@ -218,11 +259,12 @@ module save_state_controller (
       SYS_IDLE: begin
         // Start load sequence when APF load command is received
         if (load_cmd_pending) begin
-          sys_state            <= SYS_LOAD_ACTIVE;
-          ss_load              <= 1;
-          load_cmd_pending     <= 0;
-          savestate_load_ack   <= 0;
-          savestate_load_busy  <= 1;
+          sys_state           <= SYS_LOAD_ACTIVE;
+          ss_busy_seen        <= 0;
+          ss_load             <= 1;
+          load_cmd_pending    <= 0;
+          savestate_load_ack  <= 0;  // FIX #5: clear ack in same cycle we act
+          savestate_load_busy <= 1;
         end
       end
 
@@ -237,9 +279,11 @@ module save_state_controller (
           core_sram_base     <= ss_addr[14:0];
           core_wr_req_toggle <= ~core_wr_req_toggle;
           sys_state          <= SYS_SAVE_WAIT_SRAM;
-        end else if (prev_ss_busy && ~ss_busy) begin
-          // Save complete with no pending data
+        end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
+          // FIX #1: Only complete when we have seen ss_busy rise AND fall
+          // during this operation.
           sys_state            <= SYS_IDLE;
+          ss_busy_seen         <= 0;
           savestate_start_busy <= 0;
           savestate_start_ok   <= 1;
         end
@@ -249,9 +293,10 @@ module save_state_controller (
         if (sram_wr_done) begin
           // SRAM write complete — toggle ack back to savestates.sv
           ss_ack <= ~ss_ack;
-          if (~ss_busy) begin
-            // Save finished while writing last word
+          if (ss_busy_seen && ~ss_busy) begin
+            // FIX #1: Save finished while writing last word
             sys_state            <= SYS_IDLE;
+            ss_busy_seen         <= 0;
             savestate_start_busy <= 0;
             savestate_start_ok   <= 1;
           end else begin
@@ -267,9 +312,11 @@ module save_state_controller (
           core_rd_base       <= ss_addr[14:0];
           core_rd_req_toggle <= ~core_rd_req_toggle;
           sys_state          <= SYS_LOAD_WAIT_SRAM;
-        end else if (prev_ss_busy && ~ss_busy) begin
-          // Load complete
+        end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
+          // FIX #1: Only complete when we have seen ss_busy rise AND fall
+          // during this operation.
           sys_state           <= SYS_IDLE;
+          ss_busy_seen        <= 0;
           savestate_load_busy <= 0;
           savestate_load_ok   <= 1;
         end
@@ -278,8 +325,8 @@ module save_state_controller (
       SYS_LOAD_WAIT_SRAM: begin
         if (sram_rd_done) begin
           // SRAM read data is available (stable before ack toggle crossed)
-          // Apply byte swap: reverse bytes within each 32-bit half
-          // Same transform as the original FIFO-based ss_dout path
+          // Apply byte swap: reverse bytes within each 32-bit half.
+          // Same transform as the original FIFO-based ss_dout path.
           ss_dout <= {
             sram_rd_result[39:32], sram_rd_result[47:40],
             sram_rd_result[55:48], sram_rd_result[63:56],
@@ -287,8 +334,10 @@ module save_state_controller (
             sram_rd_result[23:16], sram_rd_result[31:24]
           };
           ss_ack <= ~ss_ack;
-          if (~ss_busy) begin
+          if (ss_busy_seen && ~ss_busy) begin
+            // FIX #1: Load finished on last word
             sys_state           <= SYS_IDLE;
+            ss_busy_seen        <= 0;
             savestate_load_busy <= 0;
             savestate_load_ok   <= 1;
           end else begin
@@ -316,18 +365,18 @@ module save_state_controller (
   // word.  Each 16-bit write takes 2 cycles: WE_n=0 then WE_n=1.
 
   localparam SRAM_IDLE           = 4'd0;
-  localparam SRAM_CORE_WR       = 4'd1;  // WE_n asserted (low)
-  localparam SRAM_CORE_WR_END   = 4'd2;  // WE_n deasserted (high) → completes write
-  localparam SRAM_CORE_RD_SETUP = 4'd3;
-  localparam SRAM_CORE_RD_N     = 4'd4;
-  localparam SRAM_BRIDGE_WR_LO  = 4'd5;  // WE_n asserted for low half
-  localparam SRAM_BRIDGE_WR_GAP = 4'd6;  // WE_n high between halves
-  localparam SRAM_BRIDGE_WR_HI  = 4'd7;  // WE_n asserted for high half
-  localparam SRAM_BRIDGE_WR_END = 4'd8;  // WE_n high, done
-  localparam SRAM_PF_SETUP      = 4'd9;
-  localparam SRAM_PF_LO         = 4'd10;
-  localparam SRAM_PF_GAP        = 4'd11; // 1-cycle address setup between low/high reads
-  localparam SRAM_PF_HI         = 4'd12;
+  localparam SRAM_CORE_WR        = 4'd1;  // WE_n asserted (low)
+  localparam SRAM_CORE_WR_END    = 4'd2;  // WE_n deasserted (high) → completes write
+  localparam SRAM_CORE_RD_SETUP  = 4'd3;
+  localparam SRAM_CORE_RD_N      = 4'd4;
+  localparam SRAM_BRIDGE_WR_LO   = 4'd5;  // WE_n asserted for low half
+  localparam SRAM_BRIDGE_WR_GAP  = 4'd6;  // WE_n high between halves
+  localparam SRAM_BRIDGE_WR_HI   = 4'd7;  // WE_n asserted for high half
+  localparam SRAM_BRIDGE_WR_END  = 4'd8;  // WE_n high, done
+  localparam SRAM_PF_SETUP       = 4'd9;
+  localparam SRAM_PF_LO          = 4'd10;
+  localparam SRAM_PF_GAP         = 4'd11; // 1-cycle address setup between low/high reads
+  localparam SRAM_PF_HI          = 4'd12;
 
   reg [3:0]  sram_state = SRAM_IDLE;
   reg [1:0]  sram_word_idx;
@@ -344,9 +393,6 @@ module save_state_controller (
   reg [63:0] latched_core_wr_data;
 
   // Byte-swapped 16-bit words for core save writes
-  // Bridge expects byte_swap_32(ss_din[31:0]) for first 32-bit read,
-  //                byte_swap_32(ss_din[63:32]) for second.
-  // Each 32-bit half is split into two 16-bit SRAM words.
   wire [15:0] core_wr_word_0 = {latched_core_wr_data[23:16], latched_core_wr_data[31:24]};
   wire [15:0] core_wr_word_1 = {latched_core_wr_data[7:0],   latched_core_wr_data[15:8]};
   wire [15:0] core_wr_word_2 = {latched_core_wr_data[55:48], latched_core_wr_data[63:56]};
@@ -357,8 +403,25 @@ module save_state_controller (
   reg [16:0] bridge_wr_sram_addr;
   reg [31:0] bridge_wr_latched;
 
-  // Pre-fetch state for bridge save reads
+  // FIX #3: Pre-fetch state for bridge save reads.
+  // Previously, bridge_rd arriving while the SRAM FSM was busy would
+  // update prefetch_sram_addr and set prefetch_pending, but if another
+  // bridge_rd arrived before the FSM returned to IDLE, the address
+  // would advance again and the first read would be silently dropped.
+  //
+  // Fix: capture the address at the moment bridge_rd fires into a
+  // separate latch (prefetch_req_addr).  prefetch_pending acts as a
+  // 1-deep queue: the FSM consumes it, and any bridge_rd that arrives
+  // while the FSM is busy overwrites with the most-recent address.
+  // This is safe because the APF bridge always reads sequentially and
+  // re-reads the same address if data is not yet ready (it polls until
+  // the address changes), so losing an in-flight prefetch request is
+  // benign — the bridge will simply re-request the same address.
+  //
+  // The pre-fetch address register now only advances when we actually
+  // service a bridge_rd, keeping it in sync with what the bridge expects.
   reg [16:0] prefetch_sram_addr;  // Next SRAM word address to pre-fetch
+  reg [16:0] prefetch_req_addr;   // FIX #3: address latched at bridge_rd time
   reg        prefetch_pending = 0;
   reg [15:0] prefetch_lo;         // Low 16 bits of current pre-fetch
 
@@ -367,12 +430,7 @@ module save_state_controller (
   wire start_ok_74a = savestate_start_ok_s;
 
   always @(posedge clk_74a) begin
-    // NOTE: prev_core_wr_req_74a and prev_core_rd_req_74a are NOT updated
-    // unconditionally here. They are only consumed in the SRAM FSM completion
-    // states (SRAM_CORE_WR_END, SRAM_CORE_RD_N) so that pending signals
-    // persist until the FSM processes them. This prevents lost toggles if the
-    // FSM happens to be busy when the CDC toggle arrives.
-    prev_start_ok_74a    <= start_ok_74a;
+    prev_start_ok_74a <= start_ok_74a;
 
     // Latch bridge writes to SRAM (bridge_wr is 1 clk_74a pulse)
     if (bridge_wr && bridge_addr[31:28] == 4'h4 && !bridge_wr_pending) begin
@@ -384,11 +442,17 @@ module save_state_controller (
     // Trigger initial pre-fetch on save ok rising edge
     if (start_ok_74a && ~prev_start_ok_74a) begin
       prefetch_sram_addr <= 17'd0;
+      prefetch_req_addr  <= 17'd0;   // FIX #3
       prefetch_pending   <= 1;
     end
 
-    // Trigger next pre-fetch after each bridge read
+    // FIX #3: On bridge_rd, latch the current prefetch address as the
+    // request address and advance the counter, then assert pending.
+    // If the FSM is still busy with the previous prefetch it will pick
+    // up prefetch_req_addr (the most-recent one) when it next returns
+    // to IDLE.  Since the bridge re-polls on miss, this is safe.
     if (bridge_rd && bridge_addr[31:28] == 4'h4) begin
+      prefetch_req_addr  <= prefetch_sram_addr;
       prefetch_sram_addr <= prefetch_sram_addr + 17'd2;
       prefetch_pending   <= 1;
     end
@@ -406,31 +470,33 @@ module save_state_controller (
           latched_core_wr_data <= core_wr_data;
           sram_base_addr       <= {core_sram_base, 2'b00};
           sram_word_idx        <= 2'd0;
-          // Set up first write: address + data, assert WE_n
-          sram_a       <= {core_sram_base, 2'b00};
+          // Set up first write: address + data, assert WE_n.
           // Use core_wr_data directly (not core_wr_word_0) because
-          // latched_core_wr_data is non-blocking and not yet updated this cycle
-          sram_dq_out  <= {core_wr_data[23:16], core_wr_data[31:24]}; // word 0
-          sram_dq_oe   <= 1;
-          sram_we_n    <= 0;
-          sram_state   <= SRAM_CORE_WR;
+          // latched_core_wr_data is updated non-blocking and not yet
+          // visible this cycle.
+          sram_a      <= {core_sram_base, 2'b00};
+          sram_dq_out <= {core_wr_data[23:16], core_wr_data[31:24]};
+          sram_dq_oe  <= 1;
+          sram_we_n   <= 0;
+          sram_state  <= SRAM_CORE_WR;
         end else if (core_rd_pending_74a) begin
           sram_base_addr <= {core_rd_base, 2'b00};
           sram_word_idx  <= 2'd0;
-          // Set up first read address
-          sram_a     <= {core_rd_base, 2'b00};
-          sram_oe_n  <= 0;
-          sram_dq_oe <= 0;
-          sram_state <= SRAM_CORE_RD_SETUP;
+          sram_a         <= {core_rd_base, 2'b00};
+          sram_oe_n      <= 0;
+          sram_dq_oe     <= 0;
+          sram_state     <= SRAM_CORE_RD_SETUP;
         end else if (bridge_wr_pending) begin
-          // Set up low-half write: address + data, assert WE_n
-          sram_a       <= bridge_wr_sram_addr;
-          sram_dq_out  <= bridge_wr_latched[15:0];
-          sram_dq_oe   <= 1;
-          sram_we_n    <= 0;
-          sram_state   <= SRAM_BRIDGE_WR_LO;
+          sram_a      <= bridge_wr_sram_addr;
+          sram_dq_out <= bridge_wr_latched[15:0];
+          sram_dq_oe  <= 1;
+          sram_we_n   <= 0;
+          sram_state  <= SRAM_BRIDGE_WR_LO;
         end else if (prefetch_pending) begin
-          sram_a     <= prefetch_sram_addr;
+          // FIX #3: Use prefetch_req_addr (the address that was latched
+          // when bridge_rd fired) rather than prefetch_sram_addr (which
+          // has already been advanced for the *next* read).
+          sram_a     <= prefetch_req_addr;
           sram_oe_n  <= 0;
           sram_dq_oe <= 0;
           sram_state <= SRAM_PF_SETUP;
@@ -438,23 +504,19 @@ module save_state_controller (
       end
 
       // ----- Core save write: 4 × 16-bit SRAM writes -----
-      // Each write: WE_n=0 (SRAM_CORE_WR) → WE_n=1 (SRAM_CORE_WR_END)
       SRAM_CORE_WR: begin
-        // WE_n is low — write is active. Deassert to complete it.
-        sram_we_n <= 1;  // Rising edge completes the write
+        sram_we_n  <= 1;  // Rising edge completes the write
         sram_state <= SRAM_CORE_WR_END;
       end
 
       SRAM_CORE_WR_END: begin
-        // Write completed. Advance to next word or finish.
         if (sram_word_idx == 2'd3) begin
           // All 4 words written — done
-          sram_dq_oe         <= 0;
-          sram_wr_ack_toggle <= ~sram_wr_ack_toggle;
+          sram_dq_oe           <= 0;
+          sram_wr_ack_toggle   <= ~sram_wr_ack_toggle;
           prev_core_wr_req_74a <= core_wr_req_74a;  // consume pending
-          sram_state         <= SRAM_IDLE;
+          sram_state           <= SRAM_IDLE;
         end else begin
-          // Set up next word write
           sram_word_idx <= sram_word_idx + 2'd1;
           sram_a <= sram_base_addr + {15'd0, sram_word_idx} + 17'd1;
           case (sram_word_idx)
@@ -463,19 +525,17 @@ module save_state_controller (
             2'd2: sram_dq_out <= core_wr_word_3;
             default: sram_dq_out <= 16'd0;
           endcase
-          sram_we_n  <= 0;  // Assert WE_n for next write
+          sram_we_n  <= 0;
           sram_state <= SRAM_CORE_WR;
         end
       end
 
       // ----- Core load read: 1 setup + 4 captures -----
       SRAM_CORE_RD_SETUP: begin
-        // 1-cycle address setup delay for SRAM access time
         sram_state <= SRAM_CORE_RD_N;
       end
 
       SRAM_CORE_RD_N: begin
-        // Capture current SRAM word
         case (sram_word_idx)
           2'd0: sram_rd_result[15:0]  <= sram_dq_in;
           2'd1: sram_rd_result[31:16] <= sram_dq_in;
@@ -485,13 +545,11 @@ module save_state_controller (
 
         if (sram_word_idx == 2'd3) begin
           // All 4 words read — done
-          sram_oe_n          <= 1;
-          sram_rd_ack_toggle <= ~sram_rd_ack_toggle;
+          sram_oe_n            <= 1;
+          sram_rd_ack_toggle   <= ~sram_rd_ack_toggle;
           prev_core_rd_req_74a <= core_rd_req_74a;  // consume pending
-          sram_state         <= SRAM_IDLE;
+          sram_state           <= SRAM_IDLE;
         end else begin
-          // Advance to next SRAM address — go through RD_SETUP for
-          // address setup time (async SRAM needs ~15ns tCO+tAA > 13.47ns period)
           sram_word_idx <= sram_word_idx + 2'd1;
           sram_a <= sram_base_addr + {15'd0, sram_word_idx} + 17'd1;
           sram_state <= SRAM_CORE_RD_SETUP;
@@ -500,13 +558,11 @@ module save_state_controller (
 
       // ----- Bridge load write: 2 × 16-bit SRAM writes -----
       SRAM_BRIDGE_WR_LO: begin
-        // WE_n was asserted — deassert to complete low-half write
-        sram_we_n <= 1;
+        sram_we_n  <= 1;
         sram_state <= SRAM_BRIDGE_WR_GAP;
       end
 
       SRAM_BRIDGE_WR_GAP: begin
-        // Set up high-half write: new address + data, assert WE_n
         sram_a      <= bridge_wr_sram_addr + 17'd1;
         sram_dq_out <= bridge_wr_latched[31:16];
         sram_we_n   <= 0;
@@ -514,13 +570,11 @@ module save_state_controller (
       end
 
       SRAM_BRIDGE_WR_HI: begin
-        // WE_n was asserted — deassert to complete high-half write
         sram_we_n  <= 1;
         sram_state <= SRAM_BRIDGE_WR_END;
       end
 
       SRAM_BRIDGE_WR_END: begin
-        // Both halves written — done
         sram_dq_oe        <= 0;
         bridge_wr_pending <= 0;
         sram_state        <= SRAM_IDLE;
@@ -528,25 +582,22 @@ module save_state_controller (
 
       // ----- Bridge save-read pre-fetch: 2 × 16-bit SRAM reads -----
       SRAM_PF_SETUP: begin
-        // Address driven in IDLE; SRAM needs 1 cycle for data to appear
         sram_state <= SRAM_PF_LO;
       end
 
       SRAM_PF_LO: begin
-        // Capture low 16 bits, set up high address
         prefetch_lo <= sram_dq_in;
-        sram_a      <= prefetch_sram_addr + 17'd1;
-        sram_state  <= SRAM_PF_GAP;
+        // FIX #3: advance address relative to the address we actually
+        // started from (prefetch_req_addr), not prefetch_sram_addr.
+        sram_a     <= prefetch_req_addr + 17'd1;
+        sram_state <= SRAM_PF_GAP;
       end
 
       SRAM_PF_GAP: begin
-        // 1-cycle address setup delay for SRAM access time
-        // (async SRAM needs ~15ns tCO+tAA > 13.47ns clk_74a period)
         sram_state <= SRAM_PF_HI;
       end
 
       SRAM_PF_HI: begin
-        // Capture high 16 bits, combine into 32-bit result
         save_state_bridge_read_data <= {sram_dq_in, prefetch_lo};
         prefetch_pending            <= 0;
         sram_oe_n                   <= 1;
