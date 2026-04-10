@@ -219,7 +219,13 @@ module save_state_controller (
     prev_savestate_start <= savestate_start_s;
     prev_savestate_load  <= savestate_load_s;
     prev_ss_busy         <= ss_busy;
-    prev_ss_req          <= ss_req;
+    // NOTE: prev_ss_req is NOT updated unconditionally here.
+    // It is consumed only in the states that process the request
+    // (SYS_SAVE_ACTIVE and SYS_LOAD_ACTIVE), matching the pattern
+    // used by prev_core_wr_req_74a / prev_core_rd_req_74a on the
+    // SRAM side.  Unconditional update would make new_ddr_req true
+    // for only 1 cycle, risking lost toggles when the FSM is in a
+    // WAIT_SRAM state.
     prev_sram_wr_ack     <= sram_wr_ack_sys;
     prev_sram_rd_ack     <= sram_rd_ack_sys;
 
@@ -278,6 +284,7 @@ module save_state_controller (
           core_wr_data       <= ss_din;
           core_sram_base     <= ss_addr[14:0];
           core_wr_req_toggle <= ~core_wr_req_toggle;
+          prev_ss_req        <= ss_req;  // consume toggle
           sys_state          <= SYS_SAVE_WAIT_SRAM;
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
           // FIX #1: Only complete when we have seen ss_busy rise AND fall
@@ -311,6 +318,7 @@ module save_state_controller (
           // Core requesting data — read from SRAM via CDC
           core_rd_base       <= ss_addr[14:0];
           core_rd_req_toggle <= ~core_rd_req_toggle;
+          prev_ss_req        <= ss_req;  // consume toggle
           sys_state          <= SYS_LOAD_WAIT_SRAM;
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
           // FIX #1: Only complete when we have seen ss_busy rise AND fall
