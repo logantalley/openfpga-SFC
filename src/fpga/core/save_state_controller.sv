@@ -326,7 +326,8 @@ module save_state_controller (
   localparam SRAM_BRIDGE_WR_END = 4'd8;  // WE_n high, done
   localparam SRAM_PF_SETUP      = 4'd9;
   localparam SRAM_PF_LO         = 4'd10;
-  localparam SRAM_PF_HI         = 4'd11;
+  localparam SRAM_PF_GAP        = 4'd11; // 1-cycle address setup between low/high reads
+  localparam SRAM_PF_HI         = 4'd12;
 
   reg [3:0]  sram_state = SRAM_IDLE;
   reg [1:0]  sram_word_idx;
@@ -366,8 +367,11 @@ module save_state_controller (
   wire start_ok_74a = savestate_start_ok_s;
 
   always @(posedge clk_74a) begin
-    prev_core_wr_req_74a <= core_wr_req_74a;
-    prev_core_rd_req_74a <= core_rd_req_74a;
+    // NOTE: prev_core_wr_req_74a and prev_core_rd_req_74a are NOT updated
+    // unconditionally here. They are only consumed in the SRAM FSM completion
+    // states (SRAM_CORE_WR_END, SRAM_CORE_RD_N) so that pending signals
+    // persist until the FSM processes them. This prevents lost toggles if the
+    // FSM happens to be busy when the CDC toggle arrives.
     prev_start_ok_74a    <= start_ok_74a;
 
     // Latch bridge writes to SRAM (bridge_wr is 1 clk_74a pulse)
@@ -486,9 +490,11 @@ module save_state_controller (
           prev_core_rd_req_74a <= core_rd_req_74a;  // consume pending
           sram_state         <= SRAM_IDLE;
         end else begin
-          // Advance to next SRAM address
+          // Advance to next SRAM address — go through RD_SETUP for
+          // address setup time (async SRAM needs ~15ns tCO+tAA > 13.47ns period)
           sram_word_idx <= sram_word_idx + 2'd1;
           sram_a <= sram_base_addr + {15'd0, sram_word_idx} + 17'd1;
+          sram_state <= SRAM_CORE_RD_SETUP;
         end
       end
 
@@ -530,7 +536,13 @@ module save_state_controller (
         // Capture low 16 bits, set up high address
         prefetch_lo <= sram_dq_in;
         sram_a      <= prefetch_sram_addr + 17'd1;
-        sram_state  <= SRAM_PF_HI;
+        sram_state  <= SRAM_PF_GAP;
+      end
+
+      SRAM_PF_GAP: begin
+        // 1-cycle address setup delay for SRAM access time
+        // (async SRAM needs ~15ns tCO+tAA > 13.47ns clk_74a period)
+        sram_state <= SRAM_PF_HI;
       end
 
       SRAM_PF_HI: begin
