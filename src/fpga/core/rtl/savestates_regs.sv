@@ -188,63 +188,65 @@ always @(posedge clk or negedge reset_n) begin
 	 end
 end
 
-always @(posedge clk) begin
-	ssr_oe <= ss_reg_sel & (mmio_sel | ss_inidisp_sel | wram_sel | ss_temp_sel);
-	ssr_do <= 8'h00;
+// Combinational output — must be valid in the same cycle as CA so
+// the now-combinational ss_do in savestates.sv sees correct data.
+always @(*) begin
+	ssr_oe = ss_reg_sel & (mmio_sel | ss_inidisp_sel | wram_sel | ss_temp_sel);
+	ssr_do = 8'h00;
 	case(ca[7:0])
-		8'h00: ssr_do <= dma0[0];
-		8'h01: ssr_do <= dma0[1];
-		8'h02: ssr_do <= dma0[2];
-		8'h03: ssr_do <= dma0[3];
-		8'h04: ssr_do <= dma0[4];
-		8'h05: ssr_do <= dma0[5];
-		8'h06: ssr_do <= dma0[6];
+		8'h00: ssr_do = dma0[0];
+		8'h01: ssr_do = dma0[1];
+		8'h02: ssr_do = dma0[2];
+		8'h03: ssr_do = dma0[3];
+		8'h04: ssr_do = dma0[4];
+		8'h05: ssr_do = dma0[5];
+		8'h06: ssr_do = dma0[6];
 		default: ;
 	endcase
 
 	if (mmio_sel & (ca[9:8] == 2'd2)) begin
 		case(ca[7:0])
 			8'h00: begin
-				ssr_do[0]   <= nmitimen_j;
-				ssr_do[5:4] <= nmitimen_hv;
-				ssr_do[7]   <= nmitimen_n;
+				ssr_do[0]   = nmitimen_j;
+				ssr_do[5:4] = nmitimen_hv;
+				ssr_do[7]   = nmitimen_n;
 			end
-			8'h02: ssr_do <= wrmpya;
-			8'h03: ssr_do <= wrmpyb;
-			8'h04: ssr_do <= wrdiv[ 7:0];
-			8'h05: ssr_do <= wrdiv[15:8];
-			8'h06: ssr_do <= wrdivb;
-			8'h07: ssr_do <= htime[7:0];
-			8'h08: ssr_do[0] <= htime[8];
-			8'h09: ssr_do <= vtime[7:0];
-			8'h0A: ssr_do[0] <= vtime[8];
-			8'h0C: ssr_do <= hdmaen;
-			8'h0D: ssr_do[0] <= memsel;
-			8'h0F: ssr_do[0] <= wrdivb_last;
+			8'h02: ssr_do = wrmpya;
+			8'h03: ssr_do = wrmpyb;
+			8'h04: ssr_do = wrdiv[ 7:0];
+			8'h05: ssr_do = wrdiv[15:8];
+			8'h06: ssr_do = wrdivb;
+			8'h07: ssr_do = htime[7:0];
+			8'h08: ssr_do[0] = htime[8];
+			8'h09: ssr_do = vtime[7:0];
+			8'h0A: ssr_do[0] = vtime[8];
+			8'h0C: ssr_do = hdmaen;
+			8'h0D: ssr_do[0] = memsel;
+			8'h0F: ssr_do[0] = wrdivb_last;
 			default: ;
 		endcase
 	end
 
 	if (ss_inidisp_sel) begin
-		ssr_do[7]   <= ppu_inidisp_fb;
-		ssr_do[3:0] <= ppu_inidisp_br;
+		ssr_do[7]   = ppu_inidisp_fb;
+		ssr_do[3:0] = ppu_inidisp_br;
 	end
 
 	if (ss_temp0_sel) begin
-		ssr_do <= temp_reg[0];
+		ssr_do = temp_reg[0];
 	end
 	if (ss_temp1_sel) begin
-		ssr_do <= temp_reg[1];
+		ssr_do = temp_reg[1];
 	end
 	if (ss_temp2_sel) begin
-		ssr_do <= temp_reg[2];
+		ssr_do = temp_reg[2];
 	end
 
 	if (wram_sel) begin
 		case(ca[1:0])
-			2'd1: ssr_do <= wmadd[ 7: 0];
-			2'd2: ssr_do <= wmadd[15: 8];
-			2'd3: ssr_do <= wmadd[   16];
+			2'd1: ssr_do = wmadd[ 7: 0];
+			2'd2: ssr_do = wmadd[15: 8];
+			2'd3: ssr_do = wmadd[   16];
 			default: ;
 		endcase
 	end

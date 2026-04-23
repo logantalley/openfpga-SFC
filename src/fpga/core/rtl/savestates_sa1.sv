@@ -137,18 +137,19 @@ always @(posedge clk) begin
 
 end
 
-always @(posedge clk) begin
-	ss_oe <= ss_sa1reg_sel;
-	ss_do <= 8'h00;
+// Combinational output — feeds into combinational ss_do chain
+always @(*) begin
+	ss_oe = ss_sa1reg_sel;
+	ss_do = 8'h00;
 	if (active) begin
 		if (~ca[8]) begin
 			case(ca[7:0])
-				8'h00: ss_do <= { 2'd0, sa1_reset, 5'd0 };
-				8'h03: ss_do <= reg_crv[ 7:0];
-				8'h04: ss_do <= reg_crv[15:8];
-				8'h05: ss_do <= reg_cnv[ 7:0];
-				8'h06: ss_do <= reg_cnv[15:8];
-				8'h0A: ss_do <= { 3'd0, sa1_nmi_en, 4'd0 };
+				8'h00: ss_do = { 2'd0, sa1_reset, 5'd0 };
+				8'h03: ss_do = reg_crv[ 7:0];
+				8'h04: ss_do = reg_crv[15:8];
+				8'h05: ss_do = reg_cnv[ 7:0];
+				8'h06: ss_do = reg_cnv[15:8];
+				8'h0A: ss_do = { 3'd0, sa1_nmi_en, 4'd0 };
 				default: ;
 			endcase
 		end

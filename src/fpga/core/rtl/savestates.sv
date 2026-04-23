@@ -457,32 +457,36 @@ wire ss_oe = ss_data_sel | ss_status_sel | nmi_vect | irq_vect |
 			ss_ramsize_sel | ss_romtype_sel | ssr_oe | map_ss_oe |
 			ppu_sel | dspn_regs_sel | gsu_regs_sel;
 
-always @(posedge clk) begin
-	ss_do <= 8'h00;
+// Combinational ss_do — must be valid in the same cycle that CA is
+// presented so the CPU (and especially DMA) reads the correct byte.
+// A registered version would lag by one cycle, causing every load byte
+// to be the *previous* byte's value (first byte = 0x00).
+always @(*) begin
+	ss_do = 8'h00;
 	if (ss_data_sel) begin
 		if (load_en)
-			ss_do <= load_buf[ss_data_addr[2:0]*8 +:8];
+			ss_do = load_buf[ss_data_addr[2:0]*8 +:8];
 		else
-			ss_do <= ddr_di[ss_data_addr[2:0]*8 +:8];
+			ss_do = ddr_di[ss_data_addr[2:0]*8 +:8];
 	end
 	if (ss_status_sel) begin
 		if (load_en)
 			// During load, report ~load_buf_valid as the busy bit so that
 			// the savestates.bin polling loop (AND #$02, BNE) still works:
 			// 0 = buffer ready (proceed), 1 = waiting for first chunk.
-			ss_do <= { 6'd0, ~load_buf_valid, 1'b0 };
+			ss_do = { 6'd0, ~load_buf_valid, 1'b0 };
 		else
-			ss_do <= { 6'd0, ddr_busy, save_en };
+			ss_do = { 6'd0, ddr_busy, save_en };
 	end
-	if (nmi_vect_l | irq_vect_l) ss_do <= nmi_vect_addr[7:0];
-	if (nmi_vect_h | irq_vect_h) ss_do <= nmi_vect_addr[15:8];
-	if (ss_ramsize_sel) ss_do <= { 4'd0, ram_size };
-	if (ss_romtype_sel) ss_do <= rom_type;
-	if (ssr_oe) ss_do <= ssr_do;
-	if (map_ss_oe) ss_do <= map_ss_do;
-	if (ppu_sel) ss_do <= ppu_di;
-	if (dspn_regs_sel) ss_do <= dspn_di;
-	if (gsu_regs_sel) ss_do <= gsu_di;
+	if (nmi_vect_l | irq_vect_l) ss_do = nmi_vect_addr[7:0];
+	if (nmi_vect_h | irq_vect_h) ss_do = nmi_vect_addr[15:8];
+	if (ss_ramsize_sel) ss_do = { 4'd0, ram_size };
+	if (ss_romtype_sel) ss_do = rom_type;
+	if (ssr_oe) ss_do = ssr_do;
+	if (map_ss_oe) ss_do = map_ss_do;
+	if (ppu_sel) ss_do = ppu_di;
+	if (dspn_regs_sel) ss_do = dspn_di;
+	if (gsu_regs_sel) ss_do = gsu_di;
 end
 
 always @(*) begin
