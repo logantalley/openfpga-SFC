@@ -165,8 +165,14 @@ localparam DDR_IDLE = 4'd0, LOAD_DATA = 4'd1, WRITE_DATA = 4'd2,
 //
 // Fix: buffer the current chunk in load_buf; prefetch the next chunk into
 // ddr_di in the background.  Swap at each 8-byte boundary.
+//
+// Stall protocol: load_buf_valid drives STATUS_BUSY (bit 1 = ~load_buf_valid).
+// We clear load_buf_valid at the byte-7 boundary so the firmware's existing
+// STATUS_BUSY poll loop stalls until the prefetch finishes, at which point
+// load_fetch_done copies ddr_di → load_buf and reasserts load_buf_valid.
+// This enforces correctness even when DDR latency exceeds the 8-byte window.
 reg [63:0] load_buf;        // Current chunk data being read by CPU
-reg        load_buf_valid;  // load_buf contains valid data
+reg        load_buf_valid;  // load_buf contains valid data (cleared to stall)
 reg        load_pf_ready;   // Prefetch completed, ddr_di has next chunk
 reg [19:0] load_pf_addr;    // Address for next LOAD_DATA during prefetch
 reg        prev_ddr_busy_r; // For falling-edge detection
@@ -281,14 +287,18 @@ always @(posedge clk) begin
 				ss_data_addr_inc <= 0;
 				if (cpurd_ce_n & (ss_data_addr[2:0] == 3'd7)) begin
 					if (load_en) begin
-						// Swap pre-fetched data into load_buf and start
-						// prefetch for the following chunk.  The prefetch
-						// always completes in ~487 ns while reading 8 bytes
-						// takes ~2976 ns, so load_pf_ready is guaranteed
-						// true here under normal timing.
-						load_buf <= ddr_di;
-						load_pf_ready <= 0;
-						ddr_state <= LOAD_DATA;
+						// End of 8-byte chunk.  If the prefetch is already done,
+						// swap immediately and kick off the next one.  Otherwise
+						// clear load_buf_valid so STATUS_BUSY stalls the firmware
+						// until load_fetch_done completes the swap below.
+						if (load_pf_ready) begin
+							load_buf       <= ddr_di;
+							load_buf_valid <= 1;
+							load_pf_ready  <= 0;
+							ddr_state      <= LOAD_DATA;
+						end else begin
+							load_buf_valid <= 0; // stall firmware via STATUS_BUSY
+						end
 					end else begin
 						// Original path (should not occur — reads are load-only)
 						ddr_state <= LOAD_DATA;
@@ -358,12 +368,17 @@ always @(posedge clk) begin
 		// overrides DDR_END's DDR_IDLE (last non-blocking write wins).
 		if (load_fetch_done) begin
 			if (~load_buf_valid) begin
-				// First chunk arrived — copy to read buffer and prefetch next
+				// Buffer is not valid: either the first chunk just arrived, or
+				// the byte-7 swap fired before the prefetch was ready (stall
+				// path).  Either way, copy ddr_di → load_buf, unblock the
+				// firmware, and immediately prefetch the next chunk.
 				load_buf       <= ddr_di;
 				load_buf_valid <= 1;
-				ddr_state      <= LOAD_DATA; // prefetch chunk 1
+				load_pf_ready  <= 0;
+				ddr_state      <= LOAD_DATA;
 			end else begin
-				// Subsequent prefetch completed — mark ready for byte-7 swap
+				// Buffer still valid (CPU hasn't reached byte-7 yet) — just
+				// mark prefetch ready so the byte-7 handler can swap inline.
 				load_pf_ready <= 1;
 			end
 		end
