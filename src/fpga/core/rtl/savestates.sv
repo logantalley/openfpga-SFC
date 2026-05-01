@@ -151,6 +151,7 @@ wire dspn_ram_read = dspn_ram_sel & ~pard_n;
 reg [3:0] ddr_state;
 reg [7:0] ddr_data;
 reg load_ready;
+reg [19:0] ss_wr_base_addr; // Chunk-aligned address latched when WRITE_DATA is armed
 
 wire ddr_busy = ddr_req != ddr_ack;
 
@@ -208,6 +209,7 @@ always @(posedge clk) begin
 		ss_data_addr_inc <= 0;
 		ss_ext_addr <= 0;
 		ss_ext_addr_inc <= 0;
+		ss_wr_base_addr <= 0;
 		ddr_state <= DDR_IDLE;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
@@ -269,7 +271,9 @@ always @(posedge clk) begin
 				save_end <= 1;
 				ss_data_size <= ss_data_addr;
 				if (ss_data_addr[2:0] != 3'd0) begin
-					// Write remaining data first
+					// Write remaining data first; latch chunk-aligned address now
+					// because ss_data_addr may advance before WRITE_DATA fires.
+					ss_wr_base_addr <= {ss_data_addr[19:3], 3'b000};
 					ddr_state <= WRITE_DATA;
 				end
 			end
@@ -323,6 +327,10 @@ always @(posedge clk) begin
 		if (~cpuwr_n & sysclkf_ce & ss_busy & ss_data_sel) begin // Data write
 			if (ss_data_addr[2:0] == 3'd0) begin
 				ddr_do[63:8] <= 0; // Clear for possible partial last write
+				// Latch the chunk-aligned SRAM address now, before ss_data_addr
+				// can advance further.  WRITE_DATA may not fire until the bus is
+				// idle, by which time ss_data_addr may point to the next chunk.
+				ss_wr_base_addr <= {ss_data_addr[19:3], 3'b000};
 			end
 
 			ddr_do[ss_data_addr[2:0]*8 +:8] <= ddr_data;
@@ -348,7 +356,7 @@ always @(posedge clk) begin
 					ddr_state <= DDR_END;
 				end
 				WRITE_DATA: begin
-					ss_ddr_addr <= ss_data_addr;
+					ss_ddr_addr <= ss_wr_base_addr;
 					ddr_req <= ~ddr_req;
 					ddr_we <= 1;
 					ddr_state <= DDR_END;
