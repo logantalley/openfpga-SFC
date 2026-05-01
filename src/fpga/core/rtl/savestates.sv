@@ -476,7 +476,16 @@ savestates_map ss_map
 );
 
 
-wire ss_oe = ss_data_sel | ss_status_sel | nmi_vect | irq_vect |
+// NMI/IRQ vector override is only valid for the INITIAL vector read that
+// kicks off the savestate firmware (when ss_busy is not yet asserted).
+// While ss_busy=1 (firmware already running), a re-entrant NMI/IRQ must
+// NOT be redirected to nmi_vect_addr — the CPU would re-enter Save_start
+// on top of the current stack and loop indefinitely.  Let the vector read
+// fall through to the real ROM (ss_rom_ovr covers code fetches, but the
+// vector table at $00FFxx should be excluded when we're already inside).
+wire ss_vect_ovr = (nmi_vect | irq_vect) & ~ss_busy;
+
+wire ss_oe = ss_data_sel | ss_status_sel | ss_vect_ovr |
 			ss_ramsize_sel | ss_romtype_sel | ssr_oe | map_ss_oe |
 			ppu_sel | dspn_regs_sel | gsu_regs_sel;
 
@@ -501,8 +510,8 @@ always @(*) begin
 		else
 			ss_do = { 6'd0, ddr_busy, save_en };
 	end
-	if (nmi_vect_l | irq_vect_l) ss_do = nmi_vect_addr[7:0];
-	if (nmi_vect_h | irq_vect_h) ss_do = nmi_vect_addr[15:8];
+	if (ss_vect_ovr & (nmi_vect_l | irq_vect_l)) ss_do = nmi_vect_addr[7:0];
+	if (ss_vect_ovr & (nmi_vect_h | irq_vect_h)) ss_do = nmi_vect_addr[15:8];
 	if (ss_ramsize_sel) ss_do = { 4'd0, ram_size };
 	if (ss_romtype_sel) ss_do = rom_type;
 	if (ssr_oe) ss_do = ssr_do;
@@ -530,7 +539,11 @@ always @(*) begin
 end
 
 assign ss_do_ovr = ss_busy & ss_oe;
-assign ss_rom_ovr = map_active ? map_rom_ovr : ss_busy;
+// Exclude NMI/IRQ vector reads from the ROM redirect once the firmware is
+// already running (ss_busy=1).  The vector table at $00FFxx is not part of
+// savestates.bin — redirecting it while ss_busy=1 returns garbage data and
+// causes the CPU to vector to a random address, freezing the console.
+assign ss_rom_ovr = map_active ? map_rom_ovr : (ss_busy & ~(nmi_vect | irq_vect));
 
 assign aram_sel = ss_busy & (pa == 8'h84);
 assign dsp_regs_sel = ss_busy & (pa == 8'h85);
