@@ -108,6 +108,10 @@ reg save_en;
 reg load_en;
 reg rd_rti;
 reg save_end;
+// Arms when ss_busy is first set (low-byte cpurd_ce); clears after the
+// high-byte read cycle ends so that a re-entrant NMI while the firmware
+// runs is NOT redirected to nmi_vect_addr.
+reg ss_in_vect;
 
 wire nmi_vect = ({ca[23:1],1'b0} == 24'h00FFEA);
 wire nmi_vect_l = nmi_vect & ~ca[0];
@@ -210,6 +214,7 @@ always @(posedge clk) begin
 		ss_ext_addr <= 0;
 		ss_ext_addr_inc <= 0;
 		ss_wr_base_addr <= 0;
+		ss_in_vect <= 0;
 		ddr_state <= DDR_IDLE;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
@@ -232,7 +237,8 @@ always @(posedge clk) begin
 		if (cpurd_ce) begin
 			if (nmi_vect_l | (~ss_use_nmi & irq_vect_l)) begin // Prefer to use NMI
 				if (~ss_busy & (save_en | (load_en & load_ready))) begin
-					ss_busy <= 1; // Override NMI/IRQ vector
+					ss_busy    <= 1; // Override NMI/IRQ vector
+					ss_in_vect <= 1; // Arm two-byte vector override
 				end
 			end
 
@@ -243,11 +249,18 @@ always @(posedge clk) begin
 
 		if (cpurd_ce_n) begin
 			if (rd_rti) begin
-				ss_busy <= 0;
-				rd_rti <= 0;
-				load_en <= 0;
-				save_en <= 0;
-				save_end <= 0;
+				ss_busy    <= 0;
+				rd_rti     <= 0;
+				load_en    <= 0;
+				save_en    <= 0;
+				save_end   <= 0;
+				ss_in_vect <= 0;
+			end
+			// Disarm after the high-byte read cycle ends; the override has
+			// already been latched by the CPU, and any subsequent NMI must
+			// not be re-routed to nmi_vect_addr.
+			if (ss_in_vect & (nmi_vect_h | (~ss_use_nmi & irq_vect_h))) begin
+				ss_in_vect <= 0;
 			end
 		end
 
@@ -476,14 +489,17 @@ savestates_map ss_map
 );
 
 
-// NMI/IRQ vector override is only valid for the INITIAL vector read that
-// kicks off the savestate firmware (when ss_busy is not yet asserted).
-// While ss_busy=1 (firmware already running), a re-entrant NMI/IRQ must
-// NOT be redirected to nmi_vect_addr — the CPU would re-enter Save_start
-// on top of the current stack and loop indefinitely.  Let the vector read
-// fall through to the real ROM (ss_rom_ovr covers code fetches, but the
-// vector table at $00FFxx should be excluded when we're already inside).
-wire ss_vect_ovr = (nmi_vect | irq_vect) & ~ss_busy;
+// NMI/IRQ vector override spans the two-byte vector read ($00FFEAh/$00FFEBh
+// or $00FFEEh/$00FFEFh) that kicks off the savestate firmware.
+//
+// Why ss_in_vect instead of ~ss_busy:
+//   ss_busy is set via non-blocking assignment on the same cpurd_ce that fires
+//   for the LOW byte, so it is already 1 by INT_CLKF_CE (when the CPU latches
+//   data) several master clocks later.  The gate must therefore remain active
+//   for both bytes, controlled by ss_in_vect which is cleared only AFTER the
+//   high-byte read cycle ends (cpurd_ce_n).  Using ~ss_busy would form the
+//   identity ss_busy & ~ss_busy = 0, making the override permanently dead.
+wire ss_vect_ovr = (nmi_vect | irq_vect) & ss_in_vect;
 
 wire ss_oe = ss_data_sel | ss_status_sel | ss_vect_ovr |
 			ss_ramsize_sel | ss_romtype_sel | ssr_oe | map_ss_oe |
@@ -539,10 +555,14 @@ always @(*) begin
 end
 
 assign ss_do_ovr = ss_busy & ss_oe;
-// Exclude NMI/IRQ vector reads from the ROM redirect once the firmware is
-// already running (ss_busy=1).  The vector table at $00FFxx is not part of
-// savestates.bin — redirecting it while ss_busy=1 returns garbage data and
-// causes the CPU to vector to a random address, freezing the console.
+// Exclude NMI/IRQ vector addresses from the ROM redirect (even while
+// ss_busy=1) so that:
+//   (a) During the initial two-byte vector read: ss_do_ovr is 1 (via
+//       ss_in_vect → ss_vect_ovr → ss_oe), so DI comes from SS_DO and
+//       the ROM address is irrelevant — but keeping ss_rom_ovr=0 here
+//       avoids confusing the mapper with a redirect it doesn't expect.
+//   (b) If a re-entrant NMI fires after ss_in_vect has cleared: the real
+//       NMI vector is read from ROM rather than garbage from savestates.bin.
 assign ss_rom_ovr = map_active ? map_rom_ovr : (ss_busy & ~(nmi_vect | irq_vect));
 
 assign aram_sel = ss_busy & (pa == 8'h84);
