@@ -136,7 +136,7 @@ assign gsu_regs_sel = ss_reg_sel & (ca[15:8] == 8'h62);
 
 wire ppu_sel = (ca[23:16] == 8'hC1) & (ca[15:8] == 8'h21);
 
-wire rti_sel = (ca[23:0] == 24'h008008);
+wire rti_sel = (ca[15:0] == 16'h8008);
 
 reg [19:0] ss_ext_addr;
 reg ss_ext_addr_inc;
