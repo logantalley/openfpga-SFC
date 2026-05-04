@@ -428,7 +428,7 @@ module MAIN_SNES (
       .SS_SAVE    (ss_save),
       .SS_LOAD    (ss_load),
       .SS_DDR_DI  (ss_din),
-      .SS_DDR_ACK (ss_ack),
+      .SS_DDR_ACK (ss_req),
       .SS_DDR_DO  (ss_dout),
       .SS_DDR_ADDR(ss_ddr_addr),
       .SS_DDR_WE  (ss_we),
