@@ -65,6 +65,8 @@ module savestates
 	input             sa1_sa1_romsel,
 	input             sa1_sns_romsel,
 
+	input             vblank_n,
+
 	output            ss_do_ovr,
 	output            ss_rom_ovr,
 	output reg        ss_busy
@@ -236,8 +238,8 @@ always @(posedge clk) begin
 
 		if (cpurd_ce) begin
 			if (nmi_vect_l | (~ss_use_nmi & irq_vect_l)) begin // Prefer to use NMI
-				if (~ss_busy & (save_en | (load_en & load_ready))) begin
-					ss_busy    <= 1; // Override NMI/IRQ vector
+				if (~ss_busy & (save_en | (load_en & load_ready)) & ~vblank_n) begin
+					ss_busy    <= 1; // Override NMI/IRQ vector only during vblank
 					ss_in_vect <= 1; // Arm two-byte vector override
 				end
 			end

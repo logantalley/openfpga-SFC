@@ -833,6 +833,8 @@ module main #(
       .sa1_sa1_romsel(1'b0),
       .sa1_sns_romsel(1'b0),
 
+      .vblank_n(VBLANKn),
+
       .ss_do_ovr(SS_DO_OVR),
       .ss_rom_ovr(SS_ROM_OVR),
       .ss_busy(SS_BUSY)
