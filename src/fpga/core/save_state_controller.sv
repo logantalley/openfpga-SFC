@@ -86,6 +86,10 @@ module save_state_controller (
     // Debug taps (clk_sys domain) — consumed by core_top for on-screen overlay.
     output wire [3:0] debug_sys_state,
     output wire       debug_ss_busy_seen,
+    output wire       debug_ss_busy_ever,    // sticky: ss_busy rose at least once
+    output wire       debug_ss_save_ever,    // sticky: controller pulsed ss_save
+    output wire [3:0] debug_ss_save_count,   // count of ss_save pulses (wraps)
+    output wire [3:0] debug_ss_busy_rises,   // count of ss_busy rising edges
 
     // SRAM interface (directly to Pocket board SRAM)
     output reg  [16:0] sram_a,
@@ -223,6 +227,17 @@ module save_state_controller (
   reg ss_busy_seen = 0;
   assign debug_ss_busy_seen = ss_busy_seen;
 
+  // Sticky / count debug regs — never cleared, only set/incremented.
+  reg       ss_busy_ever  = 0;
+  reg       ss_save_ever  = 0;
+  reg [3:0] ss_save_count = 4'h0;
+  reg [3:0] ss_busy_rises = 4'h0;
+
+  assign debug_ss_busy_ever  = ss_busy_ever;
+  assign debug_ss_save_ever  = ss_save_ever;
+  assign debug_ss_save_count = ss_save_count;
+  assign debug_ss_busy_rises = ss_busy_rises;
+
   always @(posedge clk_sys) begin
     prev_savestate_start <= savestate_start_s;
     prev_savestate_load  <= savestate_load_s;
@@ -237,6 +252,8 @@ module save_state_controller (
     // Track ss_busy rising edge during an active operation
     if (ss_busy && !prev_ss_busy) begin
       ss_busy_seen <= 1;
+      ss_busy_ever <= 1;
+      ss_busy_rises <= ss_busy_rises + 4'd1;
     end
 
     // ----- APF triggers save -----
@@ -250,6 +267,8 @@ module save_state_controller (
       savestate_load_ok    <= 0;
       savestate_load_err   <= 0;
       ss_save              <= 1;
+      ss_save_ever         <= 1;
+      ss_save_count        <= ss_save_count + 4'd1;
     end
 
     // ----- APF signals load command (data already in SRAM) -----

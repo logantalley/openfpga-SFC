@@ -516,6 +516,10 @@ module core_top (
   // Debug taps from save_state_controller (clk_sys domain)
   wire [3:0] debug_sys_state;
   wire       debug_ss_busy_seen;
+  wire       debug_ss_busy_ever;
+  wire       debug_ss_save_ever;
+  wire [3:0] debug_ss_save_count;
+  wire [3:0] debug_ss_busy_rises;
 
   save_state_controller save_state_controller (
       .clk_74a(clk_74a),
@@ -559,6 +563,10 @@ module core_top (
       // Debug taps for on-screen overlay
       .debug_sys_state    (debug_sys_state),
       .debug_ss_busy_seen (debug_ss_busy_seen),
+      .debug_ss_busy_ever (debug_ss_busy_ever),
+      .debug_ss_save_ever (debug_ss_save_ever),
+      .debug_ss_save_count(debug_ss_save_count),
+      .debug_ss_busy_rises(debug_ss_busy_rises),
 
       // SRAM interface
       .sram_a   (sram_a),
@@ -1040,42 +1048,61 @@ module core_top (
   reg [7:0] latched_snap_index;
 
   // --------------------------------------------------------------------
-  // Debug overlay: while ss_busy is high, replace the active video with a
-  // solid color that encodes the controller state.  Helps diagnose the
-  // save-state freeze without SignalTap.
+  // Debug overlay: once ANYTHING save-state-related has happened, replace
+  // the active video with a color that encodes controller + SNES-side state.
+  // Stays on permanently so we can read the state even after the controller
+  // returned to IDLE.  Helps diagnose the freeze without SignalTap.
   //
-  //   R channel: sys_state nibble  × 16  (visible blocky color per state)
-  //              SYS_IDLE=0           → R=0x00 (black-ish)
-  //              SYS_SAVE_ACTIVE=1    → R=0x10
-  //              SYS_SAVE_WAIT_SRAM=2 → R=0x20
-  //              SYS_LOAD_ACTIVE=3    → R=0x30
-  //              SYS_LOAD_WAIT_SRAM=4 → R=0x40
-  //   G channel: ss_busy_seen ? 0xFF : 0x00
-  //   B channel: 0xFF (constant — distinguishes overlay from a "true" black)
-  //
-  // CDC: ss_busy and the debug taps are slow-changing during a freeze, so a
-  // simple 2-FF synchronizer is sufficient.
+  // Encoding:
+  //   R[7:4] = sys_state[3:0]
+  //     0=IDLE 1=SAVE_ACTIVE 2=SAVE_WAIT_SRAM 3=LOAD_ACTIVE 4=LOAD_WAIT_SRAM
+  //   R[3:0] = ss_save_count[3:0] (mod 16) — how many times controller fired ss_save
+  //   G[7]   = ss_busy_seen (current, cleared on return to IDLE)
+  //   G[6]   = ss_busy_ever (sticky — set on FIRST ss_busy rise, never cleared)
+  //   G[5:4] = 0
+  //   G[3:0] = ss_busy_rises[3:0] (mod 16)
+  //   B[7]   = ss_busy_video (current SNES-side ss_busy)
+  //   B[6]   = ss_save_ever (sticky — set on first savestate_start, never cleared)
+  //   B[5:0] = 0x3F constant so overlay is always distinctly visible
   // --------------------------------------------------------------------
   reg [1:0] ss_busy_video_sync;
   reg [1:0] ss_busy_seen_video_sync;
+  reg [1:0] ss_busy_ever_video_sync;
+  reg [1:0] ss_save_ever_video_sync;
   reg [3:0] debug_sys_state_video_sync_0;
   reg [3:0] debug_sys_state_video_sync_1;
+  reg [3:0] debug_ss_save_count_video_sync_0;
+  reg [3:0] debug_ss_save_count_video_sync_1;
+  reg [3:0] debug_ss_busy_rises_video_sync_0;
+  reg [3:0] debug_ss_busy_rises_video_sync_1;
 
   always @(posedge clk_video_5_37) begin
-    ss_busy_video_sync          <= {ss_busy_video_sync[0],         ss_busy};
-    ss_busy_seen_video_sync     <= {ss_busy_seen_video_sync[0],    debug_ss_busy_seen};
-    debug_sys_state_video_sync_0 <= debug_sys_state;
-    debug_sys_state_video_sync_1 <= debug_sys_state_video_sync_0;
+    ss_busy_video_sync               <= {ss_busy_video_sync[0],         ss_busy};
+    ss_busy_seen_video_sync          <= {ss_busy_seen_video_sync[0],    debug_ss_busy_seen};
+    ss_busy_ever_video_sync          <= {ss_busy_ever_video_sync[0],    debug_ss_busy_ever};
+    ss_save_ever_video_sync          <= {ss_save_ever_video_sync[0],    debug_ss_save_ever};
+    debug_sys_state_video_sync_0     <= debug_sys_state;
+    debug_sys_state_video_sync_1     <= debug_sys_state_video_sync_0;
+    debug_ss_save_count_video_sync_0 <= debug_ss_save_count;
+    debug_ss_save_count_video_sync_1 <= debug_ss_save_count_video_sync_0;
+    debug_ss_busy_rises_video_sync_0 <= debug_ss_busy_rises;
+    debug_ss_busy_rises_video_sync_1 <= debug_ss_busy_rises_video_sync_0;
   end
 
-  wire ss_busy_video      = ss_busy_video_sync[1];
-  wire ss_busy_seen_video = ss_busy_seen_video_sync[1];
-  wire [3:0] debug_sys_state_video = debug_sys_state_video_sync_1;
+  wire ss_busy_video       = ss_busy_video_sync[1];
+  wire ss_busy_seen_video  = ss_busy_seen_video_sync[1];
+  wire ss_busy_ever_video  = ss_busy_ever_video_sync[1];
+  wire ss_save_ever_video  = ss_save_ever_video_sync[1];
+  wire [3:0] debug_sys_state_video     = debug_sys_state_video_sync_1;
+  wire [3:0] debug_ss_save_count_video = debug_ss_save_count_video_sync_1;
+  wire [3:0] debug_ss_busy_rises_video = debug_ss_busy_rises_video_sync_1;
+
+  wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
   wire [23:0] debug_overlay_rgb = {
-      {debug_sys_state_video, 4'h0},        // R
-      {8{ss_busy_seen_video}},              // G
-      8'hFF                                  // B
+      {debug_sys_state_video,    debug_ss_save_count_video},         // R
+      {ss_busy_seen_video, ss_busy_ever_video, 2'b00, debug_ss_busy_rises_video}, // G
+      {ss_busy_video, ss_save_ever_video, 6'h3F}                     // B
   };
 
   always @(posedge clk_video_5_37) begin
@@ -1093,7 +1120,7 @@ module core_top (
       rgb <= {9'b0, ~latched_snap_index[0], use_square_pixels_s, 10'b0, 3'b0};
     end else if (de_out) begin
       de  <= 1;
-      rgb <= ss_busy_video ? debug_overlay_rgb : rgb_out;
+      rgb <= overlay_enable ? debug_overlay_rgb : rgb_out;
     end
   end
 
