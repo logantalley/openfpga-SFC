@@ -83,6 +83,10 @@ module save_state_controller (
 
     input wire ss_busy,
 
+    // Debug taps (clk_sys domain) — consumed by core_top for on-screen overlay.
+    output wire [3:0] debug_sys_state,
+    output wire       debug_ss_busy_seen,
+
     // SRAM interface (directly to Pocket board SRAM)
     output reg  [16:0] sram_a,
     inout  wire [15:0] sram_dq,
@@ -189,6 +193,9 @@ module save_state_controller (
 
   reg [3:0] sys_state = SYS_IDLE;
 
+  // Debug taps — directly expose internal state for the on-screen overlay
+  assign debug_sys_state = sys_state;
+
   reg prev_savestate_start = 0;
   reg prev_savestate_load  = 0;
   reg prev_ss_busy         = 0;
@@ -214,6 +221,7 @@ module save_state_controller (
   // only act on a falling edge that follows a rising edge we observed
   // during this operation.
   reg ss_busy_seen = 0;
+  assign debug_ss_busy_seen = ss_busy_seen;
 
   always @(posedge clk_sys) begin
     prev_savestate_start <= savestate_start_s;
