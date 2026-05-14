@@ -79,7 +79,7 @@ module save_state_controller (
     input wire ss_rnw,            // Read/not-write (0=write/save, 1=read/load)
     input wire ss_req,            // Toggle request from savestates.sv
     input wire [7:0] ss_be,       // Byte enable
-    output reg ss_ack,            // Toggle acknowledge to savestates.sv
+    output reg ss_ack = 0,        // Toggle acknowledge to savestates.sv
 
     input wire ss_busy,
 

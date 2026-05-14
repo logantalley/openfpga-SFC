@@ -218,6 +218,8 @@ always @(posedge clk) begin
 		ss_wr_base_addr <= 0;
 		ss_in_vect <= 0;
 		ddr_state <= DDR_IDLE;
+		ddr_req <= 0;
+		ddr_we <= 0;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
@@ -355,9 +357,13 @@ always @(posedge clk) begin
 			end
 		end
 
-		ddr_we <= 0;
 		ddr_be <= 8'hFF;
 
+		// ddr_we is held stable across the entire ddr_req!=ddr_ack window so
+		// the controller (which samples ss_rnw = ~ddr_we one clk_sys cycle
+		// after the new ddr_req edge) sees the correct direction.  Without
+		// this, a one-cycle pulse of ddr_we=1 disappears before the
+		// controller can observe it, and save chunks are never serviced.
 		if (ddr_req == ddr_ack) begin
 			case(ddr_state)
 				LOAD_DATA: begin
@@ -368,6 +374,7 @@ always @(posedge clk) begin
 						ss_ddr_addr <= ss_data_addr;
 					end
 					ddr_req <= ~ddr_req;
+					ddr_we <= 0;
 					ddr_state <= DDR_END;
 				end
 				WRITE_DATA: begin
