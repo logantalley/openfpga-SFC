@@ -1082,6 +1082,8 @@ module core_top (
   reg [1:0] sram_wr_ack_ever_video_sync;
   reg [3:0] debug_sys_state_video_sync_0;
   reg [3:0] debug_sys_state_video_sync_1;
+  reg [3:0] debug_ss_req_toggles_video_sync_0;
+  reg [3:0] debug_ss_req_toggles_video_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1093,6 +1095,8 @@ module core_top (
     sram_wr_ack_ever_video_sync  <= {sram_wr_ack_ever_video_sync[0],  debug_sram_wr_ack_ever};
     debug_sys_state_video_sync_0 <= debug_sys_state;
     debug_sys_state_video_sync_1 <= debug_sys_state_video_sync_0;
+    debug_ss_req_toggles_video_sync_0 <= debug_ss_req_toggles;
+    debug_ss_req_toggles_video_sync_1 <= debug_ss_req_toggles_video_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1102,28 +1106,32 @@ module core_top (
   wire ss_req_ever_video      = ss_req_ever_video_sync[1];
   wire core_wr_ever_video     = core_wr_ever_video_sync[1];
   wire sram_wr_ack_ever_video = sram_wr_ack_ever_video_sync[1];
-  wire [3:0] debug_sys_state_video = debug_sys_state_video_sync_1;
+  wire [3:0] debug_sys_state_video     = debug_sys_state_video_sync_1;
+  wire [3:0] debug_ss_req_toggles_video = debug_ss_req_toggles_video_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
   // -- Horizontal-bar debug encoding (8 bars, 32 px each) --
-  // Focus this time: do save chunks flow from firmware → controller → SRAM?
+  // Focus this time: HOW MANY chunks have flowed?  ss_req_toggles[3:0]
+  // increments on every ss_req edge.  If frozen at a low number after
+  // waiting a few seconds, data flow stalled early.  If still incrementing,
+  // firmware is sending chunks but never reaches RTI.
   //
   //   bar 0  : WHITE calibration (always lit)
-  //   bar 1  : ss_busy            (currently mid-save?)
-  //   bar 2  : sys_state==SAVE_ACTIVE
-  //   bar 3  : ss_req_ever        — did firmware ever toggle ss_req? (any save chunk attempted)
-  //   bar 4  : core_wr_ever       — did controller forward a chunk to SRAM via CDC?
-  //   bar 5  : sram_wr_ack_ever   — did SRAM FSM ack the write back?
-  //   bar 6  : ss_busy_seen       — controller sees a save in progress
+  //   bar 1  : ss_busy                       (currently mid-save?)
+  //   bar 2  : ss_req_toggles[0]  ← LSB of chunk count (toggles every chunk)
+  //   bar 3  : ss_req_toggles[1]
+  //   bar 4  : ss_req_toggles[2]
+  //   bar 5  : ss_req_toggles[3]  ← MSB of chunk count
+  //   bar 6  : ss_busy_seen
   //   bar 7  : WHITE calibration (always lit)
   wire [7:0] debug_bits = {
       1'b1,                                          // bar 7
       ss_busy_seen_video,                            // bar 6
-      sram_wr_ack_ever_video,                        // bar 5
-      core_wr_ever_video,                            // bar 4
-      ss_req_ever_video,                             // bar 3
-      (debug_sys_state_video == 4'd1),               // bar 2 SAVE_ACTIVE
+      debug_ss_req_toggles_video[3],                 // bar 5
+      debug_ss_req_toggles_video[2],                 // bar 4
+      debug_ss_req_toggles_video[1],                 // bar 3
+      debug_ss_req_toggles_video[0],                 // bar 2
       ss_busy_video,                                 // bar 1
       1'b1                                           // bar 0
   };
