@@ -132,7 +132,12 @@ module main #(
     output      [7:0]  SS_DDR_BE,
     output             SS_DDR_REQ,
 
-    output             SS_BUSY_OUT
+    output             SS_BUSY_OUT,
+
+    output      [3:0]  DBG_RTI_ARMS,
+    output      [3:0]  DBG_VECT_REENTRY,
+    output      [3:0]  DBG_DDR_WRITES,
+    output      [3:0]  DBG_SAVE_END_WRITES
 );
 
   parameter USE_DLH = 1'b1;
@@ -837,7 +842,12 @@ module main #(
 
       .ss_do_ovr(SS_DO_OVR),
       .ss_rom_ovr(SS_ROM_OVR),
-      .ss_busy(SS_BUSY)
+      .ss_busy(SS_BUSY),
+
+      .dbg_rti_arms       (DBG_RTI_ARMS),
+      .dbg_vect_reentry   (DBG_VECT_REENTRY),
+      .dbg_ddr_writes     (DBG_DDR_WRITES),
+      .dbg_save_end_writes(DBG_SAVE_END_WRITES)
   );
 
   assign TURBO_ALLOW = ~(MAP_ACTIVE[3] | MAP_ACTIVE[1] | SS_BUSY);

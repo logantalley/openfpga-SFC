@@ -69,7 +69,13 @@ module savestates
 
 	output            ss_do_ovr,
 	output            ss_rom_ovr,
-	output reg        ss_busy
+	output reg        ss_busy,
+
+	// Debug taps — exposed to core_top for on-screen overlay
+	output reg [3:0]  dbg_rti_arms,        // count of rti_sel arms during ss_busy
+	output reg [3:0]  dbg_vect_reentry,    // count of NMI/IRQ vector reads while ss_busy=1
+	output reg [3:0]  dbg_ddr_writes,      // count of WRITE_DATA state entries
+	output reg [3:0]  dbg_save_end_writes  // count of sta SS_END
 );
 
 reg cpurd_n_old, cpuwr_n_old;
@@ -220,6 +226,10 @@ always @(posedge clk) begin
 		ddr_state <= DDR_IDLE;
 		ddr_req <= 0;
 		ddr_we <= 0;
+		dbg_rti_arms <= 0;
+		dbg_vect_reentry <= 0;
+		dbg_ddr_writes <= 0;
+		dbg_save_end_writes <= 0;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
@@ -244,10 +254,16 @@ always @(posedge clk) begin
 					ss_busy    <= 1; // Override NMI/IRQ vector only during vblank
 					ss_in_vect <= 1; // Arm two-byte vector override
 				end
+				// Debug: count vector reads that happen while ss_busy is already 1
+				// (re-entrant NMI/IRQ — should never happen if firmware disables NMI fast enough)
+				if (ss_busy) begin
+					dbg_vect_reentry <= dbg_vect_reentry + 4'd1;
+				end
 			end
 
-			if (ss_busy & rti_sel) begin
+			if (ss_busy & rti_sel & ~rd_rti) begin
 				rd_rti <= 1;
+				dbg_rti_arms <= dbg_rti_arms + 4'd1;
 			end
 		end
 
@@ -287,6 +303,7 @@ always @(posedge clk) begin
 			if (ss_end_sel) begin // Saving finished
 				save_end <= 1;
 				ss_data_size <= ss_data_addr;
+				dbg_save_end_writes <= dbg_save_end_writes + 4'd1;
 				if (ss_data_addr[2:0] != 3'd0) begin
 					// Write remaining data first; latch chunk-aligned address now
 					// because ss_data_addr may advance before WRITE_DATA fires.
@@ -382,6 +399,7 @@ always @(posedge clk) begin
 					ddr_req <= ~ddr_req;
 					ddr_we <= 1;
 					ddr_state <= DDR_END;
+					dbg_ddr_writes <= dbg_ddr_writes + 4'd1;
 				end
 
 				DDR_END: begin

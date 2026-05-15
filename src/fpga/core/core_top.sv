@@ -525,6 +525,12 @@ module core_top (
   wire       debug_core_wr_ever;
   wire       debug_sram_wr_ack_ever;
 
+  // Debug taps from savestates.sv (SNES side)
+  wire [3:0] dbg_rti_arms;
+  wire [3:0] dbg_vect_reentry;
+  wire [3:0] dbg_ddr_writes;
+  wire [3:0] dbg_save_end_writes;
+
   save_state_controller save_state_controller (
       .clk_74a(clk_74a),
       .clk_sys(clk_sys_21_48),
@@ -880,6 +886,11 @@ module core_top (
       .ss_req(ss_req),
       .ss_busy_out(ss_busy),
 
+      .dbg_rti_arms       (dbg_rti_arms),
+      .dbg_vect_reentry   (dbg_vect_reentry),
+      .dbg_ddr_writes     (dbg_ddr_writes),
+      .dbg_save_end_writes(dbg_save_end_writes),
+
       // Input
       .p1_button_a(cont1_key_s[4]),
       .p1_button_b(cont1_key_s[5]),
@@ -1084,6 +1095,14 @@ module core_top (
   reg [3:0] debug_sys_state_video_sync_1;
   reg [3:0] debug_ss_req_toggles_video_sync_0;
   reg [3:0] debug_ss_req_toggles_video_sync_1;
+  reg [3:0] dbg_rti_arms_sync_0;
+  reg [3:0] dbg_rti_arms_sync_1;
+  reg [3:0] dbg_vect_reentry_sync_0;
+  reg [3:0] dbg_vect_reentry_sync_1;
+  reg [3:0] dbg_ddr_writes_sync_0;
+  reg [3:0] dbg_ddr_writes_sync_1;
+  reg [3:0] dbg_save_end_writes_sync_0;
+  reg [3:0] dbg_save_end_writes_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1097,6 +1116,14 @@ module core_top (
     debug_sys_state_video_sync_1 <= debug_sys_state_video_sync_0;
     debug_ss_req_toggles_video_sync_0 <= debug_ss_req_toggles;
     debug_ss_req_toggles_video_sync_1 <= debug_ss_req_toggles_video_sync_0;
+    dbg_rti_arms_sync_0        <= dbg_rti_arms;
+    dbg_rti_arms_sync_1        <= dbg_rti_arms_sync_0;
+    dbg_vect_reentry_sync_0    <= dbg_vect_reentry;
+    dbg_vect_reentry_sync_1    <= dbg_vect_reentry_sync_0;
+    dbg_ddr_writes_sync_0      <= dbg_ddr_writes;
+    dbg_ddr_writes_sync_1      <= dbg_ddr_writes_sync_0;
+    dbg_save_end_writes_sync_0 <= dbg_save_end_writes;
+    dbg_save_end_writes_sync_1 <= dbg_save_end_writes_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1108,31 +1135,33 @@ module core_top (
   wire sram_wr_ack_ever_video = sram_wr_ack_ever_video_sync[1];
   wire [3:0] debug_sys_state_video     = debug_sys_state_video_sync_1;
   wire [3:0] debug_ss_req_toggles_video = debug_ss_req_toggles_video_sync_1;
+  wire [3:0] dbg_rti_arms_video         = dbg_rti_arms_sync_1;
+  wire [3:0] dbg_vect_reentry_video     = dbg_vect_reentry_sync_1;
+  wire [3:0] dbg_ddr_writes_video       = dbg_ddr_writes_sync_1;
+  wire [3:0] dbg_save_end_writes_video  = dbg_save_end_writes_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
   // -- Horizontal-bar debug encoding (8 bars, 32 px each) --
-  // Focus this time: HOW MANY chunks have flowed?  ss_req_toggles[3:0]
-  // increments on every ss_req edge.  If frozen at a low number after
-  // waiting a few seconds, data flow stalled early.  If still incrementing,
-  // firmware is sending chunks but never reaches RTI.
+  // Focus: WHY does the save end after only 6 chunks?  Watch for spurious
+  // rti_sel arms (premature firmware exit) and NMI re-entry.
   //
   //   bar 0  : WHITE calibration (always lit)
-  //   bar 1  : ss_busy                       (currently mid-save?)
-  //   bar 2  : ss_req_toggles[0]  ← LSB of chunk count (toggles every chunk)
-  //   bar 3  : ss_req_toggles[1]
-  //   bar 4  : ss_req_toggles[2]
-  //   bar 5  : ss_req_toggles[3]  ← MSB of chunk count
-  //   bar 6  : ss_busy_seen
+  //   bar 1  : dbg_rti_arms[0]           ← how many times rti_sel armed
+  //   bar 2  : dbg_rti_arms[1]              (should be exactly 1 = pattern BW
+  //   bar 3  : dbg_rti_arms[2]               for bars 1-3; if more = spurious)
+  //   bar 4  : dbg_save_end_writes != 0  ← did firmware reach the proper Save_end?
+  //   bar 5  : dbg_vect_reentry != 0     ← did NMI vector get re-read during ss_busy?
+  //   bar 6  : dbg_ddr_writes[0]         ← LSB of chunk write count (should toggle with ss_req)
   //   bar 7  : WHITE calibration (always lit)
   wire [7:0] debug_bits = {
       1'b1,                                          // bar 7
-      ss_busy_seen_video,                            // bar 6
-      debug_ss_req_toggles_video[3],                 // bar 5
-      debug_ss_req_toggles_video[2],                 // bar 4
-      debug_ss_req_toggles_video[1],                 // bar 3
-      debug_ss_req_toggles_video[0],                 // bar 2
-      ss_busy_video,                                 // bar 1
+      dbg_ddr_writes_video[0],                       // bar 6
+      |dbg_vect_reentry_video,                       // bar 5
+      |dbg_save_end_writes_video,                    // bar 4
+      dbg_rti_arms_video[2],                         // bar 3
+      dbg_rti_arms_video[1],                         // bar 2
+      dbg_rti_arms_video[0],                         // bar 1
       1'b1                                           // bar 0
   };
 
