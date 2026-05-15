@@ -1142,44 +1142,251 @@ module core_top (
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
-  // -- Horizontal-bar debug encoding (8 bars, 32 px each) --
-  // Focus: WHY does the save end after only 6 chunks?  Watch for spurious
-  // rti_sel arms (premature firmware exit) and NMI re-entry.
+  // ====================================================================
+  // Text overlay — displays 4 hex digits stacked vertically.
   //
-  //   bar 0  : WHITE calibration (always lit)
-  //   bar 1  : dbg_rti_arms[0]           ← how many times rti_sel armed
-  //   bar 2  : dbg_rti_arms[1]              (should be exactly 1 = pattern BW
-  //   bar 3  : dbg_rti_arms[2]               for bars 1-3; if more = spurious)
-  //   bar 4  : dbg_save_end_writes != 0  ← did firmware reach the proper Save_end?
-  //   bar 5  : dbg_vect_reentry != 0     ← did NMI vector get re-read during ss_busy?
-  //   bar 6  : dbg_ddr_writes[0]         ← LSB of chunk write count (should toggle with ss_req)
-  //   bar 7  : WHITE calibration (always lit)
-  wire [7:0] debug_bits = {
-      1'b1,                                          // bar 7
-      dbg_ddr_writes_video[0],                       // bar 6
-      |dbg_vect_reentry_video,                       // bar 5
-      |dbg_save_end_writes_video,                    // bar 4
-      dbg_rti_arms_video[2],                         // bar 3
-      dbg_rti_arms_video[1],                         // bar 2
-      dbg_rti_arms_video[0],                         // bar 1
-      1'b1                                           // bar 0
-  };
+  //   Row 0 (red marker)    : dbg_rti_arms        (RTI arm count)
+  //   Row 1 (green marker)  : dbg_vect_reentry    (NMI re-entry count)
+  //   Row 2 (yellow marker) : dbg_save_end_writes (Save_end count)
+  //   Row 3 (cyan marker)   : ss_req_toggles      (chunk transfer count)
+  //
+  // Each digit is rendered from an 8x8 bitmap, drawn at 2x scale (16x16).
+  // Rows are placed at the top-left of the visible video, one per line block.
+  // ====================================================================
 
   reg [10:0] h_pixel_count;
+  reg [10:0] v_line_count;
   reg        prev_de_overlay;
+  reg        prev_vs_overlay;
   always @(posedge clk_video_5_37) begin
     prev_de_overlay <= de_out;
+    prev_vs_overlay <= video_vs;
+
+    // Reset line count at vsync
+    if (video_vs && ~prev_vs_overlay)
+      v_line_count <= 11'd0;
+    // Increment line count on each de_out falling edge (end of active line)
+    else if (~de_out && prev_de_overlay)
+      v_line_count <= v_line_count + 11'd1;
+
+    // Reset pixel count at start of each active line
     if (de_out && ~prev_de_overlay)
       h_pixel_count <= 11'd0;
     else if (de_out)
       h_pixel_count <= h_pixel_count + 11'd1;
   end
 
-  // 32 pixels per bar  →  bar index is bits [7:5] of h_pixel_count
-  // (visible SNES width is 256 pixels = 8 bars × 32)
-  wire [2:0] bar_index = h_pixel_count[7:5];
-  wire       bar_bit   = debug_bits[bar_index];
-  wire [23:0] debug_overlay_rgb = bar_bit ? 24'hFFFFFF : 24'h000000;
+  // 8x8 font ROM for hex digits 0..F.  Each row is one byte (MSB = leftmost
+  // pixel).  Adapted from a standard 8x8 font.
+  function [7:0] font_rom (input [3:0] digit, input [2:0] row);
+    case ({digit, row})
+      // 0
+      7'h00: font_rom = 8'b00111100;
+      7'h01: font_rom = 8'b01100110;
+      7'h02: font_rom = 8'b01101110;
+      7'h03: font_rom = 8'b01110110;
+      7'h04: font_rom = 8'b01100110;
+      7'h05: font_rom = 8'b01100110;
+      7'h06: font_rom = 8'b00111100;
+      7'h07: font_rom = 8'b00000000;
+      // 1
+      7'h08: font_rom = 8'b00011000;
+      7'h09: font_rom = 8'b00111000;
+      7'h0A: font_rom = 8'b00011000;
+      7'h0B: font_rom = 8'b00011000;
+      7'h0C: font_rom = 8'b00011000;
+      7'h0D: font_rom = 8'b00011000;
+      7'h0E: font_rom = 8'b01111110;
+      7'h0F: font_rom = 8'b00000000;
+      // 2
+      7'h10: font_rom = 8'b00111100;
+      7'h11: font_rom = 8'b01100110;
+      7'h12: font_rom = 8'b00000110;
+      7'h13: font_rom = 8'b00001100;
+      7'h14: font_rom = 8'b00110000;
+      7'h15: font_rom = 8'b01100000;
+      7'h16: font_rom = 8'b01111110;
+      7'h17: font_rom = 8'b00000000;
+      // 3
+      7'h18: font_rom = 8'b00111100;
+      7'h19: font_rom = 8'b01100110;
+      7'h1A: font_rom = 8'b00000110;
+      7'h1B: font_rom = 8'b00011100;
+      7'h1C: font_rom = 8'b00000110;
+      7'h1D: font_rom = 8'b01100110;
+      7'h1E: font_rom = 8'b00111100;
+      7'h1F: font_rom = 8'b00000000;
+      // 4
+      7'h20: font_rom = 8'b00001100;
+      7'h21: font_rom = 8'b00011100;
+      7'h22: font_rom = 8'b00111100;
+      7'h23: font_rom = 8'b01101100;
+      7'h24: font_rom = 8'b01111110;
+      7'h25: font_rom = 8'b00001100;
+      7'h26: font_rom = 8'b00001100;
+      7'h27: font_rom = 8'b00000000;
+      // 5
+      7'h28: font_rom = 8'b01111110;
+      7'h29: font_rom = 8'b01100000;
+      7'h2A: font_rom = 8'b01111100;
+      7'h2B: font_rom = 8'b00000110;
+      7'h2C: font_rom = 8'b00000110;
+      7'h2D: font_rom = 8'b01100110;
+      7'h2E: font_rom = 8'b00111100;
+      7'h2F: font_rom = 8'b00000000;
+      // 6
+      7'h30: font_rom = 8'b00111100;
+      7'h31: font_rom = 8'b01100110;
+      7'h32: font_rom = 8'b01100000;
+      7'h33: font_rom = 8'b01111100;
+      7'h34: font_rom = 8'b01100110;
+      7'h35: font_rom = 8'b01100110;
+      7'h36: font_rom = 8'b00111100;
+      7'h37: font_rom = 8'b00000000;
+      // 7
+      7'h38: font_rom = 8'b01111110;
+      7'h39: font_rom = 8'b00000110;
+      7'h3A: font_rom = 8'b00001100;
+      7'h3B: font_rom = 8'b00011000;
+      7'h3C: font_rom = 8'b00110000;
+      7'h3D: font_rom = 8'b00110000;
+      7'h3E: font_rom = 8'b00110000;
+      7'h3F: font_rom = 8'b00000000;
+      // 8
+      7'h40: font_rom = 8'b00111100;
+      7'h41: font_rom = 8'b01100110;
+      7'h42: font_rom = 8'b01100110;
+      7'h43: font_rom = 8'b00111100;
+      7'h44: font_rom = 8'b01100110;
+      7'h45: font_rom = 8'b01100110;
+      7'h46: font_rom = 8'b00111100;
+      7'h47: font_rom = 8'b00000000;
+      // 9
+      7'h48: font_rom = 8'b00111100;
+      7'h49: font_rom = 8'b01100110;
+      7'h4A: font_rom = 8'b01100110;
+      7'h4B: font_rom = 8'b00111110;
+      7'h4C: font_rom = 8'b00000110;
+      7'h4D: font_rom = 8'b01100110;
+      7'h4E: font_rom = 8'b00111100;
+      7'h4F: font_rom = 8'b00000000;
+      // A
+      7'h50: font_rom = 8'b00111100;
+      7'h51: font_rom = 8'b01100110;
+      7'h52: font_rom = 8'b01100110;
+      7'h53: font_rom = 8'b01111110;
+      7'h54: font_rom = 8'b01100110;
+      7'h55: font_rom = 8'b01100110;
+      7'h56: font_rom = 8'b01100110;
+      7'h57: font_rom = 8'b00000000;
+      // B
+      7'h58: font_rom = 8'b01111100;
+      7'h59: font_rom = 8'b01100110;
+      7'h5A: font_rom = 8'b01100110;
+      7'h5B: font_rom = 8'b01111100;
+      7'h5C: font_rom = 8'b01100110;
+      7'h5D: font_rom = 8'b01100110;
+      7'h5E: font_rom = 8'b01111100;
+      7'h5F: font_rom = 8'b00000000;
+      // C
+      7'h60: font_rom = 8'b00111100;
+      7'h61: font_rom = 8'b01100110;
+      7'h62: font_rom = 8'b01100000;
+      7'h63: font_rom = 8'b01100000;
+      7'h64: font_rom = 8'b01100000;
+      7'h65: font_rom = 8'b01100110;
+      7'h66: font_rom = 8'b00111100;
+      7'h67: font_rom = 8'b00000000;
+      // D
+      7'h68: font_rom = 8'b01111000;
+      7'h69: font_rom = 8'b01101100;
+      7'h6A: font_rom = 8'b01100110;
+      7'h6B: font_rom = 8'b01100110;
+      7'h6C: font_rom = 8'b01100110;
+      7'h6D: font_rom = 8'b01101100;
+      7'h6E: font_rom = 8'b01111000;
+      7'h6F: font_rom = 8'b00000000;
+      // E
+      7'h70: font_rom = 8'b01111110;
+      7'h71: font_rom = 8'b01100000;
+      7'h72: font_rom = 8'b01100000;
+      7'h73: font_rom = 8'b01111000;
+      7'h74: font_rom = 8'b01100000;
+      7'h75: font_rom = 8'b01100000;
+      7'h76: font_rom = 8'b01111110;
+      7'h77: font_rom = 8'b00000000;
+      // F
+      7'h78: font_rom = 8'b01111110;
+      7'h79: font_rom = 8'b01100000;
+      7'h7A: font_rom = 8'b01100000;
+      7'h7B: font_rom = 8'b01111000;
+      7'h7C: font_rom = 8'b01100000;
+      7'h7D: font_rom = 8'b01100000;
+      7'h7E: font_rom = 8'b01100000;
+      7'h7F: font_rom = 8'b00000000;
+      default: font_rom = 8'b00000000;
+    endcase
+  endfunction
+
+  // Layout: 4 rows × 2 digits per row.  Each digit drawn at 2x scale = 16x16.
+  // Row height = 18 lines (16 + 2 px gap).
+  // Each row also has a 16x16 colored "marker" tile on its left to identify it.
+  //
+  //   x:0..15       = colored row marker
+  //   x:16..31      = digit hi-nibble
+  //   x:32..47      = digit lo-nibble
+  //
+  //   Row 0 (lines 0..15)  : RED    marker, rti_arms       (4-bit)
+  //   Row 1 (lines 18..33) : GREEN  marker, vect_reentry   (4-bit)
+  //   Row 2 (lines 36..51) : YELLOW marker, save_end_wr    (4-bit)
+  //   Row 3 (lines 54..69) : CYAN   marker, ss_req_toggles (4-bit)
+
+  // 4 rows of 16 lines each, stacked at the top of the screen.
+  wire [1:0] text_row    = v_line_count[5:4];          // 0..3 (each block is 16 lines)
+  wire [3:0] text_row_y  = v_line_count[3:0];          // y within the block
+  wire       text_active = (v_line_count < 11'd64);    // first 64 lines
+
+  // x position breaks into 4 columns of 16 px each
+  wire [1:0] text_col    = h_pixel_count[5:4];         // 0..3 (column)
+  wire [3:0] text_col_x  = h_pixel_count[3:0];         // x within column
+  wire       text_col_active = (h_pixel_count < 11'd64);
+
+  // Pick the value for this row
+  reg [3:0] row_value;
+  reg [23:0] row_marker_rgb;
+  always @(*) begin
+    case (text_row)
+      2'd0: begin row_value = dbg_rti_arms_video;       row_marker_rgb = 24'hFF0000; end // RED
+      2'd1: begin row_value = dbg_vect_reentry_video;   row_marker_rgb = 24'h00FF00; end // GREEN
+      2'd2: begin row_value = dbg_save_end_writes_video;row_marker_rgb = 24'hFFFF00; end // YELLOW
+      2'd3: begin row_value = debug_ss_req_toggles_video;row_marker_rgb = 24'h00FFFF; end // CYAN
+    endcase
+  end
+
+  // The 4-bit row_value is a single hex digit.  We display it in column 1
+  // (column 0 = colored marker).  Columns 2,3 are unused (left black).
+  wire [3:0] digit_to_show = row_value;
+  wire [2:0] font_row = text_row_y[3:1];   // 16-line row / 2 = 8-line font row
+  wire [2:0] font_col = text_col_x[3:1];   // 16-px column / 2 = 8-px font col
+  wire [7:0] font_line = font_rom(digit_to_show, font_row);
+  wire       font_pixel = font_line[3'd7 - font_col];
+
+  reg [23:0] text_overlay_rgb;
+  reg        text_overlay_hit;
+  always @(*) begin
+    text_overlay_hit = 0;
+    text_overlay_rgb = 24'h000000;
+    if (text_active && text_col_active) begin
+      text_overlay_hit = 1;
+      case (text_col)
+        2'd0: text_overlay_rgb = row_marker_rgb;                          // colored marker block
+        2'd1: text_overlay_rgb = font_pixel ? 24'hFFFFFF : 24'h000000;     // hex digit
+        default: text_overlay_rgb = 24'h000000;                            // blank
+      endcase
+    end
+  end
+
+  // (text_overlay_rgb / text_overlay_hit are used directly in the rgb mux below)
 
   always @(posedge clk_video_5_37) begin
     prev_de <= de_out;
@@ -1196,7 +1403,10 @@ module core_top (
       rgb <= {9'b0, ~latched_snap_index[0], use_square_pixels_s, 10'b0, 3'b0};
     end else if (de_out) begin
       de  <= 1;
-      rgb <= overlay_enable ? debug_overlay_rgb : rgb_out;
+      // Only override the small text-overlay region; leave the rest of the
+      // frame as the game's output.  This way we can see both the debug
+      // counters AND whether the game/firmware is still drawing anything.
+      rgb <= (overlay_enable && text_overlay_hit) ? text_overlay_rgb : rgb_out;
     end
   end
 
