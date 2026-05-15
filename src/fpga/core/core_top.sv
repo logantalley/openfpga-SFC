@@ -1099,11 +1099,43 @@ module core_top (
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
-  wire [23:0] debug_overlay_rgb = {
-      {debug_sys_state_video,    debug_ss_save_count_video},         // R
-      {ss_busy_seen_video, ss_busy_ever_video, 2'b00, debug_ss_busy_rises_video}, // G
-      {ss_busy_video, ss_save_ever_video, 6'h3F}                     // B
+  // -- Horizontal-bar debug encoding --
+  // 16 vertical bars across the visible scanline, each ~16 pixels wide.
+  // White bar = bit is 1, black bar = bit is 0.  Phone-camera friendly.
+  //
+  // Bar index → bit:
+  //   0..3   sys_state[3:0]               (LSB first)
+  //   4..7   ss_save_count[3:0]
+  //   8..11  ss_busy_rises[3:0]
+  //   12     ss_busy_seen   (current)
+  //   13     ss_busy_ever   (sticky)
+  //   14     ss_save_ever   (sticky)
+  //   15     ss_busy        (current SNES-side)
+  wire [15:0] debug_bits = {
+      ss_busy_video,
+      ss_save_ever_video,
+      ss_busy_ever_video,
+      ss_busy_seen_video,
+      debug_ss_busy_rises_video,
+      debug_ss_save_count_video,
+      debug_sys_state_video
   };
+
+  reg [10:0] h_pixel_count;
+  reg        prev_de_overlay;
+  always @(posedge clk_video_5_37) begin
+    prev_de_overlay <= de_out;
+    if (de_out && ~prev_de_overlay)
+      h_pixel_count <= 11'd0;
+    else if (de_out)
+      h_pixel_count <= h_pixel_count + 11'd1;
+  end
+
+  // 16 pixels per bar  →  bar index is the high 4 bits of h_pixel_count[7:0]
+  // (visible SNES width is 256 pixels)
+  wire [3:0] bar_index = h_pixel_count[7:4];
+  wire       bar_bit   = debug_bits[bar_index];
+  wire [23:0] debug_overlay_rgb = bar_bit ? 24'hFFFFFF : 24'h000000;
 
   always @(posedge clk_video_5_37) begin
     prev_de <= de_out;
