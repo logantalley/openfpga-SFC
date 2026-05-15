@@ -520,6 +520,10 @@ module core_top (
   wire       debug_ss_save_ever;
   wire [3:0] debug_ss_save_count;
   wire [3:0] debug_ss_busy_rises;
+  wire       debug_ss_req_ever;
+  wire [3:0] debug_ss_req_toggles;
+  wire       debug_core_wr_ever;
+  wire       debug_sram_wr_ack_ever;
 
   save_state_controller save_state_controller (
       .clk_74a(clk_74a),
@@ -561,12 +565,16 @@ module core_top (
       .ss_busy(ss_busy),
 
       // Debug taps for on-screen overlay
-      .debug_sys_state    (debug_sys_state),
-      .debug_ss_busy_seen (debug_ss_busy_seen),
-      .debug_ss_busy_ever (debug_ss_busy_ever),
-      .debug_ss_save_ever (debug_ss_save_ever),
-      .debug_ss_save_count(debug_ss_save_count),
-      .debug_ss_busy_rises(debug_ss_busy_rises),
+      .debug_sys_state       (debug_sys_state),
+      .debug_ss_busy_seen    (debug_ss_busy_seen),
+      .debug_ss_busy_ever    (debug_ss_busy_ever),
+      .debug_ss_save_ever    (debug_ss_save_ever),
+      .debug_ss_save_count   (debug_ss_save_count),
+      .debug_ss_busy_rises   (debug_ss_busy_rises),
+      .debug_ss_req_ever     (debug_ss_req_ever),
+      .debug_ss_req_toggles  (debug_ss_req_toggles),
+      .debug_core_wr_ever    (debug_core_wr_ever),
+      .debug_sram_wr_ack_ever(debug_sram_wr_ack_ever),
 
       // SRAM interface
       .sram_a   (sram_a),
@@ -1069,61 +1077,55 @@ module core_top (
   reg [1:0] ss_busy_seen_video_sync;
   reg [1:0] ss_busy_ever_video_sync;
   reg [1:0] ss_save_ever_video_sync;
+  reg [1:0] ss_req_ever_video_sync;
+  reg [1:0] core_wr_ever_video_sync;
+  reg [1:0] sram_wr_ack_ever_video_sync;
   reg [3:0] debug_sys_state_video_sync_0;
   reg [3:0] debug_sys_state_video_sync_1;
-  reg [3:0] debug_ss_save_count_video_sync_0;
-  reg [3:0] debug_ss_save_count_video_sync_1;
-  reg [3:0] debug_ss_busy_rises_video_sync_0;
-  reg [3:0] debug_ss_busy_rises_video_sync_1;
 
   always @(posedge clk_video_5_37) begin
-    ss_busy_video_sync               <= {ss_busy_video_sync[0],         ss_busy};
-    ss_busy_seen_video_sync          <= {ss_busy_seen_video_sync[0],    debug_ss_busy_seen};
-    ss_busy_ever_video_sync          <= {ss_busy_ever_video_sync[0],    debug_ss_busy_ever};
-    ss_save_ever_video_sync          <= {ss_save_ever_video_sync[0],    debug_ss_save_ever};
-    debug_sys_state_video_sync_0     <= debug_sys_state;
-    debug_sys_state_video_sync_1     <= debug_sys_state_video_sync_0;
-    debug_ss_save_count_video_sync_0 <= debug_ss_save_count;
-    debug_ss_save_count_video_sync_1 <= debug_ss_save_count_video_sync_0;
-    debug_ss_busy_rises_video_sync_0 <= debug_ss_busy_rises;
-    debug_ss_busy_rises_video_sync_1 <= debug_ss_busy_rises_video_sync_0;
+    ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
+    ss_busy_seen_video_sync      <= {ss_busy_seen_video_sync[0],      debug_ss_busy_seen};
+    ss_busy_ever_video_sync      <= {ss_busy_ever_video_sync[0],      debug_ss_busy_ever};
+    ss_save_ever_video_sync      <= {ss_save_ever_video_sync[0],      debug_ss_save_ever};
+    ss_req_ever_video_sync       <= {ss_req_ever_video_sync[0],       debug_ss_req_ever};
+    core_wr_ever_video_sync      <= {core_wr_ever_video_sync[0],      debug_core_wr_ever};
+    sram_wr_ack_ever_video_sync  <= {sram_wr_ack_ever_video_sync[0],  debug_sram_wr_ack_ever};
+    debug_sys_state_video_sync_0 <= debug_sys_state;
+    debug_sys_state_video_sync_1 <= debug_sys_state_video_sync_0;
   end
 
-  wire ss_busy_video       = ss_busy_video_sync[1];
-  wire ss_busy_seen_video  = ss_busy_seen_video_sync[1];
-  wire ss_busy_ever_video  = ss_busy_ever_video_sync[1];
-  wire ss_save_ever_video  = ss_save_ever_video_sync[1];
-  wire [3:0] debug_sys_state_video     = debug_sys_state_video_sync_1;
-  wire [3:0] debug_ss_save_count_video = debug_ss_save_count_video_sync_1;
-  wire [3:0] debug_ss_busy_rises_video = debug_ss_busy_rises_video_sync_1;
+  wire ss_busy_video          = ss_busy_video_sync[1];
+  wire ss_busy_seen_video     = ss_busy_seen_video_sync[1];
+  wire ss_busy_ever_video     = ss_busy_ever_video_sync[1];
+  wire ss_save_ever_video     = ss_save_ever_video_sync[1];
+  wire ss_req_ever_video      = ss_req_ever_video_sync[1];
+  wire core_wr_ever_video     = core_wr_ever_video_sync[1];
+  wire sram_wr_ack_ever_video = sram_wr_ack_ever_video_sync[1];
+  wire [3:0] debug_sys_state_video = debug_sys_state_video_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
   // -- Horizontal-bar debug encoding (8 bars, 32 px each) --
-  // 8 vertical bars across the visible scanline, each ~32 pixels wide.
-  // White bar = bit is 1, black bar = bit is 0.
-  //
-  // Bars 0 and 7 are FIXED CALIBRATION MARKERS (always white) so you can
-  // identify the screen edges and direction.  The 6 middle bars are the
-  // signals we actually care about.
+  // Focus this time: do save chunks flow from firmware → controller → SRAM?
   //
   //   bar 0  : WHITE calibration (always lit)
-  //   bar 1  : ss_save_ever  (sticky — controller fired ss_save at least once)
-  //   bar 2  : ss_busy_ever  (sticky — ss_busy rose at least once)
-  //   bar 3  : ss_busy_video (current SNES-side ss_busy)
-  //   bar 4  : ss_busy_seen  (controller's current view, clears on IDLE)
-  //   bar 5  : sys_state == SAVE_ACTIVE (=1)
-  //   bar 6  : sys_state != IDLE        (any non-idle controller state)
+  //   bar 1  : ss_busy            (currently mid-save?)
+  //   bar 2  : sys_state==SAVE_ACTIVE
+  //   bar 3  : ss_req_ever        — did firmware ever toggle ss_req? (any save chunk attempted)
+  //   bar 4  : core_wr_ever       — did controller forward a chunk to SRAM via CDC?
+  //   bar 5  : sram_wr_ack_ever   — did SRAM FSM ack the write back?
+  //   bar 6  : ss_busy_seen       — controller sees a save in progress
   //   bar 7  : WHITE calibration (always lit)
   wire [7:0] debug_bits = {
-      1'b1,                                                       // bar 7
-      (debug_sys_state_video != 4'd0),                            // bar 6
-      (debug_sys_state_video == 4'd1),                            // bar 5
-      ss_busy_seen_video,                                         // bar 4
-      ss_busy_video,                                              // bar 3
-      ss_busy_ever_video,                                         // bar 2
-      ss_save_ever_video,                                         // bar 1
-      1'b1                                                        // bar 0
+      1'b1,                                          // bar 7
+      ss_busy_seen_video,                            // bar 6
+      sram_wr_ack_ever_video,                        // bar 5
+      core_wr_ever_video,                            // bar 4
+      ss_req_ever_video,                             // bar 3
+      (debug_sys_state_video == 4'd1),               // bar 2 SAVE_ACTIVE
+      ss_busy_video,                                 // bar 1
+      1'b1                                           // bar 0
   };
 
   reg [10:0] h_pixel_count;

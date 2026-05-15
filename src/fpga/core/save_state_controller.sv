@@ -90,6 +90,10 @@ module save_state_controller (
     output wire       debug_ss_save_ever,    // sticky: controller pulsed ss_save
     output wire [3:0] debug_ss_save_count,   // count of ss_save pulses (wraps)
     output wire [3:0] debug_ss_busy_rises,   // count of ss_busy rising edges
+    output wire       debug_ss_req_ever,     // sticky: ss_req has toggled at least once
+    output wire [3:0] debug_ss_req_toggles,  // count of ss_req edges (mod 16)
+    output wire       debug_core_wr_ever,    // sticky: core_wr_req_toggle has ever changed
+    output wire       debug_sram_wr_ack_ever,// sticky: sram_wr_ack_toggle has ever changed
 
     // SRAM interface (directly to Pocket board SRAM)
     output reg  [16:0] sram_a,
@@ -228,15 +232,25 @@ module save_state_controller (
   assign debug_ss_busy_seen = ss_busy_seen;
 
   // Sticky / count debug regs — never cleared, only set/incremented.
-  reg       ss_busy_ever  = 0;
-  reg       ss_save_ever  = 0;
-  reg [3:0] ss_save_count = 4'h0;
-  reg [3:0] ss_busy_rises = 4'h0;
+  reg       ss_busy_ever       = 0;
+  reg       ss_save_ever       = 0;
+  reg [3:0] ss_save_count      = 4'h0;
+  reg [3:0] ss_busy_rises      = 4'h0;
+  reg       ss_req_ever        = 0;
+  reg [3:0] ss_req_toggles     = 4'h0;
+  reg       core_wr_ever       = 0;
+  reg       sram_wr_ack_ever   = 0;
+  reg       prev_core_wr_req   = 0;
+  reg       prev_sram_wr_ack_s = 0;
 
-  assign debug_ss_busy_ever  = ss_busy_ever;
-  assign debug_ss_save_ever  = ss_save_ever;
-  assign debug_ss_save_count = ss_save_count;
-  assign debug_ss_busy_rises = ss_busy_rises;
+  assign debug_ss_busy_ever      = ss_busy_ever;
+  assign debug_ss_save_ever      = ss_save_ever;
+  assign debug_ss_save_count     = ss_save_count;
+  assign debug_ss_busy_rises     = ss_busy_rises;
+  assign debug_ss_req_ever       = ss_req_ever;
+  assign debug_ss_req_toggles    = ss_req_toggles;
+  assign debug_core_wr_ever      = core_wr_ever;
+  assign debug_sram_wr_ack_ever  = sram_wr_ack_ever;
 
   always @(posedge clk_sys) begin
     prev_savestate_start <= savestate_start_s;
@@ -255,6 +269,22 @@ module save_state_controller (
       ss_busy_ever <= 1;
       ss_busy_rises <= ss_busy_rises + 4'd1;
     end
+
+    // Track ss_req toggles (each toggle = one save chunk handshake start)
+    if (ss_req != prev_ss_req) begin
+      ss_req_ever <= 1;
+      ss_req_toggles <= ss_req_toggles + 4'd1;
+    end
+
+    // Track when controller forwards a save chunk to SRAM (core_wr_req_toggle edge)
+    prev_core_wr_req <= core_wr_req_toggle;
+    if (core_wr_req_toggle != prev_core_wr_req)
+      core_wr_ever <= 1;
+
+    // Track when SRAM FSM acks back via sram_wr_ack_sys
+    prev_sram_wr_ack_s <= sram_wr_ack_sys;
+    if (sram_wr_ack_sys != prev_sram_wr_ack_s)
+      sram_wr_ack_ever <= 1;
 
     // ----- APF triggers save -----
     if (savestate_start_s && ~prev_savestate_start) begin
