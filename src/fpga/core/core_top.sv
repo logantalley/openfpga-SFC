@@ -1099,26 +1099,31 @@ module core_top (
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
-  // -- Horizontal-bar debug encoding --
-  // 16 vertical bars across the visible scanline, each ~16 pixels wide.
-  // White bar = bit is 1, black bar = bit is 0.  Phone-camera friendly.
+  // -- Horizontal-bar debug encoding (8 bars, 32 px each) --
+  // 8 vertical bars across the visible scanline, each ~32 pixels wide.
+  // White bar = bit is 1, black bar = bit is 0.
   //
-  // Bar index → bit:
-  //   0..3   sys_state[3:0]               (LSB first)
-  //   4..7   ss_save_count[3:0]
-  //   8..11  ss_busy_rises[3:0]
-  //   12     ss_busy_seen   (current)
-  //   13     ss_busy_ever   (sticky)
-  //   14     ss_save_ever   (sticky)
-  //   15     ss_busy        (current SNES-side)
-  wire [15:0] debug_bits = {
-      ss_busy_video,
-      ss_save_ever_video,
-      ss_busy_ever_video,
-      ss_busy_seen_video,
-      debug_ss_busy_rises_video,
-      debug_ss_save_count_video,
-      debug_sys_state_video
+  // Bars 0 and 7 are FIXED CALIBRATION MARKERS (always white) so you can
+  // identify the screen edges and direction.  The 6 middle bars are the
+  // signals we actually care about.
+  //
+  //   bar 0  : WHITE calibration (always lit)
+  //   bar 1  : ss_save_ever  (sticky — controller fired ss_save at least once)
+  //   bar 2  : ss_busy_ever  (sticky — ss_busy rose at least once)
+  //   bar 3  : ss_busy_video (current SNES-side ss_busy)
+  //   bar 4  : ss_busy_seen  (controller's current view, clears on IDLE)
+  //   bar 5  : sys_state == SAVE_ACTIVE (=1)
+  //   bar 6  : sys_state != IDLE        (any non-idle controller state)
+  //   bar 7  : WHITE calibration (always lit)
+  wire [7:0] debug_bits = {
+      1'b1,                                                       // bar 7
+      (debug_sys_state_video != 4'd0),                            // bar 6
+      (debug_sys_state_video == 4'd1),                            // bar 5
+      ss_busy_seen_video,                                         // bar 4
+      ss_busy_video,                                              // bar 3
+      ss_busy_ever_video,                                         // bar 2
+      ss_save_ever_video,                                         // bar 1
+      1'b1                                                        // bar 0
   };
 
   reg [10:0] h_pixel_count;
@@ -1131,9 +1136,9 @@ module core_top (
       h_pixel_count <= h_pixel_count + 11'd1;
   end
 
-  // 16 pixels per bar  →  bar index is the high 4 bits of h_pixel_count[7:0]
-  // (visible SNES width is 256 pixels)
-  wire [3:0] bar_index = h_pixel_count[7:4];
+  // 32 pixels per bar  →  bar index is bits [7:5] of h_pixel_count
+  // (visible SNES width is 256 pixels = 8 bars × 32)
+  wire [2:0] bar_index = h_pixel_count[7:5];
   wire       bar_bit   = debug_bits[bar_index];
   wire [23:0] debug_overlay_rgb = bar_bit ? 24'hFFFFFF : 24'h000000;
 
