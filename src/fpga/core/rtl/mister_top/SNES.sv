@@ -26,6 +26,8 @@ module MAIN_SNES (
     output wire [3:0]  dbg_vect_reentry,
     output wire [3:0]  dbg_ddr_writes,
     output wire [3:0]  dbg_save_end_writes,
+    output wire [3:0]  dbg_fw_entry,
+    output wire [3:0]  dbg_fw_nmidis,
 
     input wire multitap_enabled,
     input wire lightgun_enabled,
@@ -445,6 +447,8 @@ module MAIN_SNES (
       .DBG_VECT_REENTRY   (dbg_vect_reentry),
       .DBG_DDR_WRITES     (dbg_ddr_writes),
       .DBG_SAVE_END_WRITES(dbg_save_end_writes),
+      .DBG_FW_ENTRY       (dbg_fw_entry),
+      .DBG_FW_NMIDIS      (dbg_fw_nmidis),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),

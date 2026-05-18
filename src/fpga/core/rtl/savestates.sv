@@ -75,7 +75,9 @@ module savestates
 	output reg [3:0]  dbg_rti_arms,        // count of rti_sel arms during ss_busy
 	output reg [3:0]  dbg_vect_reentry,    // count of NMI/IRQ vector reads while ss_busy=1
 	output reg [3:0]  dbg_ddr_writes,      // count of WRITE_DATA state entries
-	output reg [3:0]  dbg_save_end_writes  // count of sta SS_END
+	output reg [3:0]  dbg_save_end_writes, // count of sta SS_END
+	output reg [3:0]  dbg_fw_entry,        // count of fetches at PC=$00:$8009 (Save_start)
+	output reg [3:0]  dbg_fw_nmidis        // count of fetches at PC=$00:$802C (STA NMITIMEN)
 );
 
 reg cpurd_n_old, cpuwr_n_old;
@@ -230,6 +232,8 @@ always @(posedge clk) begin
 		dbg_vect_reentry <= 0;
 		dbg_ddr_writes <= 0;
 		dbg_save_end_writes <= 0;
+		dbg_fw_entry <= 0;
+		dbg_fw_nmidis <= 0;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
@@ -264,6 +268,16 @@ always @(posedge clk) begin
 			if (ss_busy & rti_sel & ~rd_rti) begin
 				rd_rti <= 1;
 				dbg_rti_arms <= dbg_rti_arms + 4'd1;
+			end
+
+			// Debug: count when CPU fetches at firmware entry points (while ss_busy=1)
+			// $00:$8009 = Save_start (first instruction after the jml at $8000)
+			// $00:$802C = STA NMITIMEN — once we get here, NMI is about to be disabled
+			if (ss_busy & (ca[23:0] == 24'h008009)) begin
+				dbg_fw_entry <= dbg_fw_entry + 4'd1;
+			end
+			if (ss_busy & (ca[23:0] == 24'h00802C)) begin
+				dbg_fw_nmidis <= dbg_fw_nmidis + 4'd1;
 			end
 		end
 

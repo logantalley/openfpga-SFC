@@ -137,7 +137,9 @@ module main #(
     output      [3:0]  DBG_RTI_ARMS,
     output      [3:0]  DBG_VECT_REENTRY,
     output      [3:0]  DBG_DDR_WRITES,
-    output      [3:0]  DBG_SAVE_END_WRITES
+    output      [3:0]  DBG_SAVE_END_WRITES,
+    output      [3:0]  DBG_FW_ENTRY,
+    output      [3:0]  DBG_FW_NMIDIS
 );
 
   parameter USE_DLH = 1'b1;
@@ -847,7 +849,9 @@ module main #(
       .dbg_rti_arms       (DBG_RTI_ARMS),
       .dbg_vect_reentry   (DBG_VECT_REENTRY),
       .dbg_ddr_writes     (DBG_DDR_WRITES),
-      .dbg_save_end_writes(DBG_SAVE_END_WRITES)
+      .dbg_save_end_writes(DBG_SAVE_END_WRITES),
+      .dbg_fw_entry       (DBG_FW_ENTRY),
+      .dbg_fw_nmidis      (DBG_FW_NMIDIS)
   );
 
   assign TURBO_ALLOW = ~(MAP_ACTIVE[3] | MAP_ACTIVE[1] | SS_BUSY);

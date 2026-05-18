@@ -530,6 +530,8 @@ module core_top (
   wire [3:0] dbg_vect_reentry;
   wire [3:0] dbg_ddr_writes;
   wire [3:0] dbg_save_end_writes;
+  wire [3:0] dbg_fw_entry;
+  wire [3:0] dbg_fw_nmidis;
 
   save_state_controller save_state_controller (
       .clk_74a(clk_74a),
@@ -890,6 +892,8 @@ module core_top (
       .dbg_vect_reentry   (dbg_vect_reentry),
       .dbg_ddr_writes     (dbg_ddr_writes),
       .dbg_save_end_writes(dbg_save_end_writes),
+      .dbg_fw_entry       (dbg_fw_entry),
+      .dbg_fw_nmidis      (dbg_fw_nmidis),
 
       // Input
       .p1_button_a(cont1_key_s[4]),
@@ -1103,6 +1107,10 @@ module core_top (
   reg [3:0] dbg_ddr_writes_sync_1;
   reg [3:0] dbg_save_end_writes_sync_0;
   reg [3:0] dbg_save_end_writes_sync_1;
+  reg [3:0] dbg_fw_entry_sync_0;
+  reg [3:0] dbg_fw_entry_sync_1;
+  reg [3:0] dbg_fw_nmidis_sync_0;
+  reg [3:0] dbg_fw_nmidis_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1124,6 +1132,10 @@ module core_top (
     dbg_ddr_writes_sync_1      <= dbg_ddr_writes_sync_0;
     dbg_save_end_writes_sync_0 <= dbg_save_end_writes;
     dbg_save_end_writes_sync_1 <= dbg_save_end_writes_sync_0;
+    dbg_fw_entry_sync_0   <= dbg_fw_entry;
+    dbg_fw_entry_sync_1   <= dbg_fw_entry_sync_0;
+    dbg_fw_nmidis_sync_0  <= dbg_fw_nmidis;
+    dbg_fw_nmidis_sync_1  <= dbg_fw_nmidis_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1139,6 +1151,8 @@ module core_top (
   wire [3:0] dbg_vect_reentry_video     = dbg_vect_reentry_sync_1;
   wire [3:0] dbg_ddr_writes_video       = dbg_ddr_writes_sync_1;
   wire [3:0] dbg_save_end_writes_video  = dbg_save_end_writes_sync_1;
+  wire [3:0] dbg_fw_entry_video         = dbg_fw_entry_sync_1;
+  wire [3:0] dbg_fw_nmidis_video        = dbg_fw_nmidis_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
@@ -1356,10 +1370,14 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      2'd0: begin row_value = dbg_rti_arms_video;       row_marker_rgb = 24'hFF0000; end // RED
-      2'd1: begin row_value = dbg_vect_reentry_video;   row_marker_rgb = 24'h00FF00; end // GREEN
-      2'd2: begin row_value = dbg_save_end_writes_video;row_marker_rgb = 24'hFFFF00; end // YELLOW
-      2'd3: begin row_value = debug_ss_req_toggles_video;row_marker_rgb = 24'h00FFFF; end // CYAN
+      // Row 0 (RED)    : rti_arms          — RTI matched on $XX:$8008 read
+      // Row 1 (GREEN)  : vect_reentry      — vector reads while ss_busy=1
+      // Row 2 (YELLOW) : fw_entry          — firmware reached Save_start @ $8009
+      // Row 3 (CYAN)   : fw_nmidis         — firmware reached STA NMITIMEN @ $802C
+      2'd0: begin row_value = dbg_rti_arms_video;     row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_vect_reentry_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_fw_entry_video;     row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_fw_nmidis_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
