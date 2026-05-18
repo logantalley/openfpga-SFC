@@ -77,7 +77,9 @@ module savestates
 	output reg [3:0]  dbg_ddr_writes,      // count of WRITE_DATA state entries
 	output reg [3:0]  dbg_save_end_writes, // count of sta SS_END
 	output reg [3:0]  dbg_fw_entry,        // count of fetches at PC=$00:$8009 (Save_start)
-	output reg [3:0]  dbg_fw_nmidis        // count of fetches at PC=$00:$802C (STA NMITIMEN)
+	output reg [3:0]  dbg_fw_nmidis,       // count of fetches at PC=$00:$802C (STA NMITIMEN)
+	output reg [3:0]  dbg_fw_at_8000,      // count of fetches at PC=$00:$8000 (JML opcode)
+	output reg [3:0]  dbg_fw_at_8003       // count of fetches at PC=$00:$8003 (JML last byte)
 );
 
 reg cpurd_n_old, cpuwr_n_old;
@@ -234,6 +236,8 @@ always @(posedge clk) begin
 		dbg_save_end_writes <= 0;
 		dbg_fw_entry <= 0;
 		dbg_fw_nmidis <= 0;
+		dbg_fw_at_8000 <= 0;
+		dbg_fw_at_8003 <= 0;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
@@ -278,6 +282,12 @@ always @(posedge clk) begin
 			end
 			if (ss_busy & (ca[23:0] == 24'h00802C)) begin
 				dbg_fw_nmidis <= dbg_fw_nmidis + 4'd1;
+			end
+			if (ss_busy & (ca[23:0] == 24'h008000)) begin
+				dbg_fw_at_8000 <= dbg_fw_at_8000 + 4'd1;
+			end
+			if (ss_busy & (ca[23:0] == 24'h008003)) begin
+				dbg_fw_at_8003 <= dbg_fw_at_8003 + 4'd1;
 			end
 		end
 

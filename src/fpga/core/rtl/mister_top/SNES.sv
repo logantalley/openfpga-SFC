@@ -28,6 +28,8 @@ module MAIN_SNES (
     output wire [3:0]  dbg_save_end_writes,
     output wire [3:0]  dbg_fw_entry,
     output wire [3:0]  dbg_fw_nmidis,
+    output wire [3:0]  dbg_fw_at_8000,
+    output wire [3:0]  dbg_fw_at_8003,
 
     input wire multitap_enabled,
     input wire lightgun_enabled,
@@ -449,6 +451,8 @@ module MAIN_SNES (
       .DBG_SAVE_END_WRITES(dbg_save_end_writes),
       .DBG_FW_ENTRY       (dbg_fw_entry),
       .DBG_FW_NMIDIS      (dbg_fw_nmidis),
+      .DBG_FW_AT_8000     (dbg_fw_at_8000),
+      .DBG_FW_AT_8003     (dbg_fw_at_8003),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),
