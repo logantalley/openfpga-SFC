@@ -532,6 +532,10 @@ module core_top (
   wire [7:0] debug_first_wr_addr_hi;
   wire [7:0] debug_first_save_byte0;
   wire [7:0] debug_first_save_byte1;
+  wire [7:0] debug_bridge_rd_count_lo;
+  wire [7:0] debug_bridge_rd_count_hi;
+  wire [7:0] debug_first_rd_addr_lo;
+  wire [7:0] debug_first_rd_addr_hi;
 
   // Debug taps from savestates.sv (SNES side)
   wire [3:0] dbg_rti_arms;
@@ -605,6 +609,10 @@ module core_top (
       .debug_first_wr_addr_hi  (debug_first_wr_addr_hi),
       .debug_first_save_byte0  (debug_first_save_byte0),
       .debug_first_save_byte1  (debug_first_save_byte1),
+      .debug_bridge_rd_count_lo(debug_bridge_rd_count_lo),
+      .debug_bridge_rd_count_hi(debug_bridge_rd_count_hi),
+      .debug_first_rd_addr_lo  (debug_first_rd_addr_lo),
+      .debug_first_rd_addr_hi  (debug_first_rd_addr_hi),
 
       // SRAM interface
       .sram_a   (sram_a),
@@ -1167,6 +1175,14 @@ module core_top (
   reg [7:0] dbg_first_save_b0_sync_1;
   reg [7:0] dbg_first_save_b1_sync_0;
   reg [7:0] dbg_first_save_b1_sync_1;
+  reg [7:0] dbg_bridge_rd_lo_sync_0;
+  reg [7:0] dbg_bridge_rd_lo_sync_1;
+  reg [7:0] dbg_bridge_rd_hi_sync_0;
+  reg [7:0] dbg_bridge_rd_hi_sync_1;
+  reg [7:0] dbg_first_rd_lo_sync_0;
+  reg [7:0] dbg_first_rd_lo_sync_1;
+  reg [7:0] dbg_first_rd_hi_sync_0;
+  reg [7:0] dbg_first_rd_hi_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1220,6 +1236,14 @@ module core_top (
     dbg_first_save_b0_sync_1 <= dbg_first_save_b0_sync_0;
     dbg_first_save_b1_sync_0 <= debug_first_save_byte1;
     dbg_first_save_b1_sync_1 <= dbg_first_save_b1_sync_0;
+    dbg_bridge_rd_lo_sync_0  <= debug_bridge_rd_count_lo;
+    dbg_bridge_rd_lo_sync_1  <= dbg_bridge_rd_lo_sync_0;
+    dbg_bridge_rd_hi_sync_0  <= debug_bridge_rd_count_hi;
+    dbg_bridge_rd_hi_sync_1  <= dbg_bridge_rd_hi_sync_0;
+    dbg_first_rd_lo_sync_0   <= debug_first_rd_addr_lo;
+    dbg_first_rd_lo_sync_1   <= dbg_first_rd_lo_sync_0;
+    dbg_first_rd_hi_sync_0   <= debug_first_rd_addr_hi;
+    dbg_first_rd_hi_sync_1   <= dbg_first_rd_hi_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1251,6 +1275,10 @@ module core_top (
   wire [7:0] dbg_first_addr_hi_video    = dbg_first_addr_hi_sync_1;
   wire [7:0] dbg_first_save_b0_video    = dbg_first_save_b0_sync_1;
   wire [7:0] dbg_first_save_b1_video    = dbg_first_save_b1_sync_1;
+  wire [7:0] dbg_bridge_rd_lo_video     = dbg_bridge_rd_lo_sync_1;
+  wire [7:0] dbg_bridge_rd_hi_video     = dbg_bridge_rd_hi_sync_1;
+  wire [7:0] dbg_first_rd_lo_video      = dbg_first_rd_lo_sync_1;
+  wire [7:0] dbg_first_rd_hi_video      = dbg_first_rd_hi_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
@@ -1468,21 +1496,24 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Row 0 (RED)    : first_save_byte0  — first byte SNES wrote during save (expect $53='S')
-      // Row 1 (GREEN)  : first_save_byte1  — second byte SNES wrote (expect $4E='N')
-      // Row 2 (YELLOW) : first_wr_data_b0  — first byte APF wrote during load (expect $53='S')
-      // Row 3 (CYAN)   : first_wr_data_b1  — second byte APF wrote during load (expect $4E='N')
+      // SD card inspection showed the save state body in the file starts
+      // with the correct $53 4E 45 53 00 00 00 00 (SNES + 4 zeros) header
+      // at file offset 436 (past the SPA wrapper).  But APF writes some
+      // different value to bridge addr 0 during load.  Capture the first
+      // EIGHT bytes APF wrote so we can match them against the actual
+      // file on disk and figure out the offset.
       //
-      // Comparison logic:
-      //   If RED/GREEN = $53 $4E AND YELLOW/CYAN = $53 $4E → round-trip intact, bug elsewhere.
-      //   If RED/GREEN = $53 $4E but YELLOW/CYAN differ    → APF read-during-save or file
-      //                                                       roundtrip is corrupting data.
-      //   If RED/GREEN != $53 $4E                          → SNES side wrote wrong data
-      //                                                       (shouldn't happen).
-      2'd0: begin row_value = dbg_first_save_b0_video;       row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_b1_video;       row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_data_b0_video;       row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_data_b1_video;       row_marker_rgb = 24'h00FFFF; end
+      // Row 0 (RED)    : bridge_wr first write byte 0 (file byte 0?)
+      // Row 1 (GREEN)  : bridge_wr first write byte 1
+      // Row 2 (YELLOW) : bridge_wr second write byte 0 (file byte 4?)
+      // Row 3 (CYAN)   : bridge_wr second write byte 1 (file byte 5?)
+      //
+      // first_rd_* outputs are REPURPOSED to carry second_wr_data upper
+      // bytes (see savestate_controller debug signals).
+      2'd0: begin row_value = dbg_first_data_b0_video;       row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_data_b1_video;       row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_addr_hi_video;       row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_addr_lo_video;       row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

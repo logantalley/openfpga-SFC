@@ -102,6 +102,10 @@ module save_state_controller (
     output wire [7:0] debug_first_wr_addr_hi,   // bridge_addr[15:8] of first write (expect $00)
     output wire [7:0] debug_first_save_byte0,   // First byte SNES wrote during save: core_wr_data[7:0] (expect $53='S')
     output wire [7:0] debug_first_save_byte1,   // Second byte: core_wr_data[15:8] (expect $4E='N')
+    output wire [7:0] debug_bridge_rd_count_lo, // low byte of bridge_rd events at 4xxxxxxx
+    output wire [7:0] debug_bridge_rd_count_hi, // high byte (saturates at FF)
+    output wire [7:0] debug_first_rd_addr_lo,   // bridge_addr[7:0] of first bridge_rd (expect $00)
+    output wire [7:0] debug_first_rd_addr_hi,   // bridge_addr[15:8] of first bridge_rd (expect $00)
 
     // SRAM interface (directly to Pocket board SRAM)
     output reg  [16:0] sram_a,
@@ -145,6 +149,11 @@ module save_state_controller (
   reg savestate_start_ok   = 0;
   reg savestate_start_err  = 0;
 
+  // savestate_start_ok_s_internal is the controller's view of "save done"
+  // in the clk_74a domain.  We GATE it with pf_initial_ready (see the
+  // prefetch logic below) before exposing to APF, so APF only sees
+  // savestate_start_ok rise once the first bridge-read prefetch is staged.
+  wire savestate_start_ok_s_internal;
   synch_3 #(.WIDTH(8)) savestate_out (
       {
         savestate_load_ack,  savestate_load_busy,
@@ -156,10 +165,11 @@ module save_state_controller (
         savestate_load_ack_s,  savestate_load_busy_s,
         savestate_load_ok_s,   savestate_load_err_s,
         savestate_start_ack_s, savestate_start_busy_s,
-        savestate_start_ok_s,  savestate_start_err_s
+        savestate_start_ok_s_internal,  savestate_start_err_s
       },
       clk_74a
   );
+  assign savestate_start_ok_s = savestate_start_ok_s_internal & pf_initial_ready;
 
   // ===================================================================
   // CDC: Core ↔ SRAM toggle-based data transfer
@@ -268,13 +278,16 @@ module save_state_controller (
 
   // Capture data and address of the FIRST bridge_wr at 4xxxxxxx ever seen.
   // Sticky — never overwritten after the first event.
-  reg [31:0] first_wr_data = 32'h00000000;
-  reg [31:0] first_wr_addr = 32'h00000000;
-  reg        first_wr_seen = 0;
-  assign debug_first_wr_data_b0 = first_wr_data[31:24];
-  assign debug_first_wr_data_b1 = first_wr_data[23:16];
-  assign debug_first_wr_addr_lo = first_wr_addr[7:0];
-  assign debug_first_wr_addr_hi = first_wr_addr[15:8];
+  reg [31:0] first_wr_data  = 32'h00000000;
+  reg [31:0] first_wr_addr  = 32'h00000000;
+  reg [31:0] second_wr_data = 32'h00000000;
+  reg [1:0]  wr_capture_idx = 0;
+  reg        first_wr_seen  = 0;
+  // Expose first 4 bytes of bridge_wr_data (from first write) and 4 more (second write).
+  assign debug_first_wr_data_b0 = first_wr_data[31:24];   // file byte 0 if big-endian
+  assign debug_first_wr_data_b1 = first_wr_data[23:16];   // file byte 1
+  assign debug_first_wr_addr_lo = second_wr_data[31:24];  // (repurposed) file byte 4 (start of second write)
+  assign debug_first_wr_addr_hi = second_wr_data[23:16];  // file byte 5
 
   // Capture the FIRST 64-bit chunk the SNES wrote during save.
   // core_wr_data is in clk_sys; latch it sticky.
@@ -282,6 +295,16 @@ module save_state_controller (
   reg        first_save_seen  = 0;
   assign debug_first_save_byte0 = first_save_chunk[7:0];
   assign debug_first_save_byte1 = first_save_chunk[15:8];
+
+  // Count bridge_rd events at 4xxxxxxx (the save-state region).
+  // Capture the very first bridge_rd's address (sticky).
+  reg [15:0] bridge_rd_count = 16'h0000;
+  reg [31:0] first_rd_addr   = 32'h00000000;
+  reg        first_rd_seen   = 0;
+  assign debug_bridge_rd_count_lo = bridge_rd_count[7:0];
+  assign debug_bridge_rd_count_hi = bridge_rd_count[15:8];
+  assign debug_first_rd_addr_lo   = first_rd_addr[7:0];
+  assign debug_first_rd_addr_hi   = first_rd_addr[15:8];
 
   always @(posedge clk_sys) begin
     prev_savestate_start <= savestate_start_s;
@@ -496,34 +519,56 @@ module save_state_controller (
   reg [16:0] bridge_wr_sram_addr;
   reg [31:0] bridge_wr_latched;
 
-  // FIX #3: Pre-fetch state for bridge save reads.
-  // Previously, bridge_rd arriving while the SRAM FSM was busy would
-  // update prefetch_sram_addr and set prefetch_pending, but if another
-  // bridge_rd arrived before the FSM returned to IDLE, the address
-  // would advance again and the first read would be silently dropped.
+  // Save-side bridge-read prefetch — double-buffered, always-ahead.
   //
-  // Fix: capture the address at the moment bridge_rd fires into a
-  // separate latch (prefetch_req_addr).  prefetch_pending acts as a
-  // 1-deep queue: the FSM consumes it, and any bridge_rd that arrives
-  // while the FSM is busy overwrites with the most-recent address.
-  // This is safe because the APF bridge always reads sequentially and
-  // re-reads the same address if data is not yet ready (it polls until
-  // the address changes), so losing an in-flight prefetch request is
-  // benign — the bridge will simply re-request the same address.
+  // Background: the previous design (FIX #3) assumed that APF would
+  // re-poll a bridge_rd when the FSM hadn't yet produced fresh data.
+  // That assumption is false: APF reads bridge_rd_data at its own ~75
+  // clk_74a-cycle pace and never re-issues a "missed" read.  The result
+  // was that the first ~3 bridge_rds after savestate_start_ok returned
+  // a stale (uninitialized) value while prefetch_sram_addr kept
+  // advancing — silently dropping ~12 bytes (the firmware preamble
+  // including the 'SNES' header) from the saved state file.
   //
-  // The pre-fetch address register now only advances when we actually
-  // service a bridge_rd, keeping it in sync with what the bridge expects.
-  reg [16:0] prefetch_sram_addr;  // Next SRAM word address to pre-fetch
-  reg [16:0] prefetch_req_addr;   // FIX #3: address latched at bridge_rd time
-  reg        prefetch_pending = 0;
-  reg [15:0] prefetch_lo;         // Low 16 bits of current pre-fetch
+  // Design now:
+  //   * pf_next_addr always tracks the SRAM word offset that the FSM
+  //     should fetch NEXT.  It is advanced ONLY when the FSM actually
+  //     completes a prefetch — never on bridge_rd alone.
+  //   * pf_staged_data holds the 32-bit value that APF will receive on
+  //     its NEXT bridge_rd.  pf_staged_valid says it's fresh.
+  //   * save_state_bridge_read_data holds the value APF is reading
+  //     RIGHT NOW.  On bridge_rd we atomically swap pf_staged_data into
+  //     it and clear pf_staged_valid, freeing the FSM to refill the
+  //     stage from pf_next_addr (and advance pf_next_addr).
+  //   * pf_initial_ready gates savestate_start_ok visibility to APF
+  //     until the very first stage value is ready, so APF's first
+  //     bridge_rd always sees real data.
+  //
+  // Because the FSM prefetch latency (~5 clk_74a cycles) is much smaller
+  // than the APF read cadence (~75 cycles), the stage is always refilled
+  // before APF reads again — no race in steady state.
+  reg [16:0] pf_next_addr     = 17'd0;   // SRAM word addr the FSM should fetch NEXT
+  reg [31:0] pf_staged_data   = 32'd0;   // Word ready for the next bridge_rd
+  reg        pf_staged_valid  = 1'b0;    // pf_staged_data is fresh
+  reg        pf_initial_ready = 1'b0;    // Set once after first stage fill (gates start_ok)
+  reg        pf_armed         = 1'b0;    // Set when savestate_start_ok_internal first rises
+  reg [15:0] pf_lo            = 16'd0;   // Intermediate low half within a 32-bit SRAM read
 
-  // Track when save ok is asserted (for initial pre-fetch trigger)
+  // Edge-detect bridge_rd — APF holds it high for multiple clk_74a cycles
+  // and consumers (including data_unloader.sv elsewhere in this repo)
+  // react to the rising edge.  Without this, we'd swap the stage out on
+  // every cycle bridge_rd is high.
+  reg prev_bridge_rd_74a = 0;
+
+  // Track when save ok (internal) is asserted (for initial pre-fetch arm)
   reg prev_start_ok_74a = 0;
-  wire start_ok_74a = savestate_start_ok_s;
+  // The internal flag from the controller's SAVE FSM (set on RTI).  We do
+  // NOT propagate this directly to APF; see savestate_start_ok_apf below.
+  wire start_ok_74a = savestate_start_ok_s_internal;
 
   always @(posedge clk_74a) begin
-    prev_start_ok_74a <= start_ok_74a;
+    prev_start_ok_74a   <= start_ok_74a;
+    prev_bridge_rd_74a  <= bridge_rd;
 
     // Latch bridge writes to SRAM (bridge_wr is 1 clk_74a pulse)
     if (bridge_wr && bridge_addr[31:28] == 4'h4 && !bridge_wr_pending) begin
@@ -535,30 +580,46 @@ module save_state_controller (
       if (bridge_wr_count != 16'hFFFF) begin
         bridge_wr_count <= bridge_wr_count + 16'h0001;
       end
-      // Latch the very first bridge_wr's data and address (sticky).
-      if (!first_wr_seen) begin
-        first_wr_data <= bridge_wr_data;
-        first_wr_addr <= bridge_addr;
-        first_wr_seen <= 1;
+      // Capture the first TWO bridge_wr 32-bit words (sticky — first 8 file bytes).
+      if (wr_capture_idx == 2'd0) begin
+        first_wr_data  <= bridge_wr_data;
+        first_wr_addr  <= bridge_addr;
+        first_wr_seen  <= 1;
+        wr_capture_idx <= 2'd1;
+      end else if (wr_capture_idx == 2'd1) begin
+        second_wr_data <= bridge_wr_data;
+        wr_capture_idx <= 2'd2;
       end
     end
 
-    // Trigger initial pre-fetch on save ok rising edge
+    // Arm the prefetch pipeline on the save FSM's "ok" rising edge.
+    // We do NOT yet propagate this to APF — savestate_start_ok_s is gated
+    // by pf_initial_ready (see assign above), which becomes 1 only after
+    // the first prefetch has populated save_state_bridge_read_data.
     if (start_ok_74a && ~prev_start_ok_74a) begin
-      prefetch_sram_addr <= 17'd0;
-      prefetch_req_addr  <= 17'd0;   // FIX #3
-      prefetch_pending   <= 1;
+      pf_armed         <= 1'b1;
+      pf_next_addr     <= 17'd0;
+      pf_staged_valid  <= 1'b0;
+      pf_initial_ready <= 1'b0;
     end
 
-    // FIX #3: On bridge_rd, latch the current prefetch address as the
-    // request address and advance the counter, then assert pending.
-    // If the FSM is still busy with the previous prefetch it will pick
-    // up prefetch_req_addr (the most-recent one) when it next returns
-    // to IDLE.  Since the bridge re-polls on miss, this is safe.
-    if (bridge_rd && bridge_addr[31:28] == 4'h4) begin
-      prefetch_req_addr  <= prefetch_sram_addr;
-      prefetch_sram_addr <= prefetch_sram_addr + 17'd2;
-      prefetch_pending   <= 1;
+    // On the RISING EDGE of bridge_rd in the save-state region, atomically
+    // swap the currently-staged word into save_state_bridge_read_data.
+    // The FSM will then see !pf_staged_valid and immediately start the
+    // next prefetch (which will refill the stage long before the next
+    // bridge_rd, since APF reads at ~75 cycle cadence and the FSM
+    // completes in ~5 cycles).
+    if (~prev_bridge_rd_74a && bridge_rd && bridge_addr[31:28] == 4'h4) begin
+      save_state_bridge_read_data <= pf_staged_data;
+      pf_staged_valid             <= 1'b0;
+      // Debug: count + sticky capture of first bridge_rd address
+      if (bridge_rd_count != 16'hFFFF) begin
+        bridge_rd_count <= bridge_rd_count + 16'h0001;
+      end
+      if (!first_rd_seen) begin
+        first_rd_addr <= bridge_addr;
+        first_rd_seen <= 1;
+      end
     end
 
     case (sram_state)
@@ -596,11 +657,11 @@ module save_state_controller (
           sram_dq_oe  <= 1;
           sram_we_n   <= 0;
           sram_state  <= SRAM_BRIDGE_WR_LO;
-        end else if (prefetch_pending) begin
-          // FIX #3: Use prefetch_req_addr (the address that was latched
-          // when bridge_rd fired) rather than prefetch_sram_addr (which
-          // has already been advanced for the *next* read).
-          sram_a     <= prefetch_req_addr;
+        end else if (pf_armed && !pf_staged_valid) begin
+          // Stage buffer is empty (just consumed by a bridge_rd, or never
+          // filled).  Fetch the next 32-bit chunk from SRAM into the
+          // stage; pf_next_addr advances on completion (SRAM_PF_HI).
+          sram_a     <= pf_next_addr;
           sram_oe_n  <= 0;
           sram_dq_oe <= 0;
           sram_state <= SRAM_PF_SETUP;
@@ -685,15 +746,20 @@ module save_state_controller (
       end
 
       // ----- Bridge save-read pre-fetch: 2 × 16-bit SRAM reads -----
+      //
+      // Reads two consecutive SRAM words (the low half and high half of
+      // the 32-bit value APF will read), then atomically populates the
+      // staged buffer and advances pf_next_addr.  If this is the very
+      // first prefetch since pf_armed rose, also copy the staged value
+      // straight into save_state_bridge_read_data and assert
+      // pf_initial_ready so APF can now see savestate_start_ok.
       SRAM_PF_SETUP: begin
         sram_state <= SRAM_PF_LO;
       end
 
       SRAM_PF_LO: begin
-        prefetch_lo <= sram_dq_in;
-        // FIX #3: advance address relative to the address we actually
-        // started from (prefetch_req_addr), not prefetch_sram_addr.
-        sram_a     <= prefetch_req_addr + 17'd1;
+        pf_lo      <= sram_dq_in;
+        sram_a     <= pf_next_addr + 17'd1;   // high word lives at base+1
         sram_state <= SRAM_PF_GAP;
       end
 
@@ -702,10 +768,28 @@ module save_state_controller (
       end
 
       SRAM_PF_HI: begin
-        save_state_bridge_read_data <= {sram_dq_in, prefetch_lo};
-        prefetch_pending            <= 0;
-        sram_oe_n                   <= 1;
-        sram_state                  <= SRAM_IDLE;
+        // Always advance the SRAM address counter so the NEXT prefetch
+        // hits the following 32-bit chunk.
+        pf_next_addr <= pf_next_addr + 17'd2;
+        sram_oe_n    <= 1;
+        sram_state   <= SRAM_IDLE;
+
+        if (!pf_initial_ready) begin
+          // VERY FIRST fill since pf_armed: prime save_state_bridge_read_data
+          // directly with the freshly-fetched word, leave the stage INVALID
+          // so the FSM immediately fetches the NEXT word into the stage.
+          // This way APF's first bridge_rd returns the primed value, and
+          // the second bridge_rd gets word #2 (already staged by then).
+          save_state_bridge_read_data <= {sram_dq_in, pf_lo};
+          pf_staged_data              <= 32'd0;
+          pf_staged_valid             <= 1'b0;
+          pf_initial_ready            <= 1'b1;
+        end else begin
+          // Steady-state refill: latch the new word into the stage.
+          // APF will pull it via the next bridge_rd.
+          pf_staged_data  <= {sram_dq_in, pf_lo};
+          pf_staged_valid <= 1'b1;
+        end
       end
 
     endcase
