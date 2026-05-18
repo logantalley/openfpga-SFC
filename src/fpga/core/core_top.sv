@@ -524,6 +524,8 @@ module core_top (
   wire [3:0] debug_ss_req_toggles;
   wire       debug_core_wr_ever;
   wire       debug_sram_wr_ack_ever;
+  wire [7:0] debug_bridge_wr_count_lo;
+  wire [7:0] debug_bridge_wr_count_hi;
 
   // Debug taps from savestates.sv (SNES side)
   wire [3:0] dbg_rti_arms;
@@ -589,6 +591,8 @@ module core_top (
       .debug_ss_req_toggles  (debug_ss_req_toggles),
       .debug_core_wr_ever    (debug_core_wr_ever),
       .debug_sram_wr_ack_ever(debug_sram_wr_ack_ever),
+      .debug_bridge_wr_count_lo(debug_bridge_wr_count_lo),
+      .debug_bridge_wr_count_hi(debug_bridge_wr_count_hi),
 
       // SRAM interface
       .sram_a   (sram_a),
@@ -1135,6 +1139,10 @@ module core_top (
   reg [7:0] dbg_load_byte0_sync_1;
   reg [7:0] dbg_load_byte1_sync_0;
   reg [7:0] dbg_load_byte1_sync_1;
+  reg [7:0] dbg_bridge_wr_lo_sync_0;
+  reg [7:0] dbg_bridge_wr_lo_sync_1;
+  reg [7:0] dbg_bridge_wr_hi_sync_0;
+  reg [7:0] dbg_bridge_wr_hi_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1172,6 +1180,10 @@ module core_top (
     dbg_load_byte0_sync_1   <= dbg_load_byte0_sync_0;
     dbg_load_byte1_sync_0   <= dbg_load_byte1;
     dbg_load_byte1_sync_1   <= dbg_load_byte1_sync_0;
+    dbg_bridge_wr_lo_sync_0 <= debug_bridge_wr_count_lo;
+    dbg_bridge_wr_lo_sync_1 <= dbg_bridge_wr_lo_sync_0;
+    dbg_bridge_wr_hi_sync_0 <= debug_bridge_wr_count_hi;
+    dbg_bridge_wr_hi_sync_1 <= dbg_bridge_wr_hi_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1195,6 +1207,8 @@ module core_top (
   wire [7:0] dbg_byte_at_8001_video     = dbg_byte_at_8001_sync_1;
   wire [7:0] dbg_load_byte0_video       = dbg_load_byte0_sync_1;
   wire [7:0] dbg_load_byte1_video       = dbg_load_byte1_sync_1;
+  wire [7:0] dbg_bridge_wr_lo_video     = dbg_bridge_wr_lo_sync_1;
+  wire [7:0] dbg_bridge_wr_hi_video     = dbg_bridge_wr_hi_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
@@ -1412,14 +1426,14 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Row 0 (RED)    : byte_at_8000  — CPU saw at $00:$8000 (expect $5C, confirms BRAM)
-      // Row 1 (GREEN)  : byte_at_8001  — CPU saw at $00:$8001 (expect $09)
-      // Row 2 (YELLOW) : load_byte0    — first byte LOAD firmware read from SSDATA (expect $53 = 'S')
-      // Row 3 (CYAN)   : load_byte1    — second byte LOAD firmware read (expect $4E = 'N')
-      2'd0: begin row_value = dbg_byte_at_8000_video;        row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_byte_at_8001_video;        row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_load_byte1_video;          row_marker_rgb = 24'h00FFFF; end
+      // Row 0 (RED)    : load_byte0          — first byte LOAD firmware reads (expect $53='S')
+      // Row 1 (GREEN)  : load_byte1          — second byte (expect $4E='N')
+      // Row 2 (YELLOW) : bridge_wr_count[15:8] — high byte of writes APF made (saturates at FF)
+      // Row 3 (CYAN)   : bridge_wr_count[7:0]  — low byte (full 256KB load → high=FF lo=FF)
+      2'd0: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_byte1_video;          row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_bridge_wr_hi_video;        row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_bridge_wr_lo_video;        row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

@@ -94,6 +94,8 @@ module save_state_controller (
     output wire [3:0] debug_ss_req_toggles,  // count of ss_req edges (mod 16)
     output wire       debug_core_wr_ever,    // sticky: core_wr_req_toggle has ever changed
     output wire       debug_sram_wr_ack_ever,// sticky: sram_wr_ack_toggle has ever changed
+    output wire [7:0] debug_bridge_wr_count_lo, // low byte of bridge_wr events at 4xxxxxxx (mod 256)
+    output wire [7:0] debug_bridge_wr_count_hi, // high byte (so 16-bit count, mod 65536)
 
     // SRAM interface (directly to Pocket board SRAM)
     output reg  [16:0] sram_a,
@@ -251,6 +253,12 @@ module save_state_controller (
   assign debug_ss_req_toggles    = ss_req_toggles;
   assign debug_core_wr_ever      = core_wr_ever;
   assign debug_sram_wr_ack_ever  = sram_wr_ack_ever;
+
+  // Count of bridge_wr events at 4xxxxxxx (the save-state region).
+  // Lives in clk_74a domain; CDC'd via the synch_3 output bundle below.
+  reg [15:0] bridge_wr_count = 16'h0000;
+  assign debug_bridge_wr_count_lo = bridge_wr_count[7:0];
+  assign debug_bridge_wr_count_hi = bridge_wr_count[15:8];
 
   always @(posedge clk_sys) begin
     prev_savestate_start <= savestate_start_s;
@@ -494,6 +502,11 @@ module save_state_controller (
       bridge_wr_pending   <= 1;
       bridge_wr_sram_addr <= {bridge_addr[17:2], 1'b0};
       bridge_wr_latched   <= bridge_wr_data;
+      // Saturate at 0xFFFF so the count doesn't roll over to 0 on a full
+      // save-state load.  A reading of 0xFFFF means "65535+ writes seen".
+      if (bridge_wr_count != 16'hFFFF) begin
+        bridge_wr_count <= bridge_wr_count + 16'h0001;
+      end
     end
 
     // Trigger initial pre-fetch on save ok rising edge
