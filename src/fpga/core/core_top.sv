@@ -534,6 +534,8 @@ module core_top (
   wire [3:0] dbg_fw_nmidis;
   wire [3:0] dbg_fw_at_8000;
   wire [3:0] dbg_fw_at_8003;
+  wire [7:0] dbg_byte_at_8000;
+  wire [7:0] dbg_byte_at_8001;
 
   save_state_controller save_state_controller (
       .clk_74a(clk_74a),
@@ -898,6 +900,8 @@ module core_top (
       .dbg_fw_nmidis      (dbg_fw_nmidis),
       .dbg_fw_at_8000     (dbg_fw_at_8000),
       .dbg_fw_at_8003     (dbg_fw_at_8003),
+      .dbg_byte_at_8000   (dbg_byte_at_8000),
+      .dbg_byte_at_8001   (dbg_byte_at_8001),
 
       // Input
       .p1_button_a(cont1_key_s[4]),
@@ -1119,6 +1123,10 @@ module core_top (
   reg [3:0] dbg_fw_at_8000_sync_1;
   reg [3:0] dbg_fw_at_8003_sync_0;
   reg [3:0] dbg_fw_at_8003_sync_1;
+  reg [7:0] dbg_byte_at_8000_sync_0;
+  reg [7:0] dbg_byte_at_8000_sync_1;
+  reg [7:0] dbg_byte_at_8001_sync_0;
+  reg [7:0] dbg_byte_at_8001_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1148,6 +1156,10 @@ module core_top (
     dbg_fw_at_8000_sync_1 <= dbg_fw_at_8000_sync_0;
     dbg_fw_at_8003_sync_0 <= dbg_fw_at_8003;
     dbg_fw_at_8003_sync_1 <= dbg_fw_at_8003_sync_0;
+    dbg_byte_at_8000_sync_0 <= dbg_byte_at_8000;
+    dbg_byte_at_8000_sync_1 <= dbg_byte_at_8000_sync_0;
+    dbg_byte_at_8001_sync_0 <= dbg_byte_at_8001;
+    dbg_byte_at_8001_sync_1 <= dbg_byte_at_8001_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1167,6 +1179,8 @@ module core_top (
   wire [3:0] dbg_fw_nmidis_video        = dbg_fw_nmidis_sync_1;
   wire [3:0] dbg_fw_at_8000_video       = dbg_fw_at_8000_sync_1;
   wire [3:0] dbg_fw_at_8003_video       = dbg_fw_at_8003_sync_1;
+  wire [7:0] dbg_byte_at_8000_video     = dbg_byte_at_8000_sync_1;
+  wire [7:0] dbg_byte_at_8001_video     = dbg_byte_at_8001_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
@@ -1379,25 +1393,26 @@ module core_top (
   wire [3:0] text_col_x  = h_pixel_count[3:0];         // x within column
   wire       text_col_active = (h_pixel_count < 11'd64);
 
-  // Pick the value for this row
-  reg [3:0] row_value;
+  // Pick the value for this row (full 8 bits — displayed as two hex digits)
+  reg [7:0] row_value;
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Row 0 (RED)    : rti_arms          — RTI matched on $XX:$8008 read
-      // Row 1 (GREEN)  : fw_at_8000        — CPU fetched at $00:$8000 (JML opcode)
-      // Row 2 (YELLOW) : fw_at_8003        — CPU reached $00:$8003 (JML last byte)
-      // Row 3 (CYAN)   : fw_entry          — CPU reached $00:$8009 (Save_start)
-      2'd0: begin row_value = dbg_rti_arms_video;     row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_fw_at_8000_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_fw_at_8003_video;   row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_fw_entry_video;     row_marker_rgb = 24'h00FFFF; end
+      // Row 0 (RED)    : byte_at_8000 — actual byte CPU saw at $00:$8000 (expect $5C)
+      // Row 1 (GREEN)  : byte_at_8001 — actual byte CPU saw at $00:$8001 (expect $09)
+      // Row 2 (YELLOW) : rti_arms (low nibble in col 2)
+      // Row 3 (CYAN)   : fw_entry (low nibble in col 2)
+      2'd0: begin row_value = dbg_byte_at_8000_video;        row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_byte_at_8001_video;        row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = {4'd0, dbg_rti_arms_video};    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = {4'd0, dbg_fw_entry_video};    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
-  // The 4-bit row_value is a single hex digit.  We display it in column 1
-  // (column 0 = colored marker).  Columns 2,3 are unused (left black).
-  wire [3:0] digit_to_show = row_value;
+  // Display two hex digits: high nibble in column 1, low nibble in column 2.
+  wire [3:0] digit_hi = row_value[7:4];
+  wire [3:0] digit_lo = row_value[3:0];
+  wire [3:0] digit_to_show = (text_col == 2'd1) ? digit_hi : digit_lo;
   wire [2:0] font_row = text_row_y[3:1];   // 16-line row / 2 = 8-line font row
   wire [2:0] font_col = text_col_x[3:1];   // 16-px column / 2 = 8-px font col
   wire [7:0] font_line = font_rom(digit_to_show, font_row);
@@ -1411,9 +1426,10 @@ module core_top (
     if (text_active && text_col_active) begin
       text_overlay_hit = 1;
       case (text_col)
-        2'd0: text_overlay_rgb = row_marker_rgb;                          // colored marker block
-        2'd1: text_overlay_rgb = font_pixel ? 24'hFFFFFF : 24'h000000;     // hex digit
-        default: text_overlay_rgb = 24'h000000;                            // blank
+        2'd0: text_overlay_rgb = row_marker_rgb;                           // colored marker block
+        2'd1: text_overlay_rgb = font_pixel ? 24'hFFFFFF : 24'h000000;     // hex digit hi
+        2'd2: text_overlay_rgb = font_pixel ? 24'hFFFFFF : 24'h000000;     // hex digit lo
+        default: text_overlay_rgb = 24'h000000;
       endcase
     end
   end

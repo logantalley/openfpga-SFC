@@ -67,6 +67,8 @@ module savestates
 
 	input             vblank_n,
 
+	input       [7:0] cpu_di,           // what the CPU is currently reading (for debug snoop)
+
 	output            ss_do_ovr,
 	output            ss_rom_ovr,
 	output reg        ss_busy,
@@ -79,7 +81,9 @@ module savestates
 	output reg [3:0]  dbg_fw_entry,        // count of fetches at PC=$00:$8009 (Save_start)
 	output reg [3:0]  dbg_fw_nmidis,       // count of fetches at PC=$00:$802C (STA NMITIMEN)
 	output reg [3:0]  dbg_fw_at_8000,      // count of fetches at PC=$00:$8000 (JML opcode)
-	output reg [3:0]  dbg_fw_at_8003       // count of fetches at PC=$00:$8003 (JML last byte)
+	output reg [3:0]  dbg_fw_at_8003,      // count of fetches at PC=$00:$8003 (JML last byte)
+	output reg [7:0]  dbg_byte_at_8000,    // last byte read at PC=$00:$8000 (should be $5C)
+	output reg [7:0]  dbg_byte_at_8001     // last byte read at PC=$00:$8001 (should be $09)
 );
 
 reg cpurd_n_old, cpuwr_n_old;
@@ -238,6 +242,8 @@ always @(posedge clk) begin
 		dbg_fw_nmidis <= 0;
 		dbg_fw_at_8000 <= 0;
 		dbg_fw_at_8003 <= 0;
+		dbg_byte_at_8000 <= 8'h00;
+		dbg_byte_at_8001 <= 8'h00;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
@@ -289,6 +295,16 @@ always @(posedge clk) begin
 			if (ss_busy & (ca[23:0] == 24'h008003)) begin
 				dbg_fw_at_8003 <= dbg_fw_at_8003 + 4'd1;
 			end
+		end
+
+		// Snoop CPU's data input continuously while at the JML opcode/operand addresses.
+		// Captures the LAST value of cpu_di while ca holds that address, which is the
+		// byte the CPU actually consumes.
+		if (ss_busy & (ca[23:0] == 24'h008000)) begin
+			dbg_byte_at_8000 <= cpu_di;
+		end
+		if (ss_busy & (ca[23:0] == 24'h008001)) begin
+			dbg_byte_at_8001 <= cpu_di;
 		end
 
 		if (cpurd_ce_n) begin
