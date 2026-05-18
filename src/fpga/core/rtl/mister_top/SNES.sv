@@ -554,6 +554,7 @@ module MAIN_SNES (
   wire ROM_WORD;
   wire [15:0] ROM_D;
   wire [15:0] ROM_Q;
+  wire [15:0] ROM_Q_SDRAM;
 
   sdram sdram (
       .init(0),  //~clock_locked),
@@ -561,7 +562,7 @@ module MAIN_SNES (
 
       .addr(cart_download ? ioctl_addr : ROM_ADDR),
       .din (cart_download ? ioctl_dout : ROM_D),
-      .dout(ROM_Q),
+      .dout(ROM_Q_SDRAM),
       .rd  (~cart_download & (RESET_N ? ~ROM_OE_N : RFSH)),
       .wr  (cart_download ? ioctl_wr : ~ROM_WE_N),
       .word(cart_download | ROM_WORD),
@@ -579,6 +580,34 @@ module MAIN_SNES (
       .SDRAM_CLK(dram_clk),
       .SDRAM_CKE(dram_cke)
   );
+
+  // -------------------------------------------------------------------
+  // Embedded savestates firmware ROM.
+  //
+  // savestates.sv redirects ROM_ADDR to bank $FF when running the save-state
+  // firmware (see ss_rom_ovr).  Historically that read was served by SDRAM
+  // contents loaded via an APF data slot, but in this build the firmware
+  // never actually landed in SDRAM (debug overlay revealed $AA on the bus
+  // at $FF:0000).  Instead, route bank-$FF reads to an on-chip block RAM
+  // initialized at synthesis time from savestate_rom.hex.
+  //
+  // The mux mirrors sdram.sv:123's byte-mode behavior (odd address →
+  // swap high/low byte) so the existing DSP_LHRomMap mapper, which always
+  // reads ROM_Q[7:0], sees the correct byte regardless of address parity.
+  // -------------------------------------------------------------------
+  wire [15:0] ROM_Q_BRAM;
+
+  savestate_rom ss_rom (
+      .clk (clk_mem),
+      .addr(ROM_ADDR[11:1]),
+      .q   (ROM_Q_BRAM)
+  );
+
+  wire        ss_rom_active     = (ROM_ADDR[23:16] == 8'hFF);
+  wire [15:0] ROM_Q_BRAM_swapped =
+      ROM_ADDR[0] ? {ROM_Q_BRAM[7:0], ROM_Q_BRAM[15:8]} : ROM_Q_BRAM;
+
+  assign ROM_Q = ss_rom_active ? ROM_Q_BRAM_swapped : ROM_Q_SDRAM;
 
   wire [16:0] WRAM_ADDR;
   wire        WRAM_CE_N;
