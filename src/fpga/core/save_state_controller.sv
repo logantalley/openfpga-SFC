@@ -96,6 +96,10 @@ module save_state_controller (
     output wire       debug_sram_wr_ack_ever,// sticky: sram_wr_ack_toggle has ever changed
     output wire [7:0] debug_bridge_wr_count_lo, // low byte of bridge_wr events at 4xxxxxxx (mod 256)
     output wire [7:0] debug_bridge_wr_count_hi, // high byte (so 16-bit count, mod 65536)
+    output wire [7:0] debug_first_wr_data_b0,   // bridge_wr_data[31:24] of FIRST bridge_wr (expect $53 ='S')
+    output wire [7:0] debug_first_wr_data_b1,   // bridge_wr_data[23:16] of first write (expect $4E='N')
+    output wire [7:0] debug_first_wr_addr_lo,   // bridge_addr[7:0]  of first write (expect $00)
+    output wire [7:0] debug_first_wr_addr_hi,   // bridge_addr[15:8] of first write (expect $00)
 
     // SRAM interface (directly to Pocket board SRAM)
     output reg  [16:0] sram_a,
@@ -259,6 +263,16 @@ module save_state_controller (
   reg [15:0] bridge_wr_count = 16'h0000;
   assign debug_bridge_wr_count_lo = bridge_wr_count[7:0];
   assign debug_bridge_wr_count_hi = bridge_wr_count[15:8];
+
+  // Capture data and address of the FIRST bridge_wr at 4xxxxxxx ever seen.
+  // Sticky — never overwritten after the first event.
+  reg [31:0] first_wr_data = 32'h00000000;
+  reg [31:0] first_wr_addr = 32'h00000000;
+  reg        first_wr_seen = 0;
+  assign debug_first_wr_data_b0 = first_wr_data[31:24];
+  assign debug_first_wr_data_b1 = first_wr_data[23:16];
+  assign debug_first_wr_addr_lo = first_wr_addr[7:0];
+  assign debug_first_wr_addr_hi = first_wr_addr[15:8];
 
   always @(posedge clk_sys) begin
     prev_savestate_start <= savestate_start_s;
@@ -506,6 +520,12 @@ module save_state_controller (
       // save-state load.  A reading of 0xFFFF means "65535+ writes seen".
       if (bridge_wr_count != 16'hFFFF) begin
         bridge_wr_count <= bridge_wr_count + 16'h0001;
+      end
+      // Latch the very first bridge_wr's data and address (sticky).
+      if (!first_wr_seen) begin
+        first_wr_data <= bridge_wr_data;
+        first_wr_addr <= bridge_addr;
+        first_wr_seen <= 1;
       end
     end
 

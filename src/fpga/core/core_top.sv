@@ -526,6 +526,10 @@ module core_top (
   wire       debug_sram_wr_ack_ever;
   wire [7:0] debug_bridge_wr_count_lo;
   wire [7:0] debug_bridge_wr_count_hi;
+  wire [7:0] debug_first_wr_data_b0;
+  wire [7:0] debug_first_wr_data_b1;
+  wire [7:0] debug_first_wr_addr_lo;
+  wire [7:0] debug_first_wr_addr_hi;
 
   // Debug taps from savestates.sv (SNES side)
   wire [3:0] dbg_rti_arms;
@@ -593,6 +597,10 @@ module core_top (
       .debug_sram_wr_ack_ever(debug_sram_wr_ack_ever),
       .debug_bridge_wr_count_lo(debug_bridge_wr_count_lo),
       .debug_bridge_wr_count_hi(debug_bridge_wr_count_hi),
+      .debug_first_wr_data_b0  (debug_first_wr_data_b0),
+      .debug_first_wr_data_b1  (debug_first_wr_data_b1),
+      .debug_first_wr_addr_lo  (debug_first_wr_addr_lo),
+      .debug_first_wr_addr_hi  (debug_first_wr_addr_hi),
 
       // SRAM interface
       .sram_a   (sram_a),
@@ -1143,6 +1151,14 @@ module core_top (
   reg [7:0] dbg_bridge_wr_lo_sync_1;
   reg [7:0] dbg_bridge_wr_hi_sync_0;
   reg [7:0] dbg_bridge_wr_hi_sync_1;
+  reg [7:0] dbg_first_data_b0_sync_0;
+  reg [7:0] dbg_first_data_b0_sync_1;
+  reg [7:0] dbg_first_data_b1_sync_0;
+  reg [7:0] dbg_first_data_b1_sync_1;
+  reg [7:0] dbg_first_addr_lo_sync_0;
+  reg [7:0] dbg_first_addr_lo_sync_1;
+  reg [7:0] dbg_first_addr_hi_sync_0;
+  reg [7:0] dbg_first_addr_hi_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1184,6 +1200,14 @@ module core_top (
     dbg_bridge_wr_lo_sync_1 <= dbg_bridge_wr_lo_sync_0;
     dbg_bridge_wr_hi_sync_0 <= debug_bridge_wr_count_hi;
     dbg_bridge_wr_hi_sync_1 <= dbg_bridge_wr_hi_sync_0;
+    dbg_first_data_b0_sync_0 <= debug_first_wr_data_b0;
+    dbg_first_data_b0_sync_1 <= dbg_first_data_b0_sync_0;
+    dbg_first_data_b1_sync_0 <= debug_first_wr_data_b1;
+    dbg_first_data_b1_sync_1 <= dbg_first_data_b1_sync_0;
+    dbg_first_addr_lo_sync_0 <= debug_first_wr_addr_lo;
+    dbg_first_addr_lo_sync_1 <= dbg_first_addr_lo_sync_0;
+    dbg_first_addr_hi_sync_0 <= debug_first_wr_addr_hi;
+    dbg_first_addr_hi_sync_1 <= dbg_first_addr_hi_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1209,6 +1233,10 @@ module core_top (
   wire [7:0] dbg_load_byte1_video       = dbg_load_byte1_sync_1;
   wire [7:0] dbg_bridge_wr_lo_video     = dbg_bridge_wr_lo_sync_1;
   wire [7:0] dbg_bridge_wr_hi_video     = dbg_bridge_wr_hi_sync_1;
+  wire [7:0] dbg_first_data_b0_video    = dbg_first_data_b0_sync_1;
+  wire [7:0] dbg_first_data_b1_video    = dbg_first_data_b1_sync_1;
+  wire [7:0] dbg_first_addr_lo_video    = dbg_first_addr_lo_sync_1;
+  wire [7:0] dbg_first_addr_hi_video    = dbg_first_addr_hi_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
@@ -1426,14 +1454,14 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Row 0 (RED)    : load_byte0          — first byte LOAD firmware reads (expect $53='S')
-      // Row 1 (GREEN)  : load_byte1          — second byte (expect $4E='N')
-      // Row 2 (YELLOW) : bridge_wr_count[15:8] — high byte of writes APF made (saturates at FF)
-      // Row 3 (CYAN)   : bridge_wr_count[7:0]  — low byte (full 256KB load → high=FF lo=FF)
-      2'd0: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_byte1_video;          row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_bridge_wr_hi_video;        row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_bridge_wr_lo_video;        row_marker_rgb = 24'h00FFFF; end
+      // Row 0 (RED)    : first_wr_data[31:24] — first byte APF wrote (expect $53='S')
+      // Row 1 (GREEN)  : first_wr_data[23:16] — second byte APF wrote (expect $4E='N')
+      // Row 2 (YELLOW) : first_wr_addr[15:8]  — high byte of FIRST bridge_addr (expect $00)
+      // Row 3 (CYAN)   : first_wr_addr[7:0]   — low  byte of FIRST bridge_addr (expect $00)
+      2'd0: begin row_value = dbg_first_data_b0_video;       row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_data_b1_video;       row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_addr_hi_video;       row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_addr_lo_video;       row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
