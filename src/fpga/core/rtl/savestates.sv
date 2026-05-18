@@ -540,7 +540,18 @@ savestates_map ss_map
 //   for both bytes, controlled by ss_in_vect which is cleared only AFTER the
 //   high-byte read cycle ends (cpurd_ce_n).  Using ~ss_busy would form the
 //   identity ss_busy & ~ss_busy = 0, making the override permanently dead.
-wire ss_vect_ovr = (nmi_vect | irq_vect) & ss_in_vect;
+// Combinational early-arm: detect the vector read condition before ss_busy/
+// ss_in_vect have updated via NBA.  This ensures the override is asserted on
+// the very FIRST master clock that ca presents the vector address — required
+// for cores where the CPU latches data on the same posedge that cpurd_ce
+// fires (i.e. INT_CLKF_CE coincides with cpurd_ce).
+wire vect_addr_match = (nmi_vect_l | nmi_vect_h | (~ss_use_nmi & (irq_vect_l | irq_vect_h)));
+wire vect_hijack_now = vect_addr_match
+                      & (save_en | (load_en & load_ready))
+                      & ~vblank_n
+                      & ~rd_rti;  // not in the middle of clearing ss_busy
+
+wire ss_vect_ovr = ((nmi_vect | irq_vect) & ss_in_vect) | vect_hijack_now;
 
 wire ss_oe = ss_data_sel | ss_status_sel | ss_vect_ovr |
 			ss_ramsize_sel | ss_romtype_sel | ssr_oe | map_ss_oe |
@@ -595,7 +606,11 @@ always @(*) begin
 	if (dspn_ram_read) ddr_data = dspn_di;
 end
 
-assign ss_do_ovr = ss_busy & ss_oe;
+// Override DI whenever any savestate selector is active.  For the vect path,
+// `ss_oe` already includes `vect_hijack_now` (the combinational early-arm),
+// so we no longer gate on registered `ss_busy` — that gate was racing the
+// first NMI vector read on cores where INT_CLKF_CE coincides with cpurd_ce.
+assign ss_do_ovr = (ss_busy | vect_hijack_now) & ss_oe;
 // Exclude NMI/IRQ vector addresses from the ROM redirect (even while
 // ss_busy=1) so that:
 //   (a) During the initial two-byte vector read: ss_do_ovr is 1 (via
