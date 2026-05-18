@@ -83,7 +83,9 @@ module savestates
 	output reg [3:0]  dbg_fw_at_8000,      // count of fetches at PC=$00:$8000 (JML opcode)
 	output reg [3:0]  dbg_fw_at_8003,      // count of fetches at PC=$00:$8003 (JML last byte)
 	output reg [7:0]  dbg_byte_at_8000,    // last byte read at PC=$00:$8000 (should be $5C)
-	output reg [7:0]  dbg_byte_at_8001     // last byte read at PC=$00:$8001 (should be $09)
+	output reg [7:0]  dbg_byte_at_8001,    // last byte read at PC=$00:$8001 (should be $09)
+	output reg [7:0]  dbg_load_byte0,      // first byte the load firmware reads from SSDATA (should be 'S' = $53)
+	output reg [7:0]  dbg_load_byte1       // second byte (should be 'N' = $4E)
 );
 
 reg cpurd_n_old, cpuwr_n_old;
@@ -244,6 +246,8 @@ always @(posedge clk) begin
 		dbg_fw_at_8003 <= 0;
 		dbg_byte_at_8000 <= 8'h00;
 		dbg_byte_at_8001 <= 8'h00;
+		dbg_load_byte0 <= 8'h00;
+		dbg_load_byte1 <= 8'h00;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
@@ -294,6 +298,20 @@ always @(posedge clk) begin
 			end
 			if (ss_busy & (ca[23:0] == 24'h008003)) begin
 				dbg_fw_at_8003 <= dbg_fw_at_8003 + 4'd1;
+			end
+
+			// Snapshot the first two bytes the LOAD firmware reads from SSDATA.
+			// These should be 'S' (0x53) and 'N' (0x4E) — the start of the
+			// save-state header — if the load round-trip is intact.  Only
+			// capture during a load, gated on cpurd_ce so we sample the
+			// byte that's actually consumed by the CPU.
+			if (ss_busy & load_en & ss_data_sel) begin
+				if (ss_data_addr == 20'd0) begin
+					dbg_load_byte0 <= ss_do;
+				end
+				if (ss_data_addr == 20'd1) begin
+					dbg_load_byte1 <= ss_do;
+				end
 			end
 		end
 

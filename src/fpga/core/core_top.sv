@@ -536,6 +536,8 @@ module core_top (
   wire [3:0] dbg_fw_at_8003;
   wire [7:0] dbg_byte_at_8000;
   wire [7:0] dbg_byte_at_8001;
+  wire [7:0] dbg_load_byte0;
+  wire [7:0] dbg_load_byte1;
 
   save_state_controller save_state_controller (
       .clk_74a(clk_74a),
@@ -902,6 +904,8 @@ module core_top (
       .dbg_fw_at_8003     (dbg_fw_at_8003),
       .dbg_byte_at_8000   (dbg_byte_at_8000),
       .dbg_byte_at_8001   (dbg_byte_at_8001),
+      .dbg_load_byte0     (dbg_load_byte0),
+      .dbg_load_byte1     (dbg_load_byte1),
 
       // Input
       .p1_button_a(cont1_key_s[4]),
@@ -1127,6 +1131,10 @@ module core_top (
   reg [7:0] dbg_byte_at_8000_sync_1;
   reg [7:0] dbg_byte_at_8001_sync_0;
   reg [7:0] dbg_byte_at_8001_sync_1;
+  reg [7:0] dbg_load_byte0_sync_0;
+  reg [7:0] dbg_load_byte0_sync_1;
+  reg [7:0] dbg_load_byte1_sync_0;
+  reg [7:0] dbg_load_byte1_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1160,6 +1168,10 @@ module core_top (
     dbg_byte_at_8000_sync_1 <= dbg_byte_at_8000_sync_0;
     dbg_byte_at_8001_sync_0 <= dbg_byte_at_8001;
     dbg_byte_at_8001_sync_1 <= dbg_byte_at_8001_sync_0;
+    dbg_load_byte0_sync_0   <= dbg_load_byte0;
+    dbg_load_byte0_sync_1   <= dbg_load_byte0_sync_0;
+    dbg_load_byte1_sync_0   <= dbg_load_byte1;
+    dbg_load_byte1_sync_1   <= dbg_load_byte1_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1181,6 +1193,8 @@ module core_top (
   wire [3:0] dbg_fw_at_8003_video       = dbg_fw_at_8003_sync_1;
   wire [7:0] dbg_byte_at_8000_video     = dbg_byte_at_8000_sync_1;
   wire [7:0] dbg_byte_at_8001_video     = dbg_byte_at_8001_sync_1;
+  wire [7:0] dbg_load_byte0_video       = dbg_load_byte0_sync_1;
+  wire [7:0] dbg_load_byte1_video       = dbg_load_byte1_sync_1;
 
   wire overlay_enable = ss_busy_video | ss_busy_ever_video | ss_save_ever_video;
 
@@ -1398,14 +1412,14 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Row 0 (RED)    : byte_at_8000 — actual byte CPU saw at $00:$8000 (expect $5C)
-      // Row 1 (GREEN)  : byte_at_8001 — actual byte CPU saw at $00:$8001 (expect $09)
-      // Row 2 (YELLOW) : rti_arms (low nibble in col 2)
-      // Row 3 (CYAN)   : fw_entry (low nibble in col 2)
+      // Row 0 (RED)    : byte_at_8000  — CPU saw at $00:$8000 (expect $5C, confirms BRAM)
+      // Row 1 (GREEN)  : byte_at_8001  — CPU saw at $00:$8001 (expect $09)
+      // Row 2 (YELLOW) : load_byte0    — first byte LOAD firmware read from SSDATA (expect $53 = 'S')
+      // Row 3 (CYAN)   : load_byte1    — second byte LOAD firmware read (expect $4E = 'N')
       2'd0: begin row_value = dbg_byte_at_8000_video;        row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_byte_at_8001_video;        row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = {4'd0, dbg_rti_arms_video};    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = {4'd0, dbg_fw_entry_video};    row_marker_rgb = 24'h00FFFF; end
+      2'd2: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_load_byte1_video;          row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

@@ -32,6 +32,8 @@ module MAIN_SNES (
     output wire [3:0]  dbg_fw_at_8003,
     output wire [7:0]  dbg_byte_at_8000,
     output wire [7:0]  dbg_byte_at_8001,
+    output wire [7:0]  dbg_load_byte0,
+    output wire [7:0]  dbg_load_byte1,
 
     input wire multitap_enabled,
     input wire lightgun_enabled,
@@ -457,6 +459,8 @@ module MAIN_SNES (
       .DBG_FW_AT_8003     (dbg_fw_at_8003),
       .DBG_BYTE_AT_8000   (dbg_byte_at_8000),
       .DBG_BYTE_AT_8001   (dbg_byte_at_8001),
+      .DBG_LOAD_BYTE0     (dbg_load_byte0),
+      .DBG_LOAD_BYTE1     (dbg_load_byte1),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),

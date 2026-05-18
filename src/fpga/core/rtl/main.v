@@ -143,7 +143,9 @@ module main #(
     output      [3:0]  DBG_FW_AT_8000,
     output      [3:0]  DBG_FW_AT_8003,
     output      [7:0]  DBG_BYTE_AT_8000,
-    output      [7:0]  DBG_BYTE_AT_8001
+    output      [7:0]  DBG_BYTE_AT_8001,
+    output      [7:0]  DBG_LOAD_BYTE0,
+    output      [7:0]  DBG_LOAD_BYTE1
 );
 
   parameter USE_DLH = 1'b1;
@@ -861,7 +863,9 @@ module main #(
       .dbg_fw_at_8000     (DBG_FW_AT_8000),
       .dbg_fw_at_8003     (DBG_FW_AT_8003),
       .dbg_byte_at_8000   (DBG_BYTE_AT_8000),
-      .dbg_byte_at_8001   (DBG_BYTE_AT_8001)
+      .dbg_byte_at_8001   (DBG_BYTE_AT_8001),
+      .dbg_load_byte0     (DBG_LOAD_BYTE0),
+      .dbg_load_byte1     (DBG_LOAD_BYTE1)
   );
 
   assign TURBO_ALLOW = ~(MAP_ACTIVE[3] | MAP_ACTIVE[1] | SS_BUSY);
