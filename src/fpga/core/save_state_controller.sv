@@ -100,6 +100,8 @@ module save_state_controller (
     output wire [7:0] debug_first_wr_data_b1,   // bridge_wr_data[23:16] of first write (expect $4E='N')
     output wire [7:0] debug_first_wr_addr_lo,   // bridge_addr[7:0]  of first write (expect $00)
     output wire [7:0] debug_first_wr_addr_hi,   // bridge_addr[15:8] of first write (expect $00)
+    output wire [7:0] debug_first_save_byte0,   // First byte SNES wrote during save: core_wr_data[7:0] (expect $53='S')
+    output wire [7:0] debug_first_save_byte1,   // Second byte: core_wr_data[15:8] (expect $4E='N')
 
     // SRAM interface (directly to Pocket board SRAM)
     output reg  [16:0] sram_a,
@@ -274,6 +276,13 @@ module save_state_controller (
   assign debug_first_wr_addr_lo = first_wr_addr[7:0];
   assign debug_first_wr_addr_hi = first_wr_addr[15:8];
 
+  // Capture the FIRST 64-bit chunk the SNES wrote during save.
+  // core_wr_data is in clk_sys; latch it sticky.
+  reg [63:0] first_save_chunk = 64'h0;
+  reg        first_save_seen  = 0;
+  assign debug_first_save_byte0 = first_save_chunk[7:0];
+  assign debug_first_save_byte1 = first_save_chunk[15:8];
+
   always @(posedge clk_sys) begin
     prev_savestate_start <= savestate_start_s;
     prev_savestate_load  <= savestate_load_s;
@@ -358,6 +367,11 @@ module save_state_controller (
           core_sram_base     <= ss_addr[14:0];
           core_wr_req_toggle <= ~core_wr_req_toggle;
           sys_state          <= SYS_SAVE_WAIT_SRAM;
+          // Sticky capture of the very first save chunk's data
+          if (!first_save_seen) begin
+            first_save_chunk <= ss_din;
+            first_save_seen  <= 1;
+          end
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
           // FIX #1: Only complete when we have seen ss_busy rise AND fall
           // during this operation.
