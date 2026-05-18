@@ -532,6 +532,10 @@ module core_top (
   wire [7:0] debug_first_wr_addr_hi;
   wire [7:0] debug_first_save_byte0;
   wire [7:0] debug_first_save_byte1;
+  wire [7:0] debug_first_save_addr_lo;
+  wire [7:0] debug_first_save_addr_hi;
+  wire [7:0] debug_first_pf_addr_lo;
+  wire [7:0] debug_first_pf_addr_hi;
   wire [7:0] debug_bridge_rd_count_lo;
   wire [7:0] debug_bridge_rd_count_hi;
   wire [7:0] debug_first_rd_addr_lo;
@@ -609,6 +613,10 @@ module core_top (
       .debug_first_wr_addr_hi  (debug_first_wr_addr_hi),
       .debug_first_save_byte0  (debug_first_save_byte0),
       .debug_first_save_byte1  (debug_first_save_byte1),
+      .debug_first_save_addr_lo(debug_first_save_addr_lo),
+      .debug_first_save_addr_hi(debug_first_save_addr_hi),
+      .debug_first_pf_addr_lo  (debug_first_pf_addr_lo),
+      .debug_first_pf_addr_hi  (debug_first_pf_addr_hi),
       .debug_bridge_rd_count_lo(debug_bridge_rd_count_lo),
       .debug_bridge_rd_count_hi(debug_bridge_rd_count_hi),
       .debug_first_rd_addr_lo  (debug_first_rd_addr_lo),
@@ -1175,6 +1183,14 @@ module core_top (
   reg [7:0] dbg_first_save_b0_sync_1;
   reg [7:0] dbg_first_save_b1_sync_0;
   reg [7:0] dbg_first_save_b1_sync_1;
+  reg [7:0] dbg_first_save_addr_lo_sync_0;
+  reg [7:0] dbg_first_save_addr_lo_sync_1;
+  reg [7:0] dbg_first_save_addr_hi_sync_0;
+  reg [7:0] dbg_first_save_addr_hi_sync_1;
+  reg [7:0] dbg_first_pf_addr_lo_sync_0;
+  reg [7:0] dbg_first_pf_addr_lo_sync_1;
+  reg [7:0] dbg_first_pf_addr_hi_sync_0;
+  reg [7:0] dbg_first_pf_addr_hi_sync_1;
   reg [7:0] dbg_bridge_rd_lo_sync_0;
   reg [7:0] dbg_bridge_rd_lo_sync_1;
   reg [7:0] dbg_bridge_rd_hi_sync_0;
@@ -1244,6 +1260,14 @@ module core_top (
     dbg_first_rd_lo_sync_1   <= dbg_first_rd_lo_sync_0;
     dbg_first_rd_hi_sync_0   <= debug_first_rd_addr_hi;
     dbg_first_rd_hi_sync_1   <= dbg_first_rd_hi_sync_0;
+    dbg_first_save_addr_lo_sync_0 <= debug_first_save_addr_lo;
+    dbg_first_save_addr_lo_sync_1 <= dbg_first_save_addr_lo_sync_0;
+    dbg_first_save_addr_hi_sync_0 <= debug_first_save_addr_hi;
+    dbg_first_save_addr_hi_sync_1 <= dbg_first_save_addr_hi_sync_0;
+    dbg_first_pf_addr_lo_sync_0   <= debug_first_pf_addr_lo;
+    dbg_first_pf_addr_lo_sync_1   <= dbg_first_pf_addr_lo_sync_0;
+    dbg_first_pf_addr_hi_sync_0   <= debug_first_pf_addr_hi;
+    dbg_first_pf_addr_hi_sync_1   <= dbg_first_pf_addr_hi_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1275,6 +1299,10 @@ module core_top (
   wire [7:0] dbg_first_addr_hi_video    = dbg_first_addr_hi_sync_1;
   wire [7:0] dbg_first_save_b0_video    = dbg_first_save_b0_sync_1;
   wire [7:0] dbg_first_save_b1_video    = dbg_first_save_b1_sync_1;
+  wire [7:0] dbg_first_save_addr_lo_video = dbg_first_save_addr_lo_sync_1;
+  wire [7:0] dbg_first_save_addr_hi_video = dbg_first_save_addr_hi_sync_1;
+  wire [7:0] dbg_first_pf_addr_lo_video   = dbg_first_pf_addr_lo_sync_1;
+  wire [7:0] dbg_first_pf_addr_hi_video   = dbg_first_pf_addr_hi_sync_1;
   wire [7:0] dbg_bridge_rd_lo_video     = dbg_bridge_rd_lo_sync_1;
   wire [7:0] dbg_bridge_rd_hi_video     = dbg_bridge_rd_hi_sync_1;
   wire [7:0] dbg_first_rd_lo_video      = dbg_first_rd_lo_sync_1;
@@ -1496,24 +1524,29 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // SD card inspection showed the save state body in the file starts
-      // with the correct $53 4E 45 53 00 00 00 00 (SNES + 4 zeros) header
-      // at file offset 436 (past the SPA wrapper).  But APF writes some
-      // different value to bridge addr 0 during load.  Capture the first
-      // EIGHT bytes APF wrote so we can match them against the actual
-      // file on disk and figure out the offset.
+      // Two prefetch-race fix attempts both failed identically: the file
+      // still has 20 leading zero bytes at the start of the save payload.
+      // That means the bug is NOT in the read-side race.  Check whether
+      // the save-side controller actually writes 'SNES' to SRAM word 0
+      // (vs. some other offset).
       //
-      // Row 0 (RED)    : bridge_wr first write byte 0 (file byte 0?)
-      // Row 1 (GREEN)  : bridge_wr first write byte 1
-      // Row 2 (YELLOW) : bridge_wr second write byte 0 (file byte 4?)
-      // Row 3 (CYAN)   : bridge_wr second write byte 1 (file byte 5?)
+      // Row 0 (RED)    : first_save_addr_hi — high byte of save's first
+      //                  chunk's SRAM word base (expect $00).
+      // Row 1 (GREEN)  : first_save_addr_lo — low byte (expect $00).
+      // Row 2 (YELLOW) : first_pf_addr_hi   — high byte of first prefetch
+      //                  SRAM word address (expect $00 if FSM starts at 0).
+      // Row 3 (CYAN)   : first_pf_addr_lo   — low byte (expect $00).
       //
-      // first_rd_* outputs are REPURPOSED to carry second_wr_data upper
-      // bytes (see savestate_controller debug signals).
-      2'd0: begin row_value = dbg_first_data_b0_video;       row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_data_b1_video;       row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_addr_hi_video;       row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_addr_lo_video;       row_marker_rgb = 24'h00FFFF; end
+      // If RED/GREEN != 00 00: SAVE writes 'SNES' to a non-zero SRAM offset.
+      //   That'd be a save-side address bug — completely different fix.
+      // If RED/GREEN = 00 00 but YELLOW/CYAN != 00 00: PREFETCH starts
+      //   reading at a non-zero offset, missing the first chunks.
+      // If all are 00: addresses are correct; bug is somewhere else
+      //   (maybe APF still doesn't actually start reading at our addr 0).
+      2'd0: begin row_value = dbg_first_save_addr_hi_video;  row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_save_addr_lo_video;  row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_pf_addr_hi_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_pf_addr_lo_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

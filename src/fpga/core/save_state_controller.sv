@@ -102,6 +102,10 @@ module save_state_controller (
     output wire [7:0] debug_first_wr_addr_hi,   // bridge_addr[15:8] of first write (expect $00)
     output wire [7:0] debug_first_save_byte0,   // First byte SNES wrote during save: core_wr_data[7:0] (expect $53='S')
     output wire [7:0] debug_first_save_byte1,   // Second byte: core_wr_data[15:8] (expect $4E='N')
+    output wire [7:0] debug_first_save_addr_lo, // First save chunk's SRAM base (low byte of core_sram_base)
+    output wire [7:0] debug_first_save_addr_hi, // First save chunk's SRAM base (high byte)
+    output wire [7:0] debug_first_pf_addr_lo,   // First prefetched SRAM word address (low byte)
+    output wire [7:0] debug_first_pf_addr_hi,   // First prefetched SRAM word address (high byte)
     output wire [7:0] debug_bridge_rd_count_lo, // low byte of bridge_rd events at 4xxxxxxx
     output wire [7:0] debug_bridge_rd_count_hi, // high byte (saturates at FF)
     output wire [7:0] debug_first_rd_addr_lo,   // bridge_addr[7:0] of first bridge_rd (expect $00)
@@ -290,11 +294,27 @@ module save_state_controller (
   assign debug_first_wr_addr_hi = second_wr_data[23:16];  // file byte 5
 
   // Capture the FIRST 64-bit chunk the SNES wrote during save.
-  // core_wr_data is in clk_sys; latch it sticky.
+  // core_wr_data is in clk_sys; latch it sticky.  Also capture the
+  // chunk's SRAM word base (core_sram_base) so we can tell whether
+  // it lands at SRAM offset 0 or somewhere else.
   reg [63:0] first_save_chunk = 64'h0;
+  reg [14:0] first_save_base  = 15'h0000;
   reg        first_save_seen  = 0;
-  assign debug_first_save_byte0 = first_save_chunk[7:0];
-  assign debug_first_save_byte1 = first_save_chunk[15:8];
+  assign debug_first_save_byte0   = first_save_chunk[7:0];
+  assign debug_first_save_byte1   = first_save_chunk[15:8];
+  // Expose first_save_base as two bytes. It's the SRAM WORD base (15 bits);
+  // multiply by 4 to get the SRAM byte address of the 8-byte chunk.
+  assign debug_first_save_addr_lo = {1'b0, first_save_base[6:0]};
+  assign debug_first_save_addr_hi = {1'b0, first_save_base[14:7]};
+
+  // Capture the first prefetched SRAM word address (= what we ask the
+  // FSM to read first for serving APF bridge_rds).  If save wrote 'SNES'
+  // at SRAM word 0 and we ALSO start prefetching at word 0, the bytes
+  // should round-trip.
+  reg [16:0] first_pf_addr      = 17'd0;
+  reg        first_pf_seen      = 0;
+  assign debug_first_pf_addr_lo = first_pf_addr[7:0];
+  assign debug_first_pf_addr_hi = {7'b0, first_pf_addr[9:8]};   // bits [9:8] of 17-bit addr
 
   // Count bridge_rd events at 4xxxxxxx (the save-state region).
   // Capture the very first bridge_rd's address (sticky).
@@ -390,9 +410,10 @@ module save_state_controller (
           core_sram_base     <= ss_addr[14:0];
           core_wr_req_toggle <= ~core_wr_req_toggle;
           sys_state          <= SYS_SAVE_WAIT_SRAM;
-          // Sticky capture of the very first save chunk's data
+          // Sticky capture of the very first save chunk's data + address
           if (!first_save_seen) begin
             first_save_chunk <= ss_din;
+            first_save_base  <= ss_addr[14:0];
             first_save_seen  <= 1;
           end
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
@@ -679,6 +700,12 @@ module save_state_controller (
           sram_oe_n  <= 0;
           sram_dq_oe <= 0;
           sram_state <= SRAM_PF_SETUP;
+          // Sticky-capture the very first prefetch address so we can
+          // verify it really starts at SRAM word 0.
+          if (!first_pf_seen) begin
+            first_pf_addr <= pf_next_addr;
+            first_pf_seen <= 1;
+          end
         end
       end
 
