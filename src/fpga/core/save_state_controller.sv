@@ -114,6 +114,8 @@ module save_state_controller (
     output wire [7:0] debug_max_sram_base_hi,   // Highest SRAM word base seen during save (high byte)
     output wire [7:0] debug_save_wr_count_lo,   // # of SRAM core writes completed (low byte)
     output wire [7:0] debug_save_wr_count_hi,   // # of SRAM core writes completed (high byte)
+    output wire [7:0] debug_ss_addr_overflow,   // sticky: ss_addr ever had bit 15 or 16 set (= overflowed SRAM)
+    output wire [7:0] debug_ss_addr_max_hi,     // max value of ss_addr[16:8] seen
     output wire [7:0] debug_bridge_rd_count_lo, // low byte of bridge_rd events at 4xxxxxxx
     output wire [7:0] debug_bridge_rd_count_hi, // high byte (saturates at FF)
     output wire [7:0] debug_first_rd_addr_lo,   // bridge_addr[7:0] of first bridge_rd (expect $00)
@@ -348,6 +350,12 @@ module save_state_controller (
   assign debug_save_wr_count_lo = save_wr_count[7:0];
   assign debug_save_wr_count_hi = save_wr_count[15:8];
 
+  // Detect whether ss_addr ever exceeded 15 bits during a save — i.e.,
+  // the save state is larger than the 256KB SRAM and chunks are wrapping.
+  reg [8:0] ss_addr_max_hi = 9'h000;  // captures the maximum of ss_addr[16:8] seen
+  assign debug_ss_addr_overflow = {7'b0, |ss_addr_max_hi[8:7], 1'b0};
+  assign debug_ss_addr_max_hi   = ss_addr_max_hi[7:0];
+
   // Count bridge_rd events at 4xxxxxxx (the save-state region).
   // Capture the very first bridge_rd's address (sticky).
   reg [15:0] bridge_rd_count = 16'h0000;
@@ -451,6 +459,13 @@ module save_state_controller (
           // Track max chunk base address seen.
           if (ss_addr[14:0] > max_sram_base) begin
             max_sram_base <= ss_addr[14:0];
+          end
+          // Track max upper bits of ss_addr.  If this ever goes non-zero,
+          // chunks are addressing past the 15-bit (32K-chunk) window —
+          // i.e., wrapping back to low SRAM and overwriting earlier
+          // chunks (including the firmware's 'SNES' header at SRAM 0).
+          if (ss_addr[16:8] > ss_addr_max_hi) begin
+            ss_addr_max_hi <= ss_addr[16:8];
           end
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
           // FIX #1: Only complete when we have seen ss_busy rise AND fall

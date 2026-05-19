@@ -544,6 +544,8 @@ module core_top (
   wire [7:0] debug_max_sram_base_hi;
   wire [7:0] debug_save_wr_count_lo;
   wire [7:0] debug_save_wr_count_hi;
+  wire [7:0] debug_ss_addr_overflow;
+  wire [7:0] debug_ss_addr_max_hi;
   wire [7:0] debug_bridge_rd_count_lo;
   wire [7:0] debug_bridge_rd_count_hi;
   wire [7:0] debug_first_rd_addr_lo;
@@ -633,6 +635,8 @@ module core_top (
       .debug_max_sram_base_hi  (debug_max_sram_base_hi),
       .debug_save_wr_count_lo  (debug_save_wr_count_lo),
       .debug_save_wr_count_hi  (debug_save_wr_count_hi),
+      .debug_ss_addr_overflow  (debug_ss_addr_overflow),
+      .debug_ss_addr_max_hi    (debug_ss_addr_max_hi),
       .debug_bridge_rd_count_lo(debug_bridge_rd_count_lo),
       .debug_bridge_rd_count_hi(debug_bridge_rd_count_hi),
       .debug_first_rd_addr_lo  (debug_first_rd_addr_lo),
@@ -1223,6 +1227,10 @@ module core_top (
   reg [7:0] dbg_save_wr_count_lo_sync_1;
   reg [7:0] dbg_save_wr_count_hi_sync_0;
   reg [7:0] dbg_save_wr_count_hi_sync_1;
+  reg [7:0] dbg_ss_addr_overflow_sync_0;
+  reg [7:0] dbg_ss_addr_overflow_sync_1;
+  reg [7:0] dbg_ss_addr_max_hi_sync_0;
+  reg [7:0] dbg_ss_addr_max_hi_sync_1;
   reg [7:0] dbg_bridge_rd_lo_sync_0;
   reg [7:0] dbg_bridge_rd_lo_sync_1;
   reg [7:0] dbg_bridge_rd_hi_sync_0;
@@ -1316,6 +1324,10 @@ module core_top (
     dbg_save_wr_count_lo_sync_1   <= dbg_save_wr_count_lo_sync_0;
     dbg_save_wr_count_hi_sync_0   <= debug_save_wr_count_hi;
     dbg_save_wr_count_hi_sync_1   <= dbg_save_wr_count_hi_sync_0;
+    dbg_ss_addr_overflow_sync_0   <= debug_ss_addr_overflow;
+    dbg_ss_addr_overflow_sync_1   <= dbg_ss_addr_overflow_sync_0;
+    dbg_ss_addr_max_hi_sync_0     <= debug_ss_addr_max_hi;
+    dbg_ss_addr_max_hi_sync_1     <= dbg_ss_addr_max_hi_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1359,6 +1371,8 @@ module core_top (
   wire [7:0] dbg_max_sram_base_hi_video   = dbg_max_sram_base_hi_sync_1;
   wire [7:0] dbg_save_wr_count_lo_video   = dbg_save_wr_count_lo_sync_1;
   wire [7:0] dbg_save_wr_count_hi_video   = dbg_save_wr_count_hi_sync_1;
+  wire [7:0] dbg_ss_addr_overflow_video   = dbg_ss_addr_overflow_sync_1;
+  wire [7:0] dbg_ss_addr_max_hi_video     = dbg_ss_addr_max_hi_sync_1;
   wire [7:0] dbg_bridge_rd_lo_video     = dbg_bridge_rd_lo_sync_1;
   wire [7:0] dbg_bridge_rd_hi_video     = dbg_bridge_rd_hi_sync_1;
   wire [7:0] dbg_first_rd_lo_video      = dbg_first_rd_lo_sync_1;
@@ -1580,36 +1594,26 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Previous run: SRAM word 0 = $FFFF (uninit), word 1 = $9999 (WRAM
-      // filler).  The first save chunk's 'SNES' header didn't land at
-      // word 0/1 — but word 1 did get some write (WRAM filler).
+      // Previous run: save_wr_count = 0x81D0 (33,232 writes), max_sram_base
+      // = 0x7FFF (saturated at 15-bit limit).  Strong hypothesis: the save
+      // state PAYLOAD is larger than the 256KB SRAM, and chunks past index
+      // 32K wrap back to SRAM word 0, overwriting the 'SNES' header.  The
+      // controller uses ss_addr[14:0] (15 bits) but ss_addr is 17 bits.
       //
-      // Hypothesis: either the SAVE side doesn't write enough chunks
-      // (only the WRAM data lands, header is missed), OR the chunk
-      // addressing is somehow non-monotonic (overlapping later writes
-      // overwrote earlier ones).  Check totals.
+      // To prove: check whether ss_addr ever set bits [16:15] during save.
       //
-      // Row 0 (RED)    : save_wr_count_hi — high byte of completed SRAM
-      //                  core writes (saturates at $FF = 65535).
-      //                  Healthy 256KB save = ~32768 writes = $80 high byte.
-      // Row 1 (GREEN)  : save_wr_count_lo — low byte.
-      // Row 2 (YELLOW) : max_sram_base_hi — high byte of largest SRAM
-      //                  word base seen (max 14 bits = $7F).  Healthy = ~$7F.
-      // Row 3 (CYAN)   : max_sram_base_lo — low byte.
-      //
-      // If save_wr_count is small (< $0100): SAVE side wrote almost nothing
-      //   to SRAM. The 'SNES' header probably WAS written but only a few
-      //   bytes followed.  Look at why the SAVE firmware bailed early.
-      // If save_wr_count is large but max_sram_base_hi is tiny ($00): all
-      //   writes went to low SRAM addresses (= chunk addressing broken,
-      //   everything overwrites everything).
-      // If save_wr_count is large AND max_sram_base is large (~$7F): writes
-      //   landed correctly. The bug is somewhere else (maybe the very first
-      //   chunk's write was preempted by an earlier transaction).
-      2'd0: begin row_value = dbg_save_wr_count_hi_video;    row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_save_wr_count_lo_video;    row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_max_sram_base_hi_video;    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_max_sram_base_lo_video;    row_marker_rgb = 24'h00FFFF; end
+      // Row 0 (RED)    : ss_addr_overflow — sticky flag: any bit [16:15]
+      //                  of ss_addr ever non-zero?  $02 = bit 15 was set
+      //                  at some point (= save spilled past 256KB).
+      // Row 1 (GREEN)  : ss_addr_max_hi — max value of ss_addr[15:8]
+      //                  (8-bit slice of 17-bit addr).  If this reaches
+      //                  $FF, the save chunk indices went past 32K.
+      // Row 2 (YELLOW) : save_wr_count_hi — sanity check (should still be ~$81)
+      // Row 3 (CYAN)   : save_wr_count_lo
+      2'd0: begin row_value = dbg_ss_addr_overflow_video;    row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_ss_addr_max_hi_video;      row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_save_wr_count_hi_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_save_wr_count_lo_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
