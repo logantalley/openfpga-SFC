@@ -536,6 +536,10 @@ module core_top (
   wire [7:0] debug_first_save_addr_hi;
   wire [7:0] debug_first_pf_addr_lo;
   wire [7:0] debug_first_pf_addr_hi;
+  wire [7:0] debug_first_sram_w0_lo;
+  wire [7:0] debug_first_sram_w0_hi;
+  wire [7:0] debug_first_sram_w1_lo;
+  wire [7:0] debug_first_sram_w1_hi;
   wire [7:0] debug_bridge_rd_count_lo;
   wire [7:0] debug_bridge_rd_count_hi;
   wire [7:0] debug_first_rd_addr_lo;
@@ -617,6 +621,10 @@ module core_top (
       .debug_first_save_addr_hi(debug_first_save_addr_hi),
       .debug_first_pf_addr_lo  (debug_first_pf_addr_lo),
       .debug_first_pf_addr_hi  (debug_first_pf_addr_hi),
+      .debug_first_sram_w0_lo  (debug_first_sram_w0_lo),
+      .debug_first_sram_w0_hi  (debug_first_sram_w0_hi),
+      .debug_first_sram_w1_lo  (debug_first_sram_w1_lo),
+      .debug_first_sram_w1_hi  (debug_first_sram_w1_hi),
       .debug_bridge_rd_count_lo(debug_bridge_rd_count_lo),
       .debug_bridge_rd_count_hi(debug_bridge_rd_count_hi),
       .debug_first_rd_addr_lo  (debug_first_rd_addr_lo),
@@ -1191,6 +1199,14 @@ module core_top (
   reg [7:0] dbg_first_pf_addr_lo_sync_1;
   reg [7:0] dbg_first_pf_addr_hi_sync_0;
   reg [7:0] dbg_first_pf_addr_hi_sync_1;
+  reg [7:0] dbg_first_sram_w0_lo_sync_0;
+  reg [7:0] dbg_first_sram_w0_lo_sync_1;
+  reg [7:0] dbg_first_sram_w0_hi_sync_0;
+  reg [7:0] dbg_first_sram_w0_hi_sync_1;
+  reg [7:0] dbg_first_sram_w1_lo_sync_0;
+  reg [7:0] dbg_first_sram_w1_lo_sync_1;
+  reg [7:0] dbg_first_sram_w1_hi_sync_0;
+  reg [7:0] dbg_first_sram_w1_hi_sync_1;
   reg [7:0] dbg_bridge_rd_lo_sync_0;
   reg [7:0] dbg_bridge_rd_lo_sync_1;
   reg [7:0] dbg_bridge_rd_hi_sync_0;
@@ -1268,6 +1284,14 @@ module core_top (
     dbg_first_pf_addr_lo_sync_1   <= dbg_first_pf_addr_lo_sync_0;
     dbg_first_pf_addr_hi_sync_0   <= debug_first_pf_addr_hi;
     dbg_first_pf_addr_hi_sync_1   <= dbg_first_pf_addr_hi_sync_0;
+    dbg_first_sram_w0_lo_sync_0   <= debug_first_sram_w0_lo;
+    dbg_first_sram_w0_lo_sync_1   <= dbg_first_sram_w0_lo_sync_0;
+    dbg_first_sram_w0_hi_sync_0   <= debug_first_sram_w0_hi;
+    dbg_first_sram_w0_hi_sync_1   <= dbg_first_sram_w0_hi_sync_0;
+    dbg_first_sram_w1_lo_sync_0   <= debug_first_sram_w1_lo;
+    dbg_first_sram_w1_lo_sync_1   <= dbg_first_sram_w1_lo_sync_0;
+    dbg_first_sram_w1_hi_sync_0   <= debug_first_sram_w1_hi;
+    dbg_first_sram_w1_hi_sync_1   <= dbg_first_sram_w1_hi_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1303,6 +1327,10 @@ module core_top (
   wire [7:0] dbg_first_save_addr_hi_video = dbg_first_save_addr_hi_sync_1;
   wire [7:0] dbg_first_pf_addr_lo_video   = dbg_first_pf_addr_lo_sync_1;
   wire [7:0] dbg_first_pf_addr_hi_video   = dbg_first_pf_addr_hi_sync_1;
+  wire [7:0] dbg_first_sram_w0_lo_video   = dbg_first_sram_w0_lo_sync_1;
+  wire [7:0] dbg_first_sram_w0_hi_video   = dbg_first_sram_w0_hi_sync_1;
+  wire [7:0] dbg_first_sram_w1_lo_video   = dbg_first_sram_w1_lo_sync_1;
+  wire [7:0] dbg_first_sram_w1_hi_video   = dbg_first_sram_w1_hi_sync_1;
   wire [7:0] dbg_bridge_rd_lo_video     = dbg_bridge_rd_lo_sync_1;
   wire [7:0] dbg_bridge_rd_hi_video     = dbg_bridge_rd_hi_sync_1;
   wire [7:0] dbg_first_rd_lo_video      = dbg_first_rd_lo_sync_1;
@@ -1524,29 +1552,26 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Two prefetch-race fix attempts both failed identically: the file
-      // still has 20 leading zero bytes at the start of the save payload.
-      // That means the bug is NOT in the read-side race.  Check whether
-      // the save-side controller actually writes 'SNES' to SRAM word 0
-      // (vs. some other offset).
+      // Addresses on both sides checked out at 00 00 00 00.  Now look at
+      // what the FSM ACTUALLY READS from SRAM on the very first prefetch
+      // (= bytes the controller wrote during save, if SRAM is preserving
+      // them correctly).
       //
-      // Row 0 (RED)    : first_save_addr_hi — high byte of save's first
-      //                  chunk's SRAM word base (expect $00).
-      // Row 1 (GREEN)  : first_save_addr_lo — low byte (expect $00).
-      // Row 2 (YELLOW) : first_pf_addr_hi   — high byte of first prefetch
-      //                  SRAM word address (expect $00 if FSM starts at 0).
-      // Row 3 (CYAN)   : first_pf_addr_lo   — low byte (expect $00).
+      // Row 0 (RED)    : first_sram_w0 high byte (expect $45='E')
+      // Row 1 (GREEN)  : first_sram_w0 low  byte (expect $53='S')
+      // Row 2 (YELLOW) : first_sram_w1 high byte (expect $53='S')
+      // Row 3 (CYAN)   : first_sram_w1 low  byte (expect $4E='N')
       //
-      // If RED/GREEN != 00 00: SAVE writes 'SNES' to a non-zero SRAM offset.
-      //   That'd be a save-side address bug — completely different fix.
-      // If RED/GREEN = 00 00 but YELLOW/CYAN != 00 00: PREFETCH starts
-      //   reading at a non-zero offset, missing the first chunks.
-      // If all are 00: addresses are correct; bug is somewhere else
-      //   (maybe APF still doesn't actually start reading at our addr 0).
-      2'd0: begin row_value = dbg_first_save_addr_hi_video;  row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_addr_lo_video;  row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_pf_addr_hi_video;    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_pf_addr_lo_video;    row_marker_rgb = 24'h00FFFF; end
+      // If we see 45 53 53 4E: SRAM has the saved data correctly.
+      //   The bug is downstream — something between FSM and APF.
+      // If we see 00 00 00 00: SRAM is empty/cleared at the time the FSM
+      //   reads.  Either the save side never actually wrote to SRAM, or
+      //   something cleared SRAM between save and prefetch.
+      // Anything else: SRAM has unexpected content; investigate.
+      2'd0: begin row_value = dbg_first_sram_w0_hi_video;    row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_sram_w0_lo_video;    row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_sram_w1_hi_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_lo_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

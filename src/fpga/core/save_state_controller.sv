@@ -106,6 +106,10 @@ module save_state_controller (
     output wire [7:0] debug_first_save_addr_hi, // First save chunk's SRAM base (high byte)
     output wire [7:0] debug_first_pf_addr_lo,   // First prefetched SRAM word address (low byte)
     output wire [7:0] debug_first_pf_addr_hi,   // First prefetched SRAM word address (high byte)
+    output wire [7:0] debug_first_sram_w0_lo,   // First SRAM read: word 0 low byte (expect $53='S')
+    output wire [7:0] debug_first_sram_w0_hi,   // First SRAM read: word 0 high byte (expect $45='E')
+    output wire [7:0] debug_first_sram_w1_lo,   // First SRAM read: word 1 low byte (expect $4E='N')
+    output wire [7:0] debug_first_sram_w1_hi,   // First SRAM read: word 1 high byte (expect $53='S')
     output wire [7:0] debug_bridge_rd_count_lo, // low byte of bridge_rd events at 4xxxxxxx
     output wire [7:0] debug_bridge_rd_count_hi, // high byte (saturates at FF)
     output wire [7:0] debug_first_rd_addr_lo,   // bridge_addr[7:0] of first bridge_rd (expect $00)
@@ -315,6 +319,18 @@ module save_state_controller (
   reg        first_pf_seen      = 0;
   assign debug_first_pf_addr_lo = first_pf_addr[7:0];
   assign debug_first_pf_addr_hi = {7'b0, first_pf_addr[9:8]};   // bits [9:8] of 17-bit addr
+
+  // Capture the SRAM data on the first prefetch (1st word at SRAM_PF_LO,
+  // 2nd word at SRAM_PF_HI).  These should be the bytes the save firmware
+  // wrote: word 0 = $4553 (= bytes 'E' high, 'S' low), word 1 = $534E.
+  reg [15:0] first_sram_w0 = 16'h0000;
+  reg [15:0] first_sram_w1 = 16'h0000;
+  reg        first_sram_w0_seen = 0;
+  reg        first_sram_w1_seen = 0;
+  assign debug_first_sram_w0_lo = first_sram_w0[7:0];
+  assign debug_first_sram_w0_hi = first_sram_w0[15:8];
+  assign debug_first_sram_w1_lo = first_sram_w1[7:0];
+  assign debug_first_sram_w1_hi = first_sram_w1[15:8];
 
   // Count bridge_rd events at 4xxxxxxx (the save-state region).
   // Capture the very first bridge_rd's address (sticky).
@@ -802,6 +818,11 @@ module save_state_controller (
         pf_lo      <= sram_dq_in;
         sram_a     <= pf_next_addr + 17'd1;   // high word lives at base+1
         sram_state <= SRAM_PF_GAP;
+        // Sticky capture of first prefetch's first SRAM word.
+        if (!first_sram_w0_seen) begin
+          first_sram_w0      <= sram_dq_in;
+          first_sram_w0_seen <= 1;
+        end
       end
 
       SRAM_PF_GAP: begin
@@ -822,6 +843,11 @@ module save_state_controller (
         // savestate_start_ok (via pf_initial_ready & savestate_start_ok_s_internal).
         if (!pf_initial_ready) begin
           pf_initial_ready <= 1'b1;
+        end
+        // Sticky capture of the first prefetch's second SRAM word.
+        if (!first_sram_w1_seen) begin
+          first_sram_w1      <= sram_dq_in;
+          first_sram_w1_seen <= 1;
         end
       end
 
