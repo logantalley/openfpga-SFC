@@ -546,6 +546,8 @@ module core_top (
   wire [7:0] debug_save_wr_count_hi;
   wire [7:0] debug_ss_addr_overflow;
   wire [7:0] debug_ss_addr_max_hi;
+  wire [7:0] debug_pf_at_first_rd_lo;
+  wire [7:0] debug_pf_at_first_rd_hi;
   wire [7:0] debug_bridge_rd_count_lo;
   wire [7:0] debug_bridge_rd_count_hi;
   wire [7:0] debug_first_rd_addr_lo;
@@ -637,6 +639,8 @@ module core_top (
       .debug_save_wr_count_hi  (debug_save_wr_count_hi),
       .debug_ss_addr_overflow  (debug_ss_addr_overflow),
       .debug_ss_addr_max_hi    (debug_ss_addr_max_hi),
+      .debug_pf_at_first_rd_lo (debug_pf_at_first_rd_lo),
+      .debug_pf_at_first_rd_hi (debug_pf_at_first_rd_hi),
       .debug_bridge_rd_count_lo(debug_bridge_rd_count_lo),
       .debug_bridge_rd_count_hi(debug_bridge_rd_count_hi),
       .debug_first_rd_addr_lo  (debug_first_rd_addr_lo),
@@ -1231,6 +1235,10 @@ module core_top (
   reg [7:0] dbg_ss_addr_overflow_sync_1;
   reg [7:0] dbg_ss_addr_max_hi_sync_0;
   reg [7:0] dbg_ss_addr_max_hi_sync_1;
+  reg [7:0] dbg_pf_at_first_rd_lo_sync_0;
+  reg [7:0] dbg_pf_at_first_rd_lo_sync_1;
+  reg [7:0] dbg_pf_at_first_rd_hi_sync_0;
+  reg [7:0] dbg_pf_at_first_rd_hi_sync_1;
   reg [7:0] dbg_bridge_rd_lo_sync_0;
   reg [7:0] dbg_bridge_rd_lo_sync_1;
   reg [7:0] dbg_bridge_rd_hi_sync_0;
@@ -1328,6 +1336,10 @@ module core_top (
     dbg_ss_addr_overflow_sync_1   <= dbg_ss_addr_overflow_sync_0;
     dbg_ss_addr_max_hi_sync_0     <= debug_ss_addr_max_hi;
     dbg_ss_addr_max_hi_sync_1     <= dbg_ss_addr_max_hi_sync_0;
+    dbg_pf_at_first_rd_lo_sync_0  <= debug_pf_at_first_rd_lo;
+    dbg_pf_at_first_rd_lo_sync_1  <= dbg_pf_at_first_rd_lo_sync_0;
+    dbg_pf_at_first_rd_hi_sync_0  <= debug_pf_at_first_rd_hi;
+    dbg_pf_at_first_rd_hi_sync_1  <= dbg_pf_at_first_rd_hi_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1373,6 +1385,8 @@ module core_top (
   wire [7:0] dbg_save_wr_count_hi_video   = dbg_save_wr_count_hi_sync_1;
   wire [7:0] dbg_ss_addr_overflow_video   = dbg_ss_addr_overflow_sync_1;
   wire [7:0] dbg_ss_addr_max_hi_video     = dbg_ss_addr_max_hi_sync_1;
+  wire [7:0] dbg_pf_at_first_rd_lo_video  = dbg_pf_at_first_rd_lo_sync_1;
+  wire [7:0] dbg_pf_at_first_rd_hi_video  = dbg_pf_at_first_rd_hi_sync_1;
   wire [7:0] dbg_bridge_rd_lo_video     = dbg_bridge_rd_lo_sync_1;
   wire [7:0] dbg_bridge_rd_hi_video     = dbg_bridge_rd_hi_sync_1;
   wire [7:0] dbg_first_rd_lo_video      = dbg_first_rd_lo_sync_1;
@@ -1594,25 +1608,24 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Previous run: save_wr_count = 0x81D0 (33,232 writes), max_sram_base
-      // = 0x7FFF (saturated at 15-bit limit).  Strong hypothesis: the save
-      // state PAYLOAD is larger than the 256KB SRAM, and chunks past index
-      // 32K wrap back to SRAM word 0, overwriting the 'SNES' header.  The
-      // controller uses ss_addr[14:0] (15 bits) but ss_addr is 17 bits.
+      // Overflow was fixed (Red=$00) but the file still shows 'SNES' at
+      // payload offset 0x3F806 — meaning APF reads SRAM starting from
+      // SRAM byte ~0x7FA (= word 0x3FD = 1021), wrapping.  Determine
+      // whether the controller's pf_next_addr was AT 0 when APF's first
+      // bridge_rd arrived (= correct) or had advanced (= our bug).
       //
-      // To prove: check whether ss_addr ever set bits [16:15] during save.
-      //
-      // Row 0 (RED)    : ss_addr_overflow — sticky flag: any bit [16:15]
-      //                  of ss_addr ever non-zero?  $02 = bit 15 was set
-      //                  at some point (= save spilled past 256KB).
-      // Row 1 (GREEN)  : ss_addr_max_hi — max value of ss_addr[15:8]
-      //                  (8-bit slice of 17-bit addr).  If this reaches
-      //                  $FF, the save chunk indices went past 32K.
-      // Row 2 (YELLOW) : save_wr_count_hi — sanity check (should still be ~$81)
-      // Row 3 (CYAN)   : save_wr_count_lo
-      2'd0: begin row_value = dbg_ss_addr_overflow_video;    row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_ss_addr_max_hi_video;      row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_save_wr_count_hi_video;    row_marker_rgb = 24'hFFFF00; end
+      // Row 0 (RED)    : pf_at_first_rd_hi — pf_next_addr bits [9:8] at
+      //                  first bridge_rd.  Expect $00 (= addr was 0..255).
+      // Row 1 (GREEN)  : pf_at_first_rd_lo — pf_next_addr bits [7:0] at
+      //                  first bridge_rd.  Expect $02 (= we just fetched
+      //                  word 0 and advanced to 2).  If $00, FSM hadn't
+      //                  finished its first prefetch yet.  If much larger
+      //                  (e.g. $FA), spurious advances happened.
+      // Row 2 (YELLOW) : ss_addr_max_hi (sanity, should still be $61)
+      // Row 3 (CYAN)   : save_wr_count_lo (sanity, should still be $D0)
+      2'd0: begin row_value = dbg_pf_at_first_rd_hi_video;   row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_pf_at_first_rd_lo_video;   row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_ss_addr_max_hi_video;      row_marker_rgb = 24'hFFFF00; end
       2'd3: begin row_value = dbg_save_wr_count_lo_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end

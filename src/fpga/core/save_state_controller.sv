@@ -116,6 +116,8 @@ module save_state_controller (
     output wire [7:0] debug_save_wr_count_hi,   // # of SRAM core writes completed (high byte)
     output wire [7:0] debug_ss_addr_overflow,   // sticky: ss_addr ever had bit 15 or 16 set (= overflowed SRAM)
     output wire [7:0] debug_ss_addr_max_hi,     // max value of ss_addr[16:8] seen
+    output wire [7:0] debug_pf_at_first_rd_lo,  // pf_next_addr captured at first bridge_rd (low byte)
+    output wire [7:0] debug_pf_at_first_rd_hi,  // pf_next_addr captured at first bridge_rd (high byte)
     output wire [7:0] debug_bridge_rd_count_lo, // low byte of bridge_rd events at 4xxxxxxx
     output wire [7:0] debug_bridge_rd_count_hi, // high byte (saturates at FF)
     output wire [7:0] debug_first_rd_addr_lo,   // bridge_addr[7:0] of first bridge_rd (expect $00)
@@ -355,6 +357,16 @@ module save_state_controller (
   reg [8:0] ss_addr_max_hi = 9'h000;  // captures the maximum of ss_addr[16:8] seen
   assign debug_ss_addr_overflow = {7'b0, |ss_addr_max_hi[8:7], 1'b0};
   assign debug_ss_addr_max_hi   = ss_addr_max_hi[7:0];
+
+  // Capture pf_next_addr value at the moment of the FIRST bridge_rd
+  // (rising edge).  This tells us what SRAM word address the FSM was
+  // about to fetch when APF made its first read.  If pf_next_addr=2 we
+  // know APF got SRAM word 0 first (= 'SNES').  If non-zero/non-2 something
+  // advanced pf_next_addr before APF's first real read.
+  reg [16:0] pf_at_first_rd = 17'd0;
+  reg        pf_at_first_rd_seen = 0;
+  assign debug_pf_at_first_rd_lo = pf_at_first_rd[7:0];
+  assign debug_pf_at_first_rd_hi = {7'b0, pf_at_first_rd[9:8]};
 
   // Count bridge_rd events at 4xxxxxxx (the save-state region).
   // Capture the very first bridge_rd's address (sticky).
@@ -705,6 +717,13 @@ module save_state_controller (
       if (!first_rd_seen) begin
         first_rd_addr <= bridge_addr;
         first_rd_seen <= 1;
+      end
+      // Capture pf_next_addr at the very first bridge_rd that arrives
+      // AFTER pf_armed (= after save_ok rose).  Reads before pf_armed
+      // wouldn't be relevant.
+      if (pf_armed && !pf_at_first_rd_seen) begin
+        pf_at_first_rd <= pf_next_addr;
+        pf_at_first_rd_seen <= 1;
       end
     end
 
