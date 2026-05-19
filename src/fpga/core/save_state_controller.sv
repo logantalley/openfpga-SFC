@@ -110,6 +110,10 @@ module save_state_controller (
     output wire [7:0] debug_first_sram_w0_hi,   // First SRAM read: word 0 high byte (expect $45='E')
     output wire [7:0] debug_first_sram_w1_lo,   // First SRAM read: word 1 low byte (expect $4E='N')
     output wire [7:0] debug_first_sram_w1_hi,   // First SRAM read: word 1 high byte (expect $53='S')
+    output wire [7:0] debug_max_sram_base_lo,   // Highest SRAM word base seen during save (low byte)
+    output wire [7:0] debug_max_sram_base_hi,   // Highest SRAM word base seen during save (high byte)
+    output wire [7:0] debug_save_wr_count_lo,   // # of SRAM core writes completed (low byte)
+    output wire [7:0] debug_save_wr_count_hi,   // # of SRAM core writes completed (high byte)
     output wire [7:0] debug_bridge_rd_count_lo, // low byte of bridge_rd events at 4xxxxxxx
     output wire [7:0] debug_bridge_rd_count_hi, // high byte (saturates at FF)
     output wire [7:0] debug_first_rd_addr_lo,   // bridge_addr[7:0] of first bridge_rd (expect $00)
@@ -332,6 +336,18 @@ module save_state_controller (
   assign debug_first_sram_w1_lo = first_sram_w1[7:0];
   assign debug_first_sram_w1_hi = first_sram_w1[15:8];
 
+  // Track the maximum SRAM word base address seen across all save chunks
+  // (in clk_sys, where ss_addr is sampled).
+  reg [14:0] max_sram_base = 15'h0000;
+  assign debug_max_sram_base_lo = max_sram_base[7:0];
+  assign debug_max_sram_base_hi = {1'b0, max_sram_base[14:8]};
+
+  // Count of fully-completed core SRAM writes (clk_74a, set in SRAM FSM).
+  // A healthy 256KB save produces ~32768 writes (saturates at 0xFFFF).
+  reg [15:0] save_wr_count = 16'h0000;
+  assign debug_save_wr_count_lo = save_wr_count[7:0];
+  assign debug_save_wr_count_hi = save_wr_count[15:8];
+
   // Count bridge_rd events at 4xxxxxxx (the save-state region).
   // Capture the very first bridge_rd's address (sticky).
   reg [15:0] bridge_rd_count = 16'h0000;
@@ -431,6 +447,10 @@ module save_state_controller (
             first_save_chunk <= ss_din;
             first_save_base  <= ss_addr[14:0];
             first_save_seen  <= 1;
+          end
+          // Track max chunk base address seen.
+          if (ss_addr[14:0] > max_sram_base) begin
+            max_sram_base <= ss_addr[14:0];
           end
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
           // FIX #1: Only complete when we have seen ss_busy rise AND fall
@@ -738,6 +758,10 @@ module save_state_controller (
           sram_wr_ack_toggle   <= ~sram_wr_ack_toggle;
           prev_core_wr_req_74a <= core_wr_req_74a;  // consume pending
           sram_state           <= SRAM_IDLE;
+          // Debug: count of fully-completed SRAM core writes.
+          if (save_wr_count != 16'hFFFF) begin
+            save_wr_count <= save_wr_count + 16'h0001;
+          end
         end else begin
           sram_word_idx <= sram_word_idx + 2'd1;
           sram_a <= sram_base_addr + {15'd0, sram_word_idx} + 17'd1;

@@ -540,6 +540,10 @@ module core_top (
   wire [7:0] debug_first_sram_w0_hi;
   wire [7:0] debug_first_sram_w1_lo;
   wire [7:0] debug_first_sram_w1_hi;
+  wire [7:0] debug_max_sram_base_lo;
+  wire [7:0] debug_max_sram_base_hi;
+  wire [7:0] debug_save_wr_count_lo;
+  wire [7:0] debug_save_wr_count_hi;
   wire [7:0] debug_bridge_rd_count_lo;
   wire [7:0] debug_bridge_rd_count_hi;
   wire [7:0] debug_first_rd_addr_lo;
@@ -625,6 +629,10 @@ module core_top (
       .debug_first_sram_w0_hi  (debug_first_sram_w0_hi),
       .debug_first_sram_w1_lo  (debug_first_sram_w1_lo),
       .debug_first_sram_w1_hi  (debug_first_sram_w1_hi),
+      .debug_max_sram_base_lo  (debug_max_sram_base_lo),
+      .debug_max_sram_base_hi  (debug_max_sram_base_hi),
+      .debug_save_wr_count_lo  (debug_save_wr_count_lo),
+      .debug_save_wr_count_hi  (debug_save_wr_count_hi),
       .debug_bridge_rd_count_lo(debug_bridge_rd_count_lo),
       .debug_bridge_rd_count_hi(debug_bridge_rd_count_hi),
       .debug_first_rd_addr_lo  (debug_first_rd_addr_lo),
@@ -1207,6 +1215,14 @@ module core_top (
   reg [7:0] dbg_first_sram_w1_lo_sync_1;
   reg [7:0] dbg_first_sram_w1_hi_sync_0;
   reg [7:0] dbg_first_sram_w1_hi_sync_1;
+  reg [7:0] dbg_max_sram_base_lo_sync_0;
+  reg [7:0] dbg_max_sram_base_lo_sync_1;
+  reg [7:0] dbg_max_sram_base_hi_sync_0;
+  reg [7:0] dbg_max_sram_base_hi_sync_1;
+  reg [7:0] dbg_save_wr_count_lo_sync_0;
+  reg [7:0] dbg_save_wr_count_lo_sync_1;
+  reg [7:0] dbg_save_wr_count_hi_sync_0;
+  reg [7:0] dbg_save_wr_count_hi_sync_1;
   reg [7:0] dbg_bridge_rd_lo_sync_0;
   reg [7:0] dbg_bridge_rd_lo_sync_1;
   reg [7:0] dbg_bridge_rd_hi_sync_0;
@@ -1292,6 +1308,14 @@ module core_top (
     dbg_first_sram_w1_lo_sync_1   <= dbg_first_sram_w1_lo_sync_0;
     dbg_first_sram_w1_hi_sync_0   <= debug_first_sram_w1_hi;
     dbg_first_sram_w1_hi_sync_1   <= dbg_first_sram_w1_hi_sync_0;
+    dbg_max_sram_base_lo_sync_0   <= debug_max_sram_base_lo;
+    dbg_max_sram_base_lo_sync_1   <= dbg_max_sram_base_lo_sync_0;
+    dbg_max_sram_base_hi_sync_0   <= debug_max_sram_base_hi;
+    dbg_max_sram_base_hi_sync_1   <= dbg_max_sram_base_hi_sync_0;
+    dbg_save_wr_count_lo_sync_0   <= debug_save_wr_count_lo;
+    dbg_save_wr_count_lo_sync_1   <= dbg_save_wr_count_lo_sync_0;
+    dbg_save_wr_count_hi_sync_0   <= debug_save_wr_count_hi;
+    dbg_save_wr_count_hi_sync_1   <= dbg_save_wr_count_hi_sync_0;
   end
 
   wire ss_busy_video          = ss_busy_video_sync[1];
@@ -1331,6 +1355,10 @@ module core_top (
   wire [7:0] dbg_first_sram_w0_hi_video   = dbg_first_sram_w0_hi_sync_1;
   wire [7:0] dbg_first_sram_w1_lo_video   = dbg_first_sram_w1_lo_sync_1;
   wire [7:0] dbg_first_sram_w1_hi_video   = dbg_first_sram_w1_hi_sync_1;
+  wire [7:0] dbg_max_sram_base_lo_video   = dbg_max_sram_base_lo_sync_1;
+  wire [7:0] dbg_max_sram_base_hi_video   = dbg_max_sram_base_hi_sync_1;
+  wire [7:0] dbg_save_wr_count_lo_video   = dbg_save_wr_count_lo_sync_1;
+  wire [7:0] dbg_save_wr_count_hi_video   = dbg_save_wr_count_hi_sync_1;
   wire [7:0] dbg_bridge_rd_lo_video     = dbg_bridge_rd_lo_sync_1;
   wire [7:0] dbg_bridge_rd_hi_video     = dbg_bridge_rd_hi_sync_1;
   wire [7:0] dbg_first_rd_lo_video      = dbg_first_rd_lo_sync_1;
@@ -1552,26 +1580,36 @@ module core_top (
   reg [23:0] row_marker_rgb;
   always @(*) begin
     case (text_row)
-      // Addresses on both sides checked out at 00 00 00 00.  Now look at
-      // what the FSM ACTUALLY READS from SRAM on the very first prefetch
-      // (= bytes the controller wrote during save, if SRAM is preserving
-      // them correctly).
+      // Previous run: SRAM word 0 = $FFFF (uninit), word 1 = $9999 (WRAM
+      // filler).  The first save chunk's 'SNES' header didn't land at
+      // word 0/1 — but word 1 did get some write (WRAM filler).
       //
-      // Row 0 (RED)    : first_sram_w0 high byte (expect $45='E')
-      // Row 1 (GREEN)  : first_sram_w0 low  byte (expect $53='S')
-      // Row 2 (YELLOW) : first_sram_w1 high byte (expect $53='S')
-      // Row 3 (CYAN)   : first_sram_w1 low  byte (expect $4E='N')
+      // Hypothesis: either the SAVE side doesn't write enough chunks
+      // (only the WRAM data lands, header is missed), OR the chunk
+      // addressing is somehow non-monotonic (overlapping later writes
+      // overwrote earlier ones).  Check totals.
       //
-      // If we see 45 53 53 4E: SRAM has the saved data correctly.
-      //   The bug is downstream — something between FSM and APF.
-      // If we see 00 00 00 00: SRAM is empty/cleared at the time the FSM
-      //   reads.  Either the save side never actually wrote to SRAM, or
-      //   something cleared SRAM between save and prefetch.
-      // Anything else: SRAM has unexpected content; investigate.
-      2'd0: begin row_value = dbg_first_sram_w0_hi_video;    row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w0_lo_video;    row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_hi_video;    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_lo_video;    row_marker_rgb = 24'h00FFFF; end
+      // Row 0 (RED)    : save_wr_count_hi — high byte of completed SRAM
+      //                  core writes (saturates at $FF = 65535).
+      //                  Healthy 256KB save = ~32768 writes = $80 high byte.
+      // Row 1 (GREEN)  : save_wr_count_lo — low byte.
+      // Row 2 (YELLOW) : max_sram_base_hi — high byte of largest SRAM
+      //                  word base seen (max 14 bits = $7F).  Healthy = ~$7F.
+      // Row 3 (CYAN)   : max_sram_base_lo — low byte.
+      //
+      // If save_wr_count is small (< $0100): SAVE side wrote almost nothing
+      //   to SRAM. The 'SNES' header probably WAS written but only a few
+      //   bytes followed.  Look at why the SAVE firmware bailed early.
+      // If save_wr_count is large but max_sram_base_hi is tiny ($00): all
+      //   writes went to low SRAM addresses (= chunk addressing broken,
+      //   everything overwrites everything).
+      // If save_wr_count is large AND max_sram_base is large (~$7F): writes
+      //   landed correctly. The bug is somewhere else (maybe the very first
+      //   chunk's write was preempted by an earlier transaction).
+      2'd0: begin row_value = dbg_save_wr_count_hi_video;    row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_save_wr_count_lo_video;    row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_max_sram_base_hi_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_max_sram_base_lo_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
