@@ -619,13 +619,20 @@ module save_state_controller (
   // into bridge_rd_data.  No prefetching, no FIFO management on our end —
   // data_unloader handles all of that with its internal FIFOs.
 
-  // Edge-detect bridge_rd_en (from data_unloader, holds high for 1 clk_74a
-  // cycle when a new address is presented).
-  reg prev_bridge_rd_en = 0;
+  // Track whether we've already serviced the CURRENT bridge_rd_en pulse.
+  // data_unloader holds bridge_rd_en high for ~7 clk_74a cycles per read;
+  // we want to do exactly one SRAM read per such pulse, regardless of
+  // when in that window we get to IDLE.  Flag is set on LATCH (read done)
+  // and cleared when bridge_rd_en falls.
+  reg        bridge_rd_serviced = 0;
   reg [16:0] bridge_rd_addr_latched = 17'd0;
 
   always @(posedge clk_74a) begin
-    prev_bridge_rd_en <= bridge_rd_en;
+    // Clear the "serviced" flag when bridge_rd_en falls, so the NEXT
+    // bridge_rd_en pulse will trigger a new SRAM read.
+    if (!bridge_rd_en) begin
+      bridge_rd_serviced <= 0;
+    end
 
     // Latch bridge writes to SRAM (bridge_wr is 1 clk_74a pulse)
     if (bridge_wr && bridge_addr[31:28] == 4'h4 && !bridge_wr_pending) begin
@@ -684,10 +691,11 @@ module save_state_controller (
           sram_dq_oe  <= 1;
           sram_we_n   <= 0;
           sram_state  <= SRAM_BRIDGE_WR_LO;
-        end else if (~prev_bridge_rd_en && bridge_rd_en) begin
-          // data_unloader is requesting an SRAM read.  Latch the address,
-          // set sram_a, assert OE, and transition through HOLD/LATCH to
-          // sample sram_dq_in.
+        end else if (bridge_rd_en && !bridge_rd_serviced) begin
+          // data_unloader has presented an address and asserted bridge_rd_en
+          // (held high for ~7 clk_74a cycles).  We process this read once
+          // per bridge_rd_en pulse — even if the rising edge happened
+          // while we were busy with another transaction.
           bridge_rd_addr_latched <= bridge_rd_addr;
           sram_a                 <= bridge_rd_addr;
           sram_oe_n              <= 0;
@@ -799,9 +807,10 @@ module save_state_controller (
 
       SRAM_BRIDGE_RD_LATCH: begin
         // Sample SRAM and present it to data_unloader.
-        bridge_rd_data <= sram_dq_in;
-        sram_oe_n      <= 1;
-        sram_state     <= SRAM_IDLE;
+        bridge_rd_data     <= sram_dq_in;
+        bridge_rd_serviced <= 1;
+        sram_oe_n          <= 1;
+        sram_state         <= SRAM_IDLE;
         // Debug sticky-capture (kept around for overlay verification).
         if (!first_sram_w0_seen) begin
           first_sram_w0      <= sram_dq_in;
