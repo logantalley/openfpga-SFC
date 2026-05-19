@@ -58,10 +58,11 @@ module save_state_controller (
     // Memory adapter for the save-side bridge read path (driven by
     // data_unloader in core_top.sv).  Same clock domain as the SRAM FSM
     // (clk_74a).  When bridge_rd_en pulses, the FSM reads from SRAM at
-    // bridge_rd_addr and presents the value on bridge_rd_data after
-    // READ_MEM_CLOCK_DELAY cycles.
+    // bridge_rd_addr (18-bit BYTE address; we divide by 2 internally to
+    // form the 17-bit SRAM word address) and presents the value on
+    // bridge_rd_data after READ_MEM_CLOCK_DELAY cycles.
     input  wire        bridge_rd_en,
-    input  wire [16:0] bridge_rd_addr,
+    input  wire [17:0] bridge_rd_addr,
     output reg  [15:0] bridge_rd_data,
 
     // APF Save State Handshake
@@ -625,7 +626,7 @@ module save_state_controller (
   // when in that window we get to IDLE.  Flag is set on LATCH (read done)
   // and cleared when bridge_rd_en falls.
   reg        bridge_rd_serviced = 0;
-  reg [16:0] bridge_rd_addr_latched = 17'd0;
+  reg [17:0] bridge_rd_addr_latched = 18'd0;
 
   always @(posedge clk_74a) begin
     // Clear the "serviced" flag when bridge_rd_en falls, so the NEXT
@@ -693,17 +694,18 @@ module save_state_controller (
           sram_state  <= SRAM_BRIDGE_WR_LO;
         end else if (bridge_rd_en && !bridge_rd_serviced) begin
           // data_unloader has presented an address and asserted bridge_rd_en
-          // (held high for ~7 clk_74a cycles).  We process this read once
-          // per bridge_rd_en pulse — even if the rising edge happened
-          // while we were busy with another transaction.
+          // (held high for ~7 clk_74a cycles).  bridge_rd_addr is a BYTE
+          // address from data_unloader; the SRAM is word-addressed, so we
+          // use bits [17:1] for sram_a and ignore bit 0 (which is always 0
+          // because data_unloader increments by INPUT_WORD_SIZE=2).
           bridge_rd_addr_latched <= bridge_rd_addr;
-          sram_a                 <= bridge_rd_addr;
+          sram_a                 <= bridge_rd_addr[17:1];
           sram_oe_n              <= 0;
           sram_dq_oe             <= 0;
           sram_state             <= SRAM_BRIDGE_RD_SETUP;
           // Debug-overlay first-pf tracking (kept for backwards compat).
           if (!first_pf_seen) begin
-            first_pf_addr <= {bridge_rd_addr};
+            first_pf_addr <= {bridge_rd_addr[17:1]};
             first_pf_seen <= 1;
           end
         end

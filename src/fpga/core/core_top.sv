@@ -518,8 +518,10 @@ module core_top (
 
   // Memory-adapter signals between data_unloader and save_state_controller.
   // All on clk_74a (data_unloader's clk_memory == clk_74a here).
+  // bridge_rd_addr is a 18-bit BYTE address (since data_unloader treats
+  // read_addr as byte-addressed and we have INPUT_WORD_SIZE=2).
   wire        ss_bridge_rd_en;
-  wire [16:0] ss_bridge_rd_addr;
+  wire [17:0] ss_bridge_rd_addr;
   wire [15:0] ss_bridge_rd_data;
 
   // Debug taps from save_state_controller (clk_sys domain)
@@ -775,9 +777,14 @@ module core_top (
   // inside save_state_controller (see bridge_rd_en/addr/data ports).
   // Same proven FIFO pattern as the cart-save reads above.
   // ---------------------------------------------------------------
+  // ADDRESS_SIZE=18 because the SRAM is 256 KB = 2^18 bytes.  data_unloader
+  // exposes a BYTE address on read_addr (it auto-increments by INPUT_WORD_SIZE
+  // per word, which is 2 for our 16-bit memory).  Our SRAM is word-addressed
+  // (17 bits = 131072 words), so the controller divides by 2 internally to
+  // get sram_a.
   data_unloader #(
       .ADDRESS_MASK_UPPER_4(4'h4),
-      .ADDRESS_SIZE(17),
+      .ADDRESS_SIZE(18),
       .READ_MEM_CLOCK_DELAY(7),
       .INPUT_WORD_SIZE(2)
   ) save_state_data_unloader (
