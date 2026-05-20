@@ -528,15 +528,10 @@ module save_state_controller (
 
       SYS_LOAD_WAIT_SRAM: begin
         if (sram_rd_done) begin
-          // SRAM read data is available (stable before ack toggle crossed)
-          // Apply byte swap: reverse bytes within each 32-bit half.
-          // Same transform as the original FIFO-based ss_dout path.
-          ss_dout <= {
-            sram_rd_result[39:32], sram_rd_result[47:40],
-            sram_rd_result[55:48], sram_rd_result[63:56],
-            sram_rd_result[7:0],   sram_rd_result[15:8],
-            sram_rd_result[23:16], sram_rd_result[31:24]
-          };
+          // Canonical layout: sram_rd_result already has firmware bytes in
+          // their original order (sram_rd_result[8K +: 8] = firmware byte
+          // K).  No byte swap needed — pass through directly.
+          ss_dout <= sram_rd_result;
           ss_ack <= ~ss_ack;
           if (ss_busy_seen && ~ss_busy) begin
             // FIX #1: Load finished on last word
@@ -600,11 +595,17 @@ module save_state_controller (
   // Safe to read because data is stable well before toggle crosses via synch_3
   reg [63:0] latched_core_wr_data;
 
-  // Byte-swapped 16-bit words for core save writes
-  wire [15:0] core_wr_word_0 = {latched_core_wr_data[23:16], latched_core_wr_data[31:24]};
-  wire [15:0] core_wr_word_1 = {latched_core_wr_data[7:0],   latched_core_wr_data[15:8]};
-  wire [15:0] core_wr_word_2 = {latched_core_wr_data[55:48], latched_core_wr_data[63:56]};
-  wire [15:0] core_wr_word_3 = {latched_core_wr_data[39:32], latched_core_wr_data[47:40]};
+  // Canonical 16-bit-word packing for the 8-byte core-save chunk:
+  //   SRAM word N (N=0..3) holds firmware bytes (2N+1, 2N) — i.e., low
+  //   byte of the SRAM word is firmware byte 2N, high byte is firmware
+  //   byte 2N+1.  This makes "SRAM byte K = firmware byte K" hold under
+  //   the standard little-endian-within-word convention, which keeps
+  //   every subsequent path (load read, bridge_wr from APF, bridge_rd
+  //   to APF) trivial and consistent.
+  wire [15:0] core_wr_word_0 = {latched_core_wr_data[15:8],  latched_core_wr_data[7:0]};
+  wire [15:0] core_wr_word_1 = {latched_core_wr_data[31:24], latched_core_wr_data[23:16]};
+  wire [15:0] core_wr_word_2 = {latched_core_wr_data[47:40], latched_core_wr_data[39:32]};
+  wire [15:0] core_wr_word_3 = {latched_core_wr_data[63:56], latched_core_wr_data[55:48]};
 
   // Bridge write pending latch (clk_74a domain)
   reg        bridge_wr_pending = 0;
@@ -673,9 +674,9 @@ module save_state_controller (
           // Set up first write: address + data, assert WE_n.
           // Use core_wr_data directly (not core_wr_word_0) because
           // latched_core_wr_data is updated non-blocking and not yet
-          // visible this cycle.
+          // visible this cycle.  Canonical packing: {byte 1, byte 0}.
           sram_a      <= {core_sram_base, 2'b00};
-          sram_dq_out <= {core_wr_data[23:16], core_wr_data[31:24]};
+          sram_dq_out <= {core_wr_data[15:8], core_wr_data[7:0]};
           sram_dq_oe  <= 1;
           sram_we_n   <= 0;
           sram_state  <= SRAM_CORE_WR;
@@ -687,8 +688,14 @@ module save_state_controller (
           sram_dq_oe     <= 0;
           sram_state     <= SRAM_CORE_RD_SETUP;
         end else if (bridge_wr_pending) begin
+          // Canonical packing for bridge_wr (APF → SRAM during load):
+          // bridge_wr_data has file bytes in big-endian wire order, so
+          // [31:24]=file byte 0, [23:16]=byte 1, [15:8]=byte 2, [7:0]=byte 3.
+          // The first SRAM word (at bridge_wr_sram_addr) holds file bytes
+          // 0 and 1 (low byte 0, high byte 1).  The second SRAM word
+          // (at +1) holds file bytes 2 and 3.
           sram_a      <= bridge_wr_sram_addr;
-          sram_dq_out <= bridge_wr_latched[15:0];
+          sram_dq_out <= {bridge_wr_latched[23:16], bridge_wr_latched[31:24]};
           sram_dq_oe  <= 1;
           sram_we_n   <= 0;
           sram_state  <= SRAM_BRIDGE_WR_LO;
@@ -776,7 +783,8 @@ module save_state_controller (
 
       SRAM_BRIDGE_WR_GAP: begin
         sram_a      <= bridge_wr_sram_addr + 17'd1;
-        sram_dq_out <= bridge_wr_latched[31:16];
+        // Second SRAM word: file bytes 2 (low) and 3 (high).
+        sram_dq_out <= {bridge_wr_latched[7:0], bridge_wr_latched[15:8]};
         sram_we_n   <= 0;
         sram_state  <= SRAM_BRIDGE_WR_HI;
       end
@@ -808,7 +816,10 @@ module save_state_controller (
       end
 
       SRAM_BRIDGE_RD_LATCH: begin
-        // Sample SRAM and present it to data_unloader.
+        // Sample SRAM and present it to data_unloader.  With the canonical
+        // byte layout in SRAM (high byte = firmware byte 2K+1, low byte =
+        // firmware byte 2K), passing sram_dq_in directly produces the
+        // correct file byte order through data_unloader's endian swap.
         bridge_rd_data     <= sram_dq_in;
         bridge_rd_serviced <= 1;
         sram_oe_n          <= 1;
