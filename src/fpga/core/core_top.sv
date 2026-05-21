@@ -1667,10 +1667,13 @@ module core_top (
       //                  (e.g. $FA), spurious advances happened.
       // Row 2 (YELLOW) : ss_addr_max_hi (sanity, should still be $61)
       // Row 3 (CYAN)   : save_wr_count_lo (sanity, should still be $D0)
-      2'd0: begin row_value = dbg_pf_at_first_rd_hi_video;   row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_pf_at_first_rd_lo_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_ss_addr_max_hi_video;      row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_save_wr_count_lo_video;    row_marker_rgb = 24'h00FFFF; end
+      // After save+load, show what the LOAD firmware actually read at
+      // SSDATA bytes 0 and 1.  If load is working, these should be $53
+      // ('S') and $4E ('N') after a save/load cycle.
+      2'd0: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_byte1_video;          row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_sram_w0_hi_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w0_lo_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
