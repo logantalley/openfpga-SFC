@@ -132,6 +132,15 @@ module save_state_controller (
     output wire [7:0] debug_bridge_rd_count_hi, // high byte (saturates at FF)
     output wire [7:0] debug_first_rd_addr_lo,   // bridge_addr[7:0] of first bridge_rd (expect $00)
     output wire [7:0] debug_first_rd_addr_hi,   // bridge_addr[15:8] of first bridge_rd (expect $00)
+    // Sticky-update: last 16-bit value written by ANY bridge_wr that targeted
+    // SRAM word 0.  Updated on every such write, so after load completes this
+    // holds the FINAL value in SRAM word 0 (= what load firmware will read).
+    output wire [7:0] debug_last_w0_data_lo,    // low byte of last bridge_wr to SRAM word 0
+    output wire [7:0] debug_last_w0_data_hi,    // high byte of last bridge_wr to SRAM word 0
+    // Count of bridge_wr events that targeted SRAM word 0.  If 1, only one
+    // write hit addr 0 (probably correct).  If >1, APF wrote to addr 0
+    // multiple times and a later one overwrote 'SNES'.
+    output wire [7:0] debug_w0_wr_count,
 
     // SRAM interface (directly to Pocket board SRAM)
     output reg  [16:0] sram_a,
@@ -621,6 +630,14 @@ module save_state_controller (
   // into bridge_rd_data.  No prefetching, no FIFO management on our end —
   // data_unloader handles all of that with its internal FIFOs.
 
+  // Sticky-update: last data written to SRAM word 0, plus count of writes
+  // that targeted SRAM word 0.  Updated whenever bridge_wr_sram_addr == 0.
+  reg [15:0] last_w0_data  = 16'h0000;
+  reg [7:0]  w0_wr_count   = 8'h00;
+  assign debug_last_w0_data_lo = last_w0_data[7:0];
+  assign debug_last_w0_data_hi = last_w0_data[15:8];
+  assign debug_w0_wr_count     = w0_wr_count;
+
   // Track whether we've already serviced the CURRENT bridge_rd_en pulse.
   // data_unloader holds bridge_rd_en high for ~7 clk_74a cycles per read;
   // we want to do exactly one SRAM read per such pulse, regardless of
@@ -655,6 +672,15 @@ module save_state_controller (
       end else if (wr_capture_idx == 2'd1) begin
         second_wr_data <= bridge_wr_data;
         wr_capture_idx <= 2'd2;
+      end
+      // Track the LAST data written to SRAM word 0 (= bridge_addr[17:2]==0).
+      // First SRAM word of any bridge_wr lands at {bridge_addr[17:2], 1'b0}.
+      // Data on first SRAM word is {bridge_wr_data[23:16], bridge_wr_data[31:24]}.
+      if (bridge_addr[17:2] == 16'h0000) begin
+        last_w0_data <= {bridge_wr_data[23:16], bridge_wr_data[31:24]};
+        if (w0_wr_count != 8'hFF) begin
+          w0_wr_count <= w0_wr_count + 8'd1;
+        end
       end
     end
 

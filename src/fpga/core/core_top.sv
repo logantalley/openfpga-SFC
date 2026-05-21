@@ -563,6 +563,9 @@ module core_top (
   wire [7:0] debug_bridge_rd_count_hi;
   wire [7:0] debug_first_rd_addr_lo;
   wire [7:0] debug_first_rd_addr_hi;
+  wire [7:0] debug_last_w0_data_lo;
+  wire [7:0] debug_last_w0_data_hi;
+  wire [7:0] debug_w0_wr_count;
 
   // Debug taps from savestates.sv (SNES side)
   wire [3:0] dbg_rti_arms;
@@ -659,6 +662,9 @@ module core_top (
       .debug_bridge_rd_count_hi(debug_bridge_rd_count_hi),
       .debug_first_rd_addr_lo  (debug_first_rd_addr_lo),
       .debug_first_rd_addr_hi  (debug_first_rd_addr_hi),
+      .debug_last_w0_data_lo   (debug_last_w0_data_lo),
+      .debug_last_w0_data_hi   (debug_last_w0_data_hi),
+      .debug_w0_wr_count       (debug_w0_wr_count),
 
       // SRAM interface
       .sram_a   (sram_a),
@@ -1291,6 +1297,12 @@ module core_top (
   reg [7:0] dbg_first_rd_lo_sync_1;
   reg [7:0] dbg_first_rd_hi_sync_0;
   reg [7:0] dbg_first_rd_hi_sync_1;
+  reg [7:0] dbg_last_w0_lo_sync_0;
+  reg [7:0] dbg_last_w0_lo_sync_1;
+  reg [7:0] dbg_last_w0_hi_sync_0;
+  reg [7:0] dbg_last_w0_hi_sync_1;
+  reg [7:0] dbg_w0_wr_count_sync_0;
+  reg [7:0] dbg_w0_wr_count_sync_1;
 
   always @(posedge clk_video_5_37) begin
     ss_busy_video_sync           <= {ss_busy_video_sync[0],           ss_busy};
@@ -1352,6 +1364,12 @@ module core_top (
     dbg_first_rd_lo_sync_1   <= dbg_first_rd_lo_sync_0;
     dbg_first_rd_hi_sync_0   <= debug_first_rd_addr_hi;
     dbg_first_rd_hi_sync_1   <= dbg_first_rd_hi_sync_0;
+    dbg_last_w0_lo_sync_0    <= debug_last_w0_data_lo;
+    dbg_last_w0_lo_sync_1    <= dbg_last_w0_lo_sync_0;
+    dbg_last_w0_hi_sync_0    <= debug_last_w0_data_hi;
+    dbg_last_w0_hi_sync_1    <= dbg_last_w0_hi_sync_0;
+    dbg_w0_wr_count_sync_0   <= debug_w0_wr_count;
+    dbg_w0_wr_count_sync_1   <= dbg_w0_wr_count_sync_0;
     dbg_first_save_addr_lo_sync_0 <= debug_first_save_addr_lo;
     dbg_first_save_addr_lo_sync_1 <= dbg_first_save_addr_lo_sync_0;
     dbg_first_save_addr_hi_sync_0 <= debug_first_save_addr_hi;
@@ -1427,6 +1445,9 @@ module core_top (
   wire [7:0] dbg_max_sram_base_hi_video   = dbg_max_sram_base_hi_sync_1;
   wire [7:0] dbg_save_wr_count_lo_video   = dbg_save_wr_count_lo_sync_1;
   wire [7:0] dbg_save_wr_count_hi_video   = dbg_save_wr_count_hi_sync_1;
+  wire [7:0] dbg_last_w0_lo_video         = dbg_last_w0_lo_sync_1;
+  wire [7:0] dbg_last_w0_hi_video         = dbg_last_w0_hi_sync_1;
+  wire [7:0] dbg_w0_wr_count_video        = dbg_w0_wr_count_sync_1;
   wire [7:0] dbg_ss_addr_overflow_video   = dbg_ss_addr_overflow_sync_1;
   wire [7:0] dbg_ss_addr_max_hi_video     = dbg_ss_addr_max_hi_sync_1;
   wire [7:0] dbg_pf_at_first_rd_lo_video  = dbg_pf_at_first_rd_lo_sync_1;
@@ -1673,16 +1694,18 @@ module core_top (
       // bug is in our bridge_wr SRAM handler.  If the data or address
       // looks different, APF is using a different protocol than we expect.
       //
-      // Row 0 (RED)    : bridge_wr_count[15:8] — # of bridge_wr events seen (high byte)
-      // Row 1 (GREEN)  : bridge_wr_count[7:0]  — # of bridge_wr events seen (low byte)
-      //                  Expect ~0xFFFF (saturated) for a full 256KB load.
-      //                  If small (e.g. 0x0001), APF only sent a few writes.
-      // Row 2 (YELLOW) : load firmware's first SRAM read byte 0 ('S' = $53 if good)
-      // Row 3 (CYAN)   : load firmware's first SRAM read byte 1 ('N' = $4E if good)
-      2'd0: begin row_value = dbg_bridge_wr_hi_video;        row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_bridge_wr_lo_video;        row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_load_byte1_video;          row_marker_rgb = 24'h00FFFF; end
+      // Row 0 (RED)    : last_w0_data high byte — what FINAL bridge_wr put in
+      //                  SRAM word 0 high byte (= file byte 1, expect $4E='N')
+      // Row 1 (GREEN)  : last_w0_data low byte  — SRAM word 0 low byte
+      //                  (= file byte 0, expect $53='S')
+      // Row 2 (YELLOW) : w0_wr_count — # of bridge_wr's that targeted SRAM word 0
+      //                  Should be exactly 1 (one write to addr 0).  If >1, APF
+      //                  is writing to addr 0 multiple times and clobbering 'SNES'.
+      // Row 3 (CYAN)   : load firmware's first SRAM read byte 0 (should be $53='S')
+      2'd0: begin row_value = dbg_last_w0_hi_video;          row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_last_w0_lo_video;          row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_w0_wr_count_video;         row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
