@@ -1667,13 +1667,20 @@ module core_top (
       //                  (e.g. $FA), spurious advances happened.
       // Row 2 (YELLOW) : ss_addr_max_hi (sanity, should still be $61)
       // Row 3 (CYAN)   : save_wr_count_lo (sanity, should still be $D0)
-      // After save+load, show what the LOAD firmware actually read at
-      // SSDATA bytes 0 and 1.  If load is working, these should be $53
-      // ('S') and $4E ('N') after a save/load cycle.
-      2'd0: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_byte1_video;          row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w0_hi_video;    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w0_lo_video;    row_marker_rgb = 24'h00FFFF; end
+      // Inspect what APF writes to SRAM during the LOAD phase.  If the
+      // first bridge_wr at 4xxxxxxx has data $53 4E ... (file 'SNES'
+      // header) at address 0, then APF is doing the right thing and the
+      // bug is in our bridge_wr SRAM handler.  If the data or address
+      // looks different, APF is using a different protocol than we expect.
+      //
+      // Row 0 (RED)    : bridge_wr_data[31:24] of FIRST bridge_wr (expect $53='S')
+      // Row 1 (GREEN)  : bridge_wr_data[23:16] of FIRST bridge_wr (expect $4E='N')
+      // Row 2 (YELLOW) : bridge_addr[15:8] of FIRST bridge_wr (expect $00)
+      // Row 3 (CYAN)   : bridge_addr[7:0]  of FIRST bridge_wr (expect $00)
+      2'd0: begin row_value = dbg_first_data_b0_video;       row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_data_b1_video;       row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_addr_hi_video;       row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_addr_lo_video;       row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

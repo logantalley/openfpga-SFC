@@ -306,8 +306,8 @@ module save_state_controller (
   // Expose first 4 bytes of bridge_wr_data (from first write) and 4 more (second write).
   assign debug_first_wr_data_b0 = first_wr_data[31:24];   // file byte 0 if big-endian
   assign debug_first_wr_data_b1 = first_wr_data[23:16];   // file byte 1
-  assign debug_first_wr_addr_lo = second_wr_data[31:24];  // (repurposed) file byte 4 (start of second write)
-  assign debug_first_wr_addr_hi = second_wr_data[23:16];  // file byte 5
+  assign debug_first_wr_addr_lo = first_wr_addr[7:0];
+  assign debug_first_wr_addr_hi = first_wr_addr[15:8];
 
   // Capture the FIRST 64-bit chunk the SNES wrote during save.
   // core_wr_data is in clk_sys; latch it sticky.  Also capture the
