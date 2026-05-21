@@ -576,6 +576,7 @@ module save_state_controller (
   localparam SRAM_CORE_WR        = 4'd1;  // WE_n asserted (low)
   localparam SRAM_CORE_WR_END    = 4'd2;  // WE_n deasserted (high) → completes write
   localparam SRAM_CORE_RD_SETUP  = 4'd3;
+  localparam SRAM_CORE_RD_HOLD   = 4'd12; // extra cycle for SRAM access time
   localparam SRAM_CORE_RD_N      = 4'd4;
   localparam SRAM_BRIDGE_WR_LO   = 4'd5;  // WE_n asserted for low half
   localparam SRAM_BRIDGE_WR_GAP  = 4'd6;  // WE_n high between halves
@@ -775,8 +776,15 @@ module save_state_controller (
         end
       end
 
-      // ----- Core load read: 1 setup + 4 captures -----
+      // ----- Core load read: 1 setup + 1 hold + sample, per word -----
+      // The on-board SRAM has ~10ns access time.  A single SETUP cycle
+      // (~13.5ns) is marginal; add a HOLD cycle to guarantee the data
+      // bus has settled before we sample sram_dq_in.
       SRAM_CORE_RD_SETUP: begin
+        sram_state <= SRAM_CORE_RD_HOLD;
+      end
+
+      SRAM_CORE_RD_HOLD: begin
         sram_state <= SRAM_CORE_RD_N;
       end
 
