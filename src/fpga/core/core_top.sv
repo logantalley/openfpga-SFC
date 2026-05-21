@@ -1673,14 +1673,16 @@ module core_top (
       // bug is in our bridge_wr SRAM handler.  If the data or address
       // looks different, APF is using a different protocol than we expect.
       //
-      // Row 0 (RED)    : bridge_wr_data[31:24] of FIRST bridge_wr (expect $53='S')
-      // Row 1 (GREEN)  : bridge_wr_data[23:16] of FIRST bridge_wr (expect $4E='N')
-      // Row 2 (YELLOW) : bridge_addr[15:8] of FIRST bridge_wr (expect $00)
-      // Row 3 (CYAN)   : bridge_addr[7:0]  of FIRST bridge_wr (expect $00)
-      2'd0: begin row_value = dbg_first_data_b0_video;       row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_data_b1_video;       row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_addr_hi_video;       row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_addr_lo_video;       row_marker_rgb = 24'h00FFFF; end
+      // Row 0 (RED)    : bridge_wr_count[15:8] — # of bridge_wr events seen (high byte)
+      // Row 1 (GREEN)  : bridge_wr_count[7:0]  — # of bridge_wr events seen (low byte)
+      //                  Expect ~0xFFFF (saturated) for a full 256KB load.
+      //                  If small (e.g. 0x0001), APF only sent a few writes.
+      // Row 2 (YELLOW) : load firmware's first SRAM read byte 0 ('S' = $53 if good)
+      // Row 3 (CYAN)   : load firmware's first SRAM read byte 1 ('N' = $4E if good)
+      2'd0: begin row_value = dbg_bridge_wr_hi_video;        row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_bridge_wr_lo_video;        row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_load_byte1_video;          row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
