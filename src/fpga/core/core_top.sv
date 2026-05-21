@@ -1694,18 +1694,26 @@ module core_top (
       // bug is in our bridge_wr SRAM handler.  If the data or address
       // looks different, APF is using a different protocol than we expect.
       //
-      // Row 0 (RED)    : last_w0_data high byte — what FINAL bridge_wr put in
-      //                  SRAM word 0 high byte (= file byte 1, expect $4E='N')
-      // Row 1 (GREEN)  : last_w0_data low byte  — SRAM word 0 low byte
-      //                  (= file byte 0, expect $53='S')
-      // Row 2 (YELLOW) : w0_wr_count — # of bridge_wr's that targeted SRAM word 0
-      //                  Should be exactly 1 (one write to addr 0).  If >1, APF
-      //                  is writing to addr 0 multiple times and clobbering 'SNES'.
-      // Row 3 (CYAN)   : load firmware's first SRAM read byte 0 (should be $53='S')
-      2'd0: begin row_value = dbg_last_w0_hi_video;          row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_last_w0_lo_video;          row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_w0_wr_count_video;         row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_load_byte0_video;          row_marker_rgb = 24'h00FFFF; end
+      // ARAM-enabled diagnostic: find out why SRAM word 0 is no longer 'SNES'.
+      //
+      // Row 0 (RED)    : dbg_ss_addr_overflow — sticky flag, non-zero iff
+      //                  ss_addr bits [16:15] ever went high during save
+      //                  (= save > 256KB, chunks wrapped onto addr 0).
+      //                  Expect $00 if save fits.  Non-zero = WRAP happened.
+      // Row 1 (GREEN)  : ss_addr_max_hi — max value of ss_addr[16:8] seen.
+      //                  If overflow=0, this stays under $80 (15-bit fit).
+      //                  If >= $80, ss_addr[15] went high (= overflow).
+      // Row 2 (YELLOW) : debug_first_save_byte0 — first byte SNES wrote to
+      //                  SRAM during save.  Expect $53='S'.  If $53,
+      //                  firmware wrote header correctly and a LATER wrap
+      //                  overwrote it.  If not $53, firmware itself misbehaved.
+      // Row 3 (CYAN)   : save_wr_count_lo — low byte of # of SRAM core writes.
+      //                  Each write = 8 bytes.  $4000 writes = 128KB. $8000
+      //                  writes = 256KB.  This rolls over modulo 256.
+      2'd0: begin row_value = dbg_ss_addr_overflow_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_ss_addr_max_hi_video;   row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_b0_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
