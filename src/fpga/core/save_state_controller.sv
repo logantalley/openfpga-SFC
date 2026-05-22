@@ -144,8 +144,28 @@ module save_state_controller (
     output reg         sram_oe_n,
     output reg         sram_we_n,
     output wire        sram_ub_n,
-    output wire        sram_lb_n
+    output wire        sram_lb_n,
+
+    // Phase B: SDRAM staging interface (currently no-op; clk_sys domain).
+    // Will be driven by Phase C load FSM.  CDC into clk_mem happens in SNES.sv.
+    output wire        ss_sdram_wr_req,
+    output wire [24:0] ss_sdram_wr_addr,
+    output wire [15:0] ss_sdram_wr_data,
+    input  wire        ss_sdram_wr_ack,
+    output wire        ss_sdram_rd_req,
+    output wire [24:0] ss_sdram_rd_addr,
+    input  wire [15:0] ss_sdram_rd_data,
+    input  wire        ss_sdram_rd_ack,
+    output wire        ss_loading
 );
+
+  // Phase B: tie all SDRAM-staging outputs low.  Phase C wires them up.
+  assign ss_sdram_wr_req  = 1'b0;
+  assign ss_sdram_wr_addr = 25'd0;
+  assign ss_sdram_wr_data = 16'd0;
+  assign ss_sdram_rd_req  = 1'b0;
+  assign ss_sdram_rd_addr = 25'd0;
+  assign ss_loading       = 1'b0;
 
   // Always enable both SRAM bytes
   assign sram_ub_n = 1'b0;

@@ -511,6 +511,20 @@ module core_top (
   wire ss_save;
   wire ss_load;
 
+  // Phase B: SDRAM staging interface between save_state_controller and SNES.sv.
+  // Controller drives wr/rd req + addr/data in clk_sys; SNES.sv handles CDC
+  // into clk_mem and muxes onto the cart-ROM sdram instance.  Phase B leaves
+  // all these tied to 0 by the controller — no functional change.
+  wire        ss_sdram_wr_req;
+  wire [24:0] ss_sdram_wr_addr;
+  wire [15:0] ss_sdram_wr_data;
+  wire        ss_sdram_wr_ack;
+  wire        ss_sdram_rd_req;
+  wire [24:0] ss_sdram_rd_addr;
+  wire [15:0] ss_sdram_rd_data;
+  wire        ss_sdram_rd_ack;
+  wire        ss_loading;
+
   // bridge_rd_data for the savestate region (0x4xxxxxxx) is produced by
   // a data_unloader instance (see below), wired directly to bridge_rd_data
   // via the existing mux in the always_comb block at the top of this file.
@@ -661,7 +675,18 @@ module core_top (
       .sram_oe_n(sram_oe_n),
       .sram_we_n(sram_we_n),
       .sram_ub_n(sram_ub_n),
-      .sram_lb_n(sram_lb_n)
+      .sram_lb_n(sram_lb_n),
+
+      // Phase B: SDRAM staging (no-op outputs from controller until Phase C)
+      .ss_sdram_wr_req (ss_sdram_wr_req),
+      .ss_sdram_wr_addr(ss_sdram_wr_addr),
+      .ss_sdram_wr_data(ss_sdram_wr_data),
+      .ss_sdram_wr_ack (ss_sdram_wr_ack),
+      .ss_sdram_rd_req (ss_sdram_rd_req),
+      .ss_sdram_rd_addr(ss_sdram_rd_addr),
+      .ss_sdram_rd_data(ss_sdram_rd_data),
+      .ss_sdram_rd_ack (ss_sdram_rd_ack),
+      .ss_loading      (ss_loading)
   );
 
   reg ioctl_download = 0;
@@ -961,6 +986,17 @@ module core_top (
       .ss_be(ss_be),
       .ss_req(ss_req),
       .ss_busy_out(ss_busy),
+
+      // Phase B: SDRAM staging interface (controller drives, SNES.sv CDCs)
+      .ss_sdram_wr_req (ss_sdram_wr_req),
+      .ss_sdram_wr_addr(ss_sdram_wr_addr),
+      .ss_sdram_wr_data(ss_sdram_wr_data),
+      .ss_sdram_wr_ack (ss_sdram_wr_ack),
+      .ss_sdram_rd_req (ss_sdram_rd_req),
+      .ss_sdram_rd_addr(ss_sdram_rd_addr),
+      .ss_sdram_rd_data(ss_sdram_rd_data),
+      .ss_sdram_rd_ack (ss_sdram_rd_ack),
+      .ss_loading      (ss_loading),
 
       .dbg_rti_arms       (dbg_rti_arms),
       .dbg_vect_reentry   (dbg_vect_reentry),
