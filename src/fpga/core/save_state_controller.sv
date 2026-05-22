@@ -47,23 +47,19 @@ module save_state_controller (
     input wire clk_74a,
     input wire clk_sys,
 
-    // APF Bridge — writes are still handled here (load path).  Reads are now
-    // handled in core_top via a data_unloader instance, which calls back to
-    // us via the memory adapter ports below.
+    // APF Bridge
+    //  - SAVE path: bridge_rd at 0x4xxxxxxx pops the save FIFO and presents
+    //    the next 32-bit chunk on save_state_bridge_read_data.  The FIFO is
+    //    fed by ss_din from savestates.sv (64-bit chunks become 2x 32-bit
+    //    FIFO entries on the read side).
+    //  - LOAD path: bridge_wr at 0x4xxxxxxx still goes into SRAM (Phase A:
+    //    load path unchanged from the SRAM-based architecture).
     input wire bridge_wr,
+    input wire bridge_rd,
     input wire bridge_endian_little,
     input wire [31:0] bridge_addr,
     input wire [31:0] bridge_wr_data,
-
-    // Memory adapter for the save-side bridge read path (driven by
-    // data_unloader in core_top.sv).  Same clock domain as the SRAM FSM
-    // (clk_74a).  When bridge_rd_en pulses, the FSM reads from SRAM at
-    // bridge_rd_addr (18-bit BYTE address; we divide by 2 internally to
-    // form the 17-bit SRAM word address) and presents the value on
-    // bridge_rd_data after READ_MEM_CLOCK_DELAY cycles.
-    input  wire        bridge_rd_en,
-    input  wire [17:0] bridge_rd_addr,
-    output reg  [15:0] bridge_rd_data,
+    output wire [31:0] save_state_bridge_read_data,
 
     // APF Save State Handshake
     input  wire savestate_load,
@@ -201,39 +197,103 @@ module save_state_controller (
   );
 
   // ===================================================================
-  // CDC: Core ↔ SRAM toggle-based data transfer
+  // Save FIFO (Phase A): pure streaming, no SRAM buffer
   // ===================================================================
   //
-  // Save writes: clk_sys latches ss_din + addr, toggles wr_req.
-  //   clk_74a detects toggle, writes 4×16 SRAM words, toggles wr_ack.
-  //   clk_sys detects ack, toggles ss_ack.
+  // savestates.sv produces 64-bit chunks (ss_din + ss_req toggle).  Push
+  // each chunk into a 64-wide → 32-wide dcfifo whose read side feeds the
+  // APF bridge_rd path on clk_74a.  Flow control is automatic: when the
+  // FIFO is full, we stall ss_ack — the SNES CPU sleeps because the
+  // SSDATA poll loop spins on STATUS_BUSY.
+  //
+  // The FIFO is small (16 64-bit entries = 64 32-bit entries) because APF
+  // is much faster than the SNES at draining.  Filling-stall only happens
+  // briefly during the initial back-to-back chunks.
+
+  reg         fifo_save_write_req = 0;
+  reg         fifo_save_read_req  = 0;
+  wire        fifo_save_rd_empty;
+  wire        fifo_save_wr_empty;
+  wire        fifo_save_wr_full;
+
+  dcfifo_mixed_widths fifo_save (
+      .data(ss_din),
+      .rdclk(clk_74a),
+      .rdreq(fifo_save_read_req),
+      .wrclk(clk_sys),
+      .wrreq(fifo_save_write_req),
+      // Byte-swap to match the APF wire format (big-endian on the bridge).
+      .q({
+          save_state_bridge_read_data[7:0],
+          save_state_bridge_read_data[15:8],
+          save_state_bridge_read_data[23:16],
+          save_state_bridge_read_data[31:24]
+      }),
+      .rdempty(fifo_save_rd_empty),
+      .wrempty(fifo_save_wr_empty),
+      .wrfull(fifo_save_wr_full),
+      .aclr(1'b0)
+  );
+  defparam fifo_save.intended_device_family = "Cyclone V",
+      fifo_save.lpm_numwords  = 16,
+      fifo_save.lpm_showahead = "OFF",
+      fifo_save.lpm_type      = "dcfifo_mixed_widths",
+      fifo_save.lpm_width     = 64,
+      fifo_save.lpm_widthu    = 4,
+      fifo_save.lpm_widthu_r  = 5,
+      fifo_save.lpm_width_r   = 32,
+      fifo_save.overflow_checking  = "ON",
+      fifo_save.underflow_checking = "ON",
+      fifo_save.rdsync_delaypipe = 5,
+      fifo_save.wrsync_delaypipe = 5,
+      fifo_save.use_eab = "ON";
+
+  // Bridge-read handler (clk_74a): each rising edge of bridge_rd at
+  // 0x4xxxxxxx pops one 32-bit entry from the FIFO.
+  reg prev_bridge_rd_save = 0;
+  reg [1:0] save_rd_state = 0;
+  localparam SAVE_RD_NONE = 2'd0;
+  localparam SAVE_RD_REQ  = 2'd1;
+
+  always @(posedge clk_74a) begin
+    prev_bridge_rd_save <= bridge_rd;
+    fifo_save_read_req  <= 0;
+
+    if (bridge_rd && ~prev_bridge_rd_save && bridge_addr[31:28] == 4'h4) begin
+      if (~fifo_save_rd_empty) begin
+        fifo_save_read_req <= 1;
+        save_rd_state      <= SAVE_RD_REQ;
+      end
+    end
+
+    case (save_rd_state)
+      SAVE_RD_REQ: save_rd_state <= SAVE_RD_NONE;
+    endcase
+  end
+
+  // ===================================================================
+  // CDC: Core ↔ SRAM toggle-based data transfer (LOAD path only)
+  // ===================================================================
   //
   // Load reads: clk_sys latches addr, toggles rd_req.
   //   clk_74a detects toggle, reads 4×16 SRAM words, latches data, toggles rd_ack.
   //   clk_sys detects ack, copies data to ss_dout, toggles ss_ack.
+  //
+  // (The save CDC has been removed — see save FIFO above.)
 
-  // Core-side registers (clk_sys domain)
-  reg        core_wr_req_toggle = 0;
-  reg [63:0] core_wr_data;          // Latched ss_din for CDC
-  reg [14:0] core_sram_base;        // ss_addr[14:0] — SRAM base = {this, 2'b00}
-
+  // Core-side registers (clk_sys domain) — LOAD path only
   reg        core_rd_req_toggle = 0;
   reg [14:0] core_rd_base;          // ss_addr[14:0]
 
   // SRAM-side registers (clk_74a domain)
-  reg        sram_wr_ack_toggle = 0;
   reg        sram_rd_ack_toggle = 0;
   reg [63:0] sram_rd_result;        // 64-bit data read from SRAM (load)
 
   // Synchronize toggles across clock domains
-  wire core_wr_req_74a;
   wire core_rd_req_74a;
-  wire sram_wr_ack_sys;
   wire sram_rd_ack_sys;
 
-  synch_3 sync_wr_req (.i(core_wr_req_toggle), .o(core_wr_req_74a), .clk(clk_74a));
   synch_3 sync_rd_req (.i(core_rd_req_toggle), .o(core_rd_req_74a), .clk(clk_74a));
-  synch_3 sync_wr_ack (.i(sram_wr_ack_toggle), .o(sram_wr_ack_sys), .clk(clk_sys));
   synch_3 sync_rd_ack (.i(sram_rd_ack_toggle), .o(sram_rd_ack_sys), .clk(clk_sys));
 
   // ===================================================================
@@ -255,11 +315,9 @@ module save_state_controller (
   reg prev_savestate_load  = 0;
   reg prev_ss_busy         = 0;
   reg prev_ss_req          = 0;
-  reg prev_sram_wr_ack     = 0;
   reg prev_sram_rd_ack     = 0;
 
   wire new_ddr_req  = (ss_req != prev_ss_req);
-  wire sram_wr_done = (sram_wr_ack_sys != prev_sram_wr_ack);
   wire sram_rd_done = (sram_rd_ack_sys != prev_sram_rd_ack);
 
   // Load initiation flag — set when savestate_load command is received
@@ -287,8 +345,6 @@ module save_state_controller (
   reg [3:0] ss_req_toggles     = 4'h0;
   reg       core_wr_ever       = 0;
   reg       sram_wr_ack_ever   = 0;
-  reg       prev_core_wr_req   = 0;
-  reg       prev_sram_wr_ack_s = 0;
 
   assign debug_ss_busy_ever      = ss_busy_ever;
   assign debug_ss_save_ever      = ss_save_ever;
@@ -396,11 +452,11 @@ module save_state_controller (
     prev_savestate_load  <= savestate_load_s;
     prev_ss_busy         <= ss_busy;
     prev_ss_req          <= ss_req;
-    prev_sram_wr_ack     <= sram_wr_ack_sys;
     prev_sram_rd_ack     <= sram_rd_ack_sys;
 
-    ss_save <= 0;
-    ss_load <= 0;
+    ss_save             <= 0;
+    ss_load             <= 0;
+    fifo_save_write_req <= 0;  // 1-cycle pulse when we push to save FIFO
 
     // Track ss_busy rising edge during an active operation
     if (ss_busy && !prev_ss_busy) begin
@@ -415,15 +471,9 @@ module save_state_controller (
       ss_req_toggles <= ss_req_toggles + 4'd1;
     end
 
-    // Track when controller forwards a save chunk to SRAM (core_wr_req_toggle edge)
-    prev_core_wr_req <= core_wr_req_toggle;
-    if (core_wr_req_toggle != prev_core_wr_req)
-      core_wr_ever <= 1;
-
-    // Track when SRAM FSM acks back via sram_wr_ack_sys
-    prev_sram_wr_ack_s <= sram_wr_ack_sys;
-    if (sram_wr_ack_sys != prev_sram_wr_ack_s)
-      sram_wr_ack_ever <= 1;
+    // (Old core_wr/sram_wr_ack debug taps removed — save path no longer
+    // uses SRAM CDC.  core_wr_ever / sram_wr_ack_ever stay at their reset
+    // value, which is fine — those overlay rows will read 0.)
 
     // ----- APF triggers save -----
     if (savestate_start_s && ~prev_savestate_start) begin
@@ -464,57 +514,40 @@ module save_state_controller (
         end
       end
 
-      // ===== Save path =====
+      // ===== Save path (FIFO streaming) =====
+      //
+      // When savestates.sv toggles ss_req with ~ss_rnw (= save chunk
+      // ready), push ss_din into the save FIFO.  If the FIFO is full,
+      // stall — don't ack — and the SNES CPU will spin on STATUS_BUSY.
+      // After pushing, ack with the toggle.  No intermediate buffer.
       SYS_SAVE_ACTIVE: begin
         if (~savestate_start_s)
           savestate_start_ack <= 0;
 
-        if (new_ddr_req && ~ss_rnw) begin
-          // Core has save data — send to SRAM via CDC
-          core_wr_data       <= ss_din;
-          core_sram_base     <= ss_addr[14:0];
-          core_wr_req_toggle <= ~core_wr_req_toggle;
-          sys_state          <= SYS_SAVE_WAIT_SRAM;
-          // Sticky capture of the very first save chunk's data + address
+        if (new_ddr_req && ~ss_rnw && ~fifo_save_wr_full) begin
+          // Push 64-bit chunk into FIFO; ack savestates.sv same cycle.
+          fifo_save_write_req <= 1;
+          ss_ack              <= ~ss_ack;
+
+          // Debug taps (kept for overlay continuity)
           if (!first_save_seen) begin
             first_save_chunk <= ss_din;
             first_save_base  <= ss_addr[14:0];
             first_save_seen  <= 1;
           end
-          // Track max chunk base address seen.
           if (ss_addr[14:0] > max_sram_base) begin
             max_sram_base <= ss_addr[14:0];
           end
-          // Track max upper bits of ss_addr.  If this ever goes non-zero,
-          // chunks are addressing past the 15-bit (32K-chunk) window —
-          // i.e., wrapping back to low SRAM and overwriting earlier
-          // chunks (including the firmware's 'SNES' header at SRAM 0).
           if (ss_addr[16:8] > ss_addr_max_hi) begin
             ss_addr_max_hi <= ss_addr[16:8];
           end
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
-          // FIX #1: Only complete when we have seen ss_busy rise AND fall
-          // during this operation.
+          // ss_busy just fell after rising → savestates.sv finished
+          // producing the save state.  Signal start_ok to APF.
           sys_state            <= SYS_IDLE;
           ss_busy_seen         <= 0;
           savestate_start_busy <= 0;
           savestate_start_ok   <= 1;
-        end
-      end
-
-      SYS_SAVE_WAIT_SRAM: begin
-        if (sram_wr_done) begin
-          // SRAM write complete — toggle ack back to savestates.sv
-          ss_ack <= ~ss_ack;
-          if (ss_busy_seen && ~ss_busy) begin
-            // FIX #1: Save finished while writing last word
-            sys_state            <= SYS_IDLE;
-            ss_busy_seen         <= 0;
-            savestate_start_busy <= 0;
-            savestate_start_ok   <= 1;
-          end else begin
-            sys_state <= SYS_SAVE_ACTIVE;
-          end
         end
       end
 
@@ -595,27 +628,9 @@ module save_state_controller (
   reg [1:0]  sram_word_idx;
   reg [16:0] sram_base_addr;
 
-  // CDC toggle edge detection (clk_74a side)
-  reg prev_core_wr_req_74a = 0;
+  // CDC toggle edge detection (clk_74a side) — load path only
   reg prev_core_rd_req_74a = 0;
-  wire core_wr_pending_74a = (core_wr_req_74a != prev_core_wr_req_74a);
   wire core_rd_pending_74a = (core_rd_req_74a != prev_core_rd_req_74a);
-
-  // Core save data latched into clk_74a domain
-  // Safe to read because data is stable well before toggle crosses via synch_3
-  reg [63:0] latched_core_wr_data;
-
-  // Canonical 16-bit-word packing for the 8-byte core-save chunk:
-  //   SRAM word N (N=0..3) holds firmware bytes (2N+1, 2N) — i.e., low
-  //   byte of the SRAM word is firmware byte 2N, high byte is firmware
-  //   byte 2N+1.  This makes "SRAM byte K = firmware byte K" hold under
-  //   the standard little-endian-within-word convention, which keeps
-  //   every subsequent path (load read, bridge_wr from APF, bridge_rd
-  //   to APF) trivial and consistent.
-  wire [15:0] core_wr_word_0 = {latched_core_wr_data[15:8],  latched_core_wr_data[7:0]};
-  wire [15:0] core_wr_word_1 = {latched_core_wr_data[31:24], latched_core_wr_data[23:16]};
-  wire [15:0] core_wr_word_2 = {latched_core_wr_data[47:40], latched_core_wr_data[39:32]};
-  wire [15:0] core_wr_word_3 = {latched_core_wr_data[63:56], latched_core_wr_data[55:48]};
 
   // Bridge write pending latch (clk_74a domain)
   reg        bridge_wr_pending = 0;
@@ -648,12 +663,6 @@ module save_state_controller (
   reg [17:0] bridge_rd_addr_latched = 18'd0;
 
   always @(posedge clk_74a) begin
-    // Clear the "serviced" flag when bridge_rd_en falls, so the NEXT
-    // bridge_rd_en pulse will trigger a new SRAM read.
-    if (!bridge_rd_en) begin
-      bridge_rd_serviced <= 0;
-    end
-
     // Latch bridge writes to SRAM (bridge_wr is 1 clk_74a pulse)
     if (bridge_wr && bridge_addr[31:28] == 4'h4 && !bridge_wr_pending) begin
       bridge_wr_pending   <= 1;
@@ -692,22 +701,10 @@ module save_state_controller (
         sram_we_n  <= 1;
         sram_dq_oe <= 0;
 
-        // Priority: core write > core read > bridge write > bridge read
-        if (core_wr_pending_74a) begin
-          // Latch data from clk_sys domain (stable by now)
-          latched_core_wr_data <= core_wr_data;
-          sram_base_addr       <= {core_sram_base, 2'b00};
-          sram_word_idx        <= 2'd0;
-          // Set up first write: address + data, assert WE_n.
-          // Use core_wr_data directly (not core_wr_word_0) because
-          // latched_core_wr_data is updated non-blocking and not yet
-          // visible this cycle.  Canonical packing: {byte 1, byte 0}.
-          sram_a      <= {core_sram_base, 2'b00};
-          sram_dq_out <= {core_wr_data[15:8], core_wr_data[7:0]};
-          sram_dq_oe  <= 1;
-          sram_we_n   <= 0;
-          sram_state  <= SRAM_CORE_WR;
-        end else if (core_rd_pending_74a) begin
+        // Phase A: SAVE is now streamed via FIFO, no SRAM writes for save.
+        // SRAM is used only for LOAD: bridge_wr (APF → SRAM) and core_rd
+        // (SRAM → SNES firmware).  Priority: core read > bridge write.
+        if (core_rd_pending_74a) begin
           sram_base_addr <= {core_rd_base, 2'b00};
           sram_word_idx  <= 2'd0;
           sram_a         <= {core_rd_base, 2'b00};
@@ -726,55 +723,10 @@ module save_state_controller (
           sram_dq_oe  <= 1;
           sram_we_n   <= 0;
           sram_state  <= SRAM_BRIDGE_WR_LO;
-        end else if (bridge_rd_en && !bridge_rd_serviced) begin
-          // data_unloader has presented an address and asserted bridge_rd_en
-          // (held high for ~7 clk_74a cycles).  bridge_rd_addr is a BYTE
-          // address from data_unloader; the SRAM is word-addressed, so we
-          // use bits [17:1] for sram_a and ignore bit 0 (which is always 0
-          // because data_unloader increments by INPUT_WORD_SIZE=2).
-          bridge_rd_addr_latched <= bridge_rd_addr;
-          sram_a                 <= bridge_rd_addr[17:1];
-          sram_oe_n              <= 0;
-          sram_dq_oe             <= 0;
-          sram_state             <= SRAM_BRIDGE_RD_SETUP;
-          // Debug-overlay first-pf tracking (kept for backwards compat).
-          if (!first_pf_seen) begin
-            first_pf_addr <= {bridge_rd_addr[17:1]};
-            first_pf_seen <= 1;
-          end
         end
       end
 
-      // ----- Core save write: 4 × 16-bit SRAM writes -----
-      SRAM_CORE_WR: begin
-        sram_we_n  <= 1;  // Rising edge completes the write
-        sram_state <= SRAM_CORE_WR_END;
-      end
-
-      SRAM_CORE_WR_END: begin
-        if (sram_word_idx == 2'd3) begin
-          // All 4 words written — done
-          sram_dq_oe           <= 0;
-          sram_wr_ack_toggle   <= ~sram_wr_ack_toggle;
-          prev_core_wr_req_74a <= core_wr_req_74a;  // consume pending
-          sram_state           <= SRAM_IDLE;
-          // Debug: count of fully-completed SRAM core writes.
-          if (save_wr_count != 16'hFFFF) begin
-            save_wr_count <= save_wr_count + 16'h0001;
-          end
-        end else begin
-          sram_word_idx <= sram_word_idx + 2'd1;
-          sram_a <= sram_base_addr + {15'd0, sram_word_idx} + 17'd1;
-          case (sram_word_idx)
-            2'd0: sram_dq_out <= core_wr_word_1;
-            2'd1: sram_dq_out <= core_wr_word_2;
-            2'd2: sram_dq_out <= core_wr_word_3;
-            default: sram_dq_out <= 16'd0;
-          endcase
-          sram_we_n  <= 0;
-          sram_state <= SRAM_CORE_WR;
-        end
-      end
+      // (SRAM_CORE_WR / SRAM_CORE_WR_END removed — save path is now FIFO-based.)
 
       // ----- Core load read: 1 setup + 1 hold + sample, per word -----
       // The on-board SRAM has ~10ns access time.  A single SETUP cycle
@@ -834,36 +786,8 @@ module save_state_controller (
         sram_state        <= SRAM_IDLE;
       end
 
-      // ----- Bridge read (memory adapter for data_unloader) -----
-      //
-      // data_unloader has set bridge_rd_en + bridge_rd_addr on its mem
-      // clock (= clk_74a).  We set sram_a in SRAM_IDLE, asserted OE, and
-      // entered SRAM_BRIDGE_RD_SETUP.  Now wait for the address to settle,
-      // then latch sram_dq_in into bridge_rd_data.  Total cycles from
-      // SRAM_IDLE entry to LATCH must be ≤ READ_MEM_CLOCK_DELAY (7).
-      SRAM_BRIDGE_RD_SETUP: begin
-        sram_state <= SRAM_BRIDGE_RD_HOLD;
-      end
-
-      SRAM_BRIDGE_RD_HOLD: begin
-        sram_state <= SRAM_BRIDGE_RD_LATCH;
-      end
-
-      SRAM_BRIDGE_RD_LATCH: begin
-        // Sample SRAM and present it to data_unloader.  With the canonical
-        // byte layout in SRAM (high byte = firmware byte 2K+1, low byte =
-        // firmware byte 2K), passing sram_dq_in directly produces the
-        // correct file byte order through data_unloader's endian swap.
-        bridge_rd_data     <= sram_dq_in;
-        bridge_rd_serviced <= 1;
-        sram_oe_n          <= 1;
-        sram_state         <= SRAM_IDLE;
-        // Debug sticky-capture (kept around for overlay verification).
-        if (!first_sram_w0_seen) begin
-          first_sram_w0      <= sram_dq_in;
-          first_sram_w0_seen <= 1;
-        end
-      end
+      // (SRAM_BRIDGE_RD_* removed — save reads are now served from the
+      // FIFO, not from SRAM.)
 
     endcase
   end

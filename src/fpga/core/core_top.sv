@@ -516,14 +516,6 @@ module core_top (
   // via the existing mux in the always_comb block at the top of this file.
   wire [31:0] save_state_bridge_read_data;
 
-  // Memory-adapter signals between data_unloader and save_state_controller.
-  // All on clk_74a (data_unloader's clk_memory == clk_74a here).
-  // bridge_rd_addr is a 18-bit BYTE address (since data_unloader treats
-  // read_addr as byte-addressed and we have INPUT_WORD_SIZE=2).
-  wire        ss_bridge_rd_en;
-  wire [17:0] ss_bridge_rd_addr;
-  wire [15:0] ss_bridge_rd_data;
-
   // Debug taps from save_state_controller (clk_sys domain)
   wire [3:0] debug_sys_state;
   wire       debug_ss_busy_seen;
@@ -585,16 +577,13 @@ module core_top (
       .clk_74a(clk_74a),
       .clk_sys(clk_sys_21_48),
 
-      // APF Bridge — writes only.  Reads are handled by data_unloader below.
+      // APF Bridge — writes (load) and reads (save FIFO drain)
       .bridge_wr(bridge_wr),
+      .bridge_rd(bridge_rd),
       .bridge_endian_little(bridge_endian_little),
       .bridge_addr(bridge_addr),
       .bridge_wr_data(bridge_wr_data),
-
-      // Memory-adapter port: data_unloader requests SRAM reads via these.
-      .bridge_rd_en  (ss_bridge_rd_en),
-      .bridge_rd_addr(ss_bridge_rd_addr),
-      .bridge_rd_data(ss_bridge_rd_data),
+      .save_state_bridge_read_data(save_state_bridge_read_data),
 
       // APF Save State Handshake
       .savestate_load(savestate_load),
@@ -777,35 +766,8 @@ module core_top (
       .read_data(sd_buff_din)
   );
 
-  // ---------------------------------------------------------------
-  // Save-state bridge READ path: a separate data_unloader instance
-  // for bridge address 0x4xxxxxxx.  Memory adapter is implemented
-  // inside save_state_controller (see bridge_rd_en/addr/data ports).
-  // Same proven FIFO pattern as the cart-save reads above.
-  // ---------------------------------------------------------------
-  // ADDRESS_SIZE=18 because the SRAM is 256 KB = 2^18 bytes.  data_unloader
-  // exposes a BYTE address on read_addr (it auto-increments by INPUT_WORD_SIZE
-  // per word, which is 2 for our 16-bit memory).  Our SRAM is word-addressed
-  // (17 bits = 131072 words), so the controller divides by 2 internally to
-  // get sram_a.
-  data_unloader #(
-      .ADDRESS_MASK_UPPER_4(4'h4),
-      .ADDRESS_SIZE(18),
-      .READ_MEM_CLOCK_DELAY(7),
-      .INPUT_WORD_SIZE(2)
-  ) save_state_data_unloader (
-      .clk_74a(clk_74a),
-      .clk_memory(clk_74a),   // SRAM FSM is in clk_74a; same clock both sides
-
-      .bridge_rd(bridge_rd),
-      .bridge_endian_little(bridge_endian_little),
-      .bridge_addr(bridge_addr),
-      .bridge_rd_data(save_state_bridge_read_data),
-
-      .read_en  (ss_bridge_rd_en),
-      .read_addr(ss_bridge_rd_addr),
-      .read_data(ss_bridge_rd_data)
-  );
+  // (Phase A: save-state bridge READ path is now handled internally by
+  // save_state_controller via a save FIFO.  No data_unloader needed.)
 
   always @(posedge clk_74a or negedge pll_core_locked) begin
     if (~pll_core_locked) begin
