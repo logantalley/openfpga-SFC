@@ -591,7 +591,7 @@ module MAIN_SNES (
   // fire, so this entire block is a no-op functionally.  Just wires.
   // -------------------------------------------------------------------
 
-  // clk_sys → clk_mem: req toggles + level signal ss_loading
+  // ----- clk_sys → clk_mem CDC -----
   wire ss_sdram_wr_req_mem;
   wire ss_sdram_rd_req_mem;
   wire ss_loading_mem;
@@ -599,73 +599,123 @@ module MAIN_SNES (
   synch_3 sync_ss_rd_req  (.i(ss_sdram_rd_req),  .o(ss_sdram_rd_req_mem),  .clk(clk_mem));
   synch_3 sync_ss_loading (.i(ss_loading),       .o(ss_loading_mem),       .clk(clk_mem));
 
-  // Edge detection (clk_mem side)
+  // Edge detection (clk_mem side) — when a toggle edge arrives we kick
+  // off the SDRAM access via the FSM below.
   reg prev_ss_sdram_wr_req_mem = 0;
   reg prev_ss_sdram_rd_req_mem = 0;
-  wire ss_sdram_wr_pulse_mem =
+  wire ss_sdram_wr_edge_mem =
       (ss_sdram_wr_req_mem != prev_ss_sdram_wr_req_mem);
-  wire ss_sdram_rd_pulse_mem =
+  wire ss_sdram_rd_edge_mem =
       (ss_sdram_rd_req_mem != prev_ss_sdram_rd_req_mem);
 
-  reg        ss_sdram_wr_ack_mem = 0;
-  reg        ss_sdram_rd_ack_mem = 0;
+  // ----- clk_mem-side SDRAM-access FSM -----
+  // States:
+  //   SS_IDLE       — no savestate access pending
+  //   SS_WR_ISSUE   — drive wr=1 to sdram on this cycle to launch write
+  //   SS_WR_WAIT    — wait for sdram.busy to fall, then toggle ack
+  //   SS_RD_ISSUE   — drive rd=1 to launch read
+  //   SS_RD_WAIT    — wait for sdram.busy to fall, then latch dout + ack
+  //
+  // ss_loading_mem stays high through the entire access, so the input
+  // mux gives us the bus the whole time.  rd/wr go through dedicated
+  // FSM-driven regs so they hold for as long as needed.
+  localparam SS_IDLE     = 3'd0;
+  localparam SS_WR_ISSUE = 3'd1;
+  localparam SS_WR_WAIT  = 3'd2;
+  localparam SS_RD_ISSUE = 3'd3;
+  localparam SS_RD_WAIT  = 3'd4;
+
+  reg [2:0]  ss_mem_state = SS_IDLE;
+  reg        ss_mem_rd        = 1'b0;
+  reg        ss_mem_wr        = 1'b0;
+  reg [24:0] ss_mem_addr      = 25'd0;
+  reg [15:0] ss_mem_din       = 16'h0000;
+  reg        ss_sdram_wr_ack_mem  = 0;
+  reg        ss_sdram_rd_ack_mem  = 0;
   reg [15:0] ss_sdram_rd_data_mem = 16'h0000;
+  wire       sdram_busy;
 
   always @(posedge clk_mem) begin
     prev_ss_sdram_wr_req_mem <= ss_sdram_wr_req_mem;
     prev_ss_sdram_rd_req_mem <= ss_sdram_rd_req_mem;
 
-    if (ss_sdram_wr_pulse_mem) begin
-      ss_sdram_wr_ack_mem <= ~ss_sdram_wr_ack_mem;
-    end
-    if (ss_sdram_rd_pulse_mem) begin
-      // The sdram module returns 16-bit data on `dout` within a few
-      // cycles of `rd`.  ROM_Q_SDRAM is exactly that bus, so we can
-      // sample it on the *next* mem cycle after the read pulse.  The
-      // Phase C load FSM polls rd_ack via clk_sys synch_3 (~3 mem
-      // cycles) which gives sdram plenty of time to present data.
-      // We use a small delay register to ensure dout is valid when ack
-      // is observed.
-      ss_sdram_rd_ack_mem  <= ~ss_sdram_rd_ack_mem;
-    end
-    // TODO Phase C: this latches dout on the same edge the read is
-    // issued, which captures the PREVIOUS read's result.  The Phase C
-    // load FSM must either (a) wait extra clk_mem cycles before reading
-    // ss_sdram_rd_data after ack, or (b) move this latch to a delayed
-    // state machine that waits for sdram.busy to fall.  For Phase B no
-    // reads ever fire (controller drives ss_sdram_rd_req=0), so OK.
-    if (prev_ss_sdram_rd_req_mem != ss_sdram_rd_req_mem) begin
-      ss_sdram_rd_data_mem <= ROM_Q_SDRAM;
-    end
+    case (ss_mem_state)
+      SS_IDLE: begin
+        ss_mem_rd <= 0;
+        ss_mem_wr <= 0;
+        // Latch address/data when an edge arrives; the clk_sys side
+        // holds them stable for ~4 clk_mem cycles so this is safe.
+        if (ss_sdram_wr_edge_mem) begin
+          ss_mem_addr  <= ss_sdram_wr_addr;
+          ss_mem_din   <= ss_sdram_wr_data;
+          ss_mem_state <= SS_WR_ISSUE;
+        end else if (ss_sdram_rd_edge_mem) begin
+          ss_mem_addr  <= ss_sdram_rd_addr;
+          ss_mem_state <= SS_RD_ISSUE;
+        end
+      end
+
+      SS_WR_ISSUE: begin
+        ss_mem_wr    <= 1;
+        ss_mem_state <= SS_WR_WAIT;
+      end
+
+      SS_WR_WAIT: begin
+        // sdram raises busy on the cycle after wr; wait for the falling
+        // edge to confirm the write completed (last_data latched, etc.).
+        ss_mem_wr <= 0;
+        if (~sdram_busy) begin
+          ss_sdram_wr_ack_mem <= ~ss_sdram_wr_ack_mem;
+          ss_mem_state        <= SS_IDLE;
+        end
+      end
+
+      SS_RD_ISSUE: begin
+        ss_mem_rd    <= 1;
+        ss_mem_state <= SS_RD_WAIT;
+      end
+
+      SS_RD_WAIT: begin
+        ss_mem_rd <= 0;
+        if (~sdram_busy) begin
+          // sdram.sv drives dout from last_data once busy drops.  Latch
+          // it then; clk_sys side will see rd_data settled by the time
+          // it observes the synch_3'd ack toggle (~3 clk_sys cycles =
+          // ~12 clk_mem cycles).
+          ss_sdram_rd_data_mem <= ROM_Q_SDRAM;
+          ss_sdram_rd_ack_mem  <= ~ss_sdram_rd_ack_mem;
+          ss_mem_state         <= SS_IDLE;
+        end
+      end
+
+      default: ss_mem_state <= SS_IDLE;
+    endcase
   end
 
-  // clk_mem → clk_sys: ack toggles + rd_data
+  // ----- clk_mem → clk_sys CDC -----
   synch_3 sync_ss_wr_ack (.i(ss_sdram_wr_ack_mem), .o(ss_sdram_wr_ack), .clk(clk_sys));
   synch_3 sync_ss_rd_ack (.i(ss_sdram_rd_ack_mem), .o(ss_sdram_rd_ack), .clk(clk_sys));
   synch_3 #(.WIDTH(16)) sync_ss_rd_data
       (.i(ss_sdram_rd_data_mem), .o(ss_sdram_rd_data), .clk(clk_sys));
 
   // SDRAM input mux.  When ss_loading_mem is high (Phase C only), the
-  // savestate path drives the SDRAM.  Otherwise behavior is identical
-  // to the previous direct wiring.  cart_download is mutually exclusive
-  // with normal play, so it keeps priority over ss_loading_mem for
-  // safety (a savestate during a cart download would be nonsense).
+  // savestate FSM drives SDRAM.  Otherwise behavior is identical to the
+  // previous direct wiring.  cart_download keeps priority for safety.
   wire [24:0] sdram_addr_mux =
       cart_download   ? ioctl_addr :
-      ss_loading_mem  ? (ss_sdram_wr_pulse_mem ? ss_sdram_wr_addr
-                                               : ss_sdram_rd_addr) :
+      ss_loading_mem  ? ss_mem_addr :
                         ROM_ADDR;
   wire [15:0] sdram_din_mux =
       cart_download   ? ioctl_dout :
-      ss_loading_mem  ? ss_sdram_wr_data :
+      ss_loading_mem  ? ss_mem_din :
                         ROM_D;
   wire        sdram_rd_mux =
       cart_download   ? 1'b0 :
-      ss_loading_mem  ? ss_sdram_rd_pulse_mem :
+      ss_loading_mem  ? ss_mem_rd :
                         (RESET_N ? ~ROM_OE_N : RFSH);
   wire        sdram_wr_mux =
       cart_download   ? ioctl_wr :
-      ss_loading_mem  ? ss_sdram_wr_pulse_mem :
+      ss_loading_mem  ? ss_mem_wr :
                         ~ROM_WE_N;
   wire        sdram_word_mux =
       cart_download   ? 1'b1 :
@@ -682,7 +732,7 @@ module MAIN_SNES (
       .rd  (sdram_rd_mux),
       .wr  (sdram_wr_mux),
       .word(sdram_word_mux),
-      .busy(),
+      .busy(sdram_busy),
 
       // Actual SDRAM interface
       .SDRAM_DQ(dram_dq),

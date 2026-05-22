@@ -293,8 +293,14 @@ module core_top (
   //   assign dram_cas_n              = 'h1;
   //   assign dram_we_n               = 'h1;
 
-  // SRAM pins routed to save_state_controller (declared as wires, driven by module)
-  // assign sram_a, sram_dq, sram_oe_n, sram_we_n, sram_ub_n, sram_lb_n below
+  // Phase C: on-board SRAM no longer used (save: streaming FIFO; load: SDRAM).
+  // Drive the pins to safe defaults so the chip stays idle.
+  assign sram_a    = 17'h0;
+  assign sram_dq   = 16'hZZZZ;
+  assign sram_oe_n = 1'b1;
+  assign sram_we_n = 1'b1;
+  assign sram_ub_n = 1'b1;
+  assign sram_lb_n = 1'b1;
 
   assign dbg_tx                  = 1'bZ;
   assign user1                   = 1'bZ;
@@ -669,15 +675,7 @@ module core_top (
       .debug_last_w0_data_hi   (debug_last_w0_data_hi),
       .debug_w0_wr_count       (debug_w0_wr_count),
 
-      // SRAM interface
-      .sram_a   (sram_a),
-      .sram_dq  (sram_dq),
-      .sram_oe_n(sram_oe_n),
-      .sram_we_n(sram_we_n),
-      .sram_ub_n(sram_ub_n),
-      .sram_lb_n(sram_lb_n),
-
-      // Phase B: SDRAM staging (no-op outputs from controller until Phase C)
+      // Phase C: SDRAM staging interface (replaces SRAM pin set entirely)
       .ss_sdram_wr_req (ss_sdram_wr_req),
       .ss_sdram_wr_addr(ss_sdram_wr_addr),
       .ss_sdram_wr_data(ss_sdram_wr_data),
