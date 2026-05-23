@@ -416,8 +416,11 @@ module core_top (
 
   wire savestate_supported = 1;
   wire [31:0] savestate_addr = 32'h40000000;
-  wire [31:0] savestate_size = 32'h40000;  // 256KB — matches SRAM capacity
-  wire [31:0] savestate_maxloadsize = 32'h40000;
+  // Phase C: streaming save + SDRAM-staged load.  The actual payload with
+  // ARAM enabled is ~307KB; SDRAM staging area has room for many MB so
+  // declare 512KB to give APF margin without overcommitting.
+  wire [31:0] savestate_size        = 32'h80000;  // 512KB
+  wire [31:0] savestate_maxloadsize = 32'h80000;  // 512KB
 
   wire savestate_start;
   wire savestate_start_ack;
