@@ -1706,10 +1706,15 @@ module core_top (
       // Row 3 (CYAN)   : save_wr_count_lo — low byte of # of SRAM core writes.
       //                  Each write = 8 bytes.  $4000 writes = 128KB. $8000
       //                  writes = 256KB.  This rolls over modulo 256.
-      2'd0: begin row_value = dbg_ss_addr_overflow_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_ss_addr_max_hi_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_save_b0_video;    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C load-diagnostic overlay:
+      //   RED   : bridge_wr_count_lo — did APF write bytes to load region?
+      //   GREEN : stage_entry_count_lo — did staging FSM drain FIFO into SDRAM?
+      //   YELLOW: first_stage_addr_lo — low byte of first SDRAM write addr (expect $00)
+      //   CYAN  : first_stage_word_lo — first SDRAM word low byte (expect $53='S')
+      2'd0: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

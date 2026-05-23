@@ -466,8 +466,9 @@ module save_state_controller (
     ss_load             <= 0;
     fifo_save_write_req <= 0;
     fifo_load_read_req  <= 0;
-    ss_sdram_wr_req     <= 0;
-    ss_sdram_rd_req     <= 0;
+    // NOTE: ss_sdram_wr_req / ss_sdram_rd_req are TOGGLE bits, not
+    // pulses — the SNES.sv clk_mem-side FSM edge-detects them via
+    // synch_3.  Don't default them to 0 here.
 
     // Sticky debug taps
     if (ss_busy && !prev_ss_busy) begin
@@ -582,7 +583,7 @@ module save_state_controller (
       end
 
       SYS_STAGE_WR_REQ: begin
-        ss_sdram_wr_req  <= 1;
+        ss_sdram_wr_req  <= ~ss_sdram_wr_req;  // toggle to request a write
         ss_sdram_wr_addr <= stage_addr;
         case (stage_word_idx)
           2'd0: ss_sdram_wr_data <= stage_buffer[15:0];
@@ -642,7 +643,7 @@ module save_state_controller (
       end
 
       SYS_SERVE_RD_REQ: begin
-        ss_sdram_rd_req  <= 1;
+        ss_sdram_rd_req  <= ~ss_sdram_rd_req;  // toggle to request a read
         ss_sdram_rd_addr <= serve_addr;
         sys_state        <= SYS_SERVE_RD_WAIT;
       end
