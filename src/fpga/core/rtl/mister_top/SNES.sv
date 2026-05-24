@@ -634,6 +634,7 @@ module MAIN_SNES (
   reg        ss_sdram_rd_ack_mem  = 0;
   reg [15:0] ss_sdram_rd_data_mem = 16'h0000;
   wire       sdram_busy;
+  reg        sdram_busy_seen = 0;
 
   always @(posedge clk_mem) begin
     prev_ss_sdram_wr_req_mem <= ss_sdram_wr_req_mem;
@@ -643,6 +644,7 @@ module MAIN_SNES (
       SS_IDLE: begin
         ss_mem_rd <= 0;
         ss_mem_wr <= 0;
+        sdram_busy_seen <= 0;
         // Latch address/data when an edge arrives; the clk_sys side
         // holds them stable for ~4 clk_mem cycles so this is safe.
         if (ss_sdram_wr_edge_mem) begin
@@ -661,10 +663,14 @@ module MAIN_SNES (
       end
 
       SS_WR_WAIT: begin
-        // sdram raises busy on the cycle after wr; wait for the falling
-        // edge to confirm the write completed (last_data latched, etc.).
-        ss_mem_wr <= 0;
-        if (~sdram_busy) begin
+        // Hold ss_mem_wr=1 until sdram has latched the request (busy
+        // rises one cycle after the rd/wr pulse).  Then drop wr and
+        // wait for busy to fall, which signals the access completed.
+        if (sdram_busy) begin
+          ss_mem_wr        <= 0;
+          sdram_busy_seen  <= 1;
+        end
+        if (sdram_busy_seen && ~sdram_busy) begin
           ss_sdram_wr_ack_mem <= ~ss_sdram_wr_ack_mem;
           ss_mem_state        <= SS_IDLE;
         end
@@ -676,12 +682,13 @@ module MAIN_SNES (
       end
 
       SS_RD_WAIT: begin
-        ss_mem_rd <= 0;
-        if (~sdram_busy) begin
-          // sdram.sv drives dout from last_data once busy drops.  Latch
-          // it then; clk_sys side will see rd_data settled by the time
-          // it observes the synch_3'd ack toggle (~3 clk_sys cycles =
-          // ~12 clk_mem cycles).
+        if (sdram_busy) begin
+          ss_mem_rd        <= 0;
+          sdram_busy_seen  <= 1;
+        end
+        if (sdram_busy_seen && ~sdram_busy) begin
+          // sdram drops busy and presents dout from last_data on the
+          // same cycle (STATE_READY block in sdram.sv).
           ss_sdram_rd_data_mem <= ROM_Q_SDRAM;
           ss_sdram_rd_ack_mem  <= ~ss_sdram_rd_ack_mem;
           ss_mem_state         <= SS_IDLE;
