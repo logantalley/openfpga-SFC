@@ -408,7 +408,10 @@ module save_state_controller (
   // ss_addr max (load side) — sanity check on how many chunks firmware reads
   reg [16:0] ss_addr_max = 17'd0;
   assign debug_max_sram_base_lo = ss_addr_max[7:0];
-  assign debug_max_sram_base_hi = {7'b0, ss_addr_max[9:8]};
+  // Repurposed: high byte = full sys_state (5-bit FSM state) + flags so we can
+  // tell where the FSM ended up.  bit7=ss_busy_ever, bit6=load_cmd_pending,
+  // bit5=ss_req_ever, bit4:0 = sys_state.
+  assign debug_max_sram_base_hi = {ss_busy_ever, load_cmd_pending, ss_req_ever, sys_state[4:0]};
   assign debug_ss_addr_overflow = 8'h00;
   assign debug_ss_addr_max_hi   = ss_addr_max[16:9];
 

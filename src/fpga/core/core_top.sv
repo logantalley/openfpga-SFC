@@ -1709,17 +1709,23 @@ module core_top (
       // Row 3 (CYAN)   : save_wr_count_lo — low byte of # of SRAM core writes.
       //                  Each write = 8 bytes.  $4000 writes = 128KB. $8000
       //                  writes = 256KB.  This rolls over modulo 256.
-      // Phase C load-diagnostic overlay:
-      //   RED   : bridge_wr_count_lo — APF wrote bytes (expect $FF saturated)
-      //   GREEN : stage_entry_count_lo — staging drained FIFO (expect $FF)
-      //   YELLOW: first_serve_word_lo (= first_sram_w1_lo) — first byte read
-      //           back from SDRAM by serve FSM.  Expect $53='S' if SDRAM
-      //           round-trip works.  If $00, serve never ran or SDRAM
-      //           returned zeros (write/read handshake busted).
-      //   CYAN  : first_stage_word_lo (= first_sram_w0_lo) — first SDRAM
-      //           word low byte written during staging (expect $53='S')
-      2'd0: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FF00; end
+      // Phase C serve-diagnostic overlay:
+      //   RED   : ss_addr_max_lo — low byte of highest ss_addr firmware
+      //           issued on load.  $00 = firmware never issued any read.
+      //   GREEN : sys_state_flags — bit7=ss_busy_ever, bit6=load_cmd_pending,
+      //           bit5=ss_req_ever, bit4:0 = sys_state.  Decoded:
+      //             $00 = SYS_IDLE                       $14 = SERVE_WAIT_REQ
+      //             $01 = SAVE_ACTIVE                    $15 = SERVE_RD_REQ
+      //             $0A = STAGE_FIFO_RD                  $16 = SERVE_RD_WAIT
+      //             $0F = STAGE_IDLE                     $17 = SERVE_RD_NEXT
+      //                                                  $19 = SERVE_COMPLETE
+      //           Add $80 if firmware ran (busy), $40 if load_cmd_pending,
+      //           $20 if firmware issued any ss_req.
+      //   YELLOW: first_serve_word_lo — first byte serve FSM read back
+      //           ($53 if good; $00 if serve never ran or read returned 0)
+      //   CYAN  : first_stage_word_lo — first byte staged ($53 expected)
+      2'd0: begin row_value = dbg_max_sram_base_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_max_sram_base_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'hFFFF00; end
       2'd3: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
