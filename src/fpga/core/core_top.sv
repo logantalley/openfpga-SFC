@@ -1709,19 +1709,18 @@ module core_top (
       // Row 3 (CYAN)   : save_wr_count_lo — low byte of # of SRAM core writes.
       //                  Each write = 8 bytes.  $4000 writes = 128KB. $8000
       //                  writes = 256KB.  This rolls over modulo 256.
-      // Phase C serve-diagnostic overlay v2:
-      //   RED   : ss_addr_max_lo — last/highest ss_addr firmware issued
-      //   GREEN : sys_state + flags (same encoding as before)
-      //   YELLOW: serve_rd_count_lo — # of completed SDRAM reads in serve.
-      //           $00 = SDRAM read handshake never completed.
-      //           Non-zero but $4*ss_addr_max → reads completing fine.
-      //   CYAN  : first_serve_word_hi — high byte of first SDRAM read
-      //           result ($4E='N' expected from header bytes 1).
-      //           $00 with non-zero yellow → reads return zeros.
-      2'd0: begin row_value = dbg_max_sram_base_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_max_sram_base_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_save_b0_video;    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_save_b1_video;    row_marker_rgb = 24'h00FFFF; end
+      // Phase C serve-diagnostic overlay v3 — sample CPU-visible bytes
+      // directly from savestates.sv so we know what the firmware
+      // actually consumed (not just what the controller thinks it sent).
+      //   RED   : dbg_load_byte0 — first byte CPU read via SSDATA on load.
+      //           $53 ='S' if SDRAM round-trip + serve FSM work end-to-end.
+      //   GREEN : dbg_load_byte1 — second byte ($4E='N' expected).
+      //   YELLOW: sys_state + flags (where controller FSM ended).
+      //   CYAN  : serve_rd_count_lo — # completed serve-side SDRAM reads.
+      2'd0: begin row_value = dbg_load_byte0_video;       row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_byte1_video;       row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_max_sram_base_hi_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_save_b0_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
