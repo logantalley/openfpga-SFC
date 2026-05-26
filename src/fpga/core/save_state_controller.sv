@@ -380,8 +380,11 @@ module save_state_controller (
   reg [63:0] first_save_chunk = 64'h0;
   reg [16:0] first_save_addr  = 17'd0;
   reg        first_save_seen  = 0;
-  assign debug_first_save_byte0   = first_save_chunk[7:0];
-  assign debug_first_save_byte1   = first_save_chunk[15:8];
+  // Repurposed for Phase C diagnostics:
+  //   debug_first_save_byte0 → serve_rd_count[7:0]
+  //   debug_first_save_byte1 → first_serve_word[15:8]
+  assign debug_first_save_byte0   = serve_rd_count[7:0];
+  assign debug_first_save_byte1   = first_serve_word[15:8];
   assign debug_first_save_addr_lo = first_save_addr[7:0];
   assign debug_first_save_addr_hi = {7'b0, first_save_addr[9:8]};
 
@@ -399,6 +402,12 @@ module save_state_controller (
   reg        first_serve_seen = 0;
   assign debug_first_sram_w1_lo = first_serve_word[7:0];
   assign debug_first_sram_w1_hi = first_serve_word[15:8];
+
+  // Phase C diagnostic: count of completed SDRAM reads during the serve
+  // phase.  Increments on every sdram_rd_done in SYS_SERVE_RD_WAIT.
+  // Saturates at $FFFF.  If this stays $00 even though red shows ss_addr
+  // advancing, the SDRAM read handshake is broken end-to-end.
+  reg [15:0] serve_rd_count = 16'h0000;
 
   // Count of staging-FIFO entries written to SDRAM (saturating)
   reg [15:0] stage_entry_count = 16'h0000;
@@ -663,6 +672,8 @@ module save_state_controller (
             first_serve_word <= ss_sdram_rd_data;
             first_serve_seen <= 1;
           end
+          if (serve_rd_count != 16'hFFFF)
+            serve_rd_count <= serve_rd_count + 16'd1;
           sys_state <= SYS_SERVE_RD_NEXT;
         end
       end
