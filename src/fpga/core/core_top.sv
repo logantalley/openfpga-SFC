@@ -1740,21 +1740,20 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C load-TRIGGER chain overlay v7 — find the first broken link
-      // between "controller pulses ss_load" and "firmware vector hijack".
-      //   RED   : cnt_ss_load_pulses — controller pulsed ss_load (expect $01)
-      //   GREEN : dbg_load_en_cnt — savestates saw load rising edge & set
-      //           load_en (expect $01).  $00 = ss_load never reached it.
-      //   YELLOW: dbg_load_vect_cnt — # NMI/IRQ vector reads while load
-      //           armed.  $00 = no vector fetch occurred (NMI disabled? or
-      //           load_en cleared before any vblank?).
-      //   CYAN  : dbg_load_busy_cnt — # times the hijack actually fired
-      //           (ss_busy rose).  $00 here but YELLOW>0 = the ~vblank_n
-      //           gate blocked it.
-      2'd0: begin row_value = dbg_first_addr_hi_video;        row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = {4'h0, dbg_load_en_cnt_video};  row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = {4'h0, dbg_load_vect_cnt_video};row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = {4'h0, dbg_load_busy_cnt_video};row_marker_rgb = 24'h00FFFF; end
+      // Phase C serve overlay v8 — firmware runs (enters at $8004=Load_start,
+      // hijack confirmed).  Now: does our serve FSM answer its read requests?
+      //   RED   : cnt_ddr_req_in_wait — ddr_req edges seen while in
+      //           SERVE_WAIT_REQ.  $00 = firmware request never reaches us
+      //           while we're waiting (timing/state mismatch).
+      //   GREEN : cnt_serve_rd_entries — matched read reqs (ss_rnw=1).
+      //   YELLOW: ss_rnw_at_first_wait_req — direction of first edge
+      //           ($01=read expected).
+      //   CYAN  : sys_state+flags — bit7 busy_ever, bit6 load_cmd_pending,
+      //           bit5 req_ever, [4:0]=state.  $14=SERVE_WAIT_REQ.
+      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_data_b1_video;      row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_max_sram_base_hi_video;   row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
