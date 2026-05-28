@@ -322,6 +322,12 @@ module save_state_controller (
   localparam SYS_SERVE_RD_NEXT    = 5'd23;
   localparam SYS_SERVE_ACK        = 5'd24;
   localparam SYS_SERVE_COMPLETE   = 5'd25;
+  // Bridge state between staging and serve: ss_pause_cpu is already LOW
+  // here (it's not a SYS_STAGE_* state) so MCLK is running again.  We wait
+  // a few cycles for MCLK/CPU to come back to life, THEN pulse ss_load, so
+  // the savestates module (clocked by the gated MCLK) actually sees it.
+  localparam SYS_SERVE_KICK       = 5'd26;
+  localparam SYS_SERVE_KICK_WAIT  = 5'd27;
 
   reg [4:0] sys_state = SYS_IDLE;
   assign debug_sys_state = sys_state[3:0];
@@ -347,6 +353,10 @@ module save_state_controller (
   // Load command pending (set on savestate_load rising edge, cleared
   // when serve phase kicks off).
   reg load_cmd_pending = 0;
+
+  // Countdown after un-pausing the CPU before we pulse ss_load, to let
+  // the gated MCLK and CPU pipeline come back to life.
+  reg [7:0] kick_wait = 8'd0;
 
   // Staging book-keeping
   reg [1:0]  stage_word_idx;       // which of the 4 SDRAM words within the chunk
@@ -663,22 +673,39 @@ module save_state_controller (
       end
 
       SYS_STAGE_IDLE: begin
-        // Load FIFO drained.  If APF has signaled load_cmd_pending, kick
-        // off the serve phase; otherwise wait for more bridge writes.
+        // Load FIFO drained.  If APF has signaled load_cmd_pending, move
+        // to the KICK state (which has ss_pause_cpu=0, so MCLK resumes)
+        // before pulsing ss_load.  Otherwise wait for more bridge writes.
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
         end else if (load_cmd_pending) begin
-          load_cmd_pending     <= 0;
-          savestate_load_ack   <= 0;
-          savestate_load_busy  <= 1;
-          ss_busy_seen         <= 0;
-          ss_load              <= 1;
-          if (cnt_ss_load_pulses != 8'hFF)
-            cnt_ss_load_pulses <= cnt_ss_load_pulses + 8'd1;
-          if (cnt_serve_wait_entries != 8'hFF)
-            cnt_serve_wait_entries <= cnt_serve_wait_entries + 8'd1;
-          sys_state            <= SYS_SERVE_WAIT_REQ;
+          savestate_load_busy <= 1;
+          kick_wait           <= 8'd64;  // let CPU/MCLK spin up
+          sys_state           <= SYS_SERVE_KICK_WAIT;
         end
+      end
+
+      // CPU un-paused (ss_pause_cpu now 0 since this isn't a STAGE state).
+      // Wait for MCLK to be running for a while before kicking the load.
+      SYS_SERVE_KICK_WAIT: begin
+        if (kick_wait != 8'd0) begin
+          kick_wait <= kick_wait - 8'd1;
+        end else begin
+          sys_state <= SYS_SERVE_KICK;
+        end
+      end
+
+      // Pulse ss_load now that MCLK is alive; savestates module will see it.
+      SYS_SERVE_KICK: begin
+        load_cmd_pending   <= 0;
+        savestate_load_ack <= 0;
+        ss_busy_seen       <= 0;
+        ss_load            <= 1;
+        if (cnt_ss_load_pulses != 8'hFF)
+          cnt_ss_load_pulses <= cnt_ss_load_pulses + 8'd1;
+        if (cnt_serve_wait_entries != 8'hFF)
+          cnt_serve_wait_entries <= cnt_serve_wait_entries + 8'd1;
+        sys_state <= SYS_SERVE_WAIT_REQ;
       end
 
       // ============================================================
