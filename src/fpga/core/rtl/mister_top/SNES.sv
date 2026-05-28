@@ -229,24 +229,15 @@ module MAIN_SNES (
   wire clk_sys = clk_sys_21_48;
   wire clk_mem = clk_mem_85_9;
 
-  // ----- CPU pause during savestate staging -----
-  // While ss_loading is high, the clk_mem-side mux hijacks the single-port
-  // SDRAM to stage the incoming save file.  The live SNES CPU also reads
-  // cart ROM from that SDRAM, so if it kept running it would starve and
-  // crash.  Gate the main system clock (MCLK) to freeze the CPU/PPU/cart
-  // logic for the duration.  ACLK (audio SMP/DSP) is intentionally left
-  // running so the existing audio keeps playing (matches GBA core's
-  // ss_loading→core-pause behaviour).
-  //
-  // Glitch-free gate: sample the enable on the negative edge of clk_sys so
-  // the AND only ever toggles while clk_sys is low, never mid-high-pulse.
-  //
-  // IMPORTANT: pause only during the STAGING phase (ss_pause_cpu), NOT the
-  // whole of ss_loading.  The serve phase needs the CPU running so the
-  // savestate firmware (in BRAM bank $FF) can execute and request chunks.
+  // ----- CPU pause during savestate staging (DISABLED for testing) -----
+  // The MCLK gate was suspected of corrupting PPU/NMI timing so the load
+  // firmware's vblank vector-hijack never fires.  Reverted to ungated MCLK
+  // to isolate the cause; ss_pause_cpu is left wired but not used to gate.
+  // If the load firmware now runs, the gate was the problem and we move
+  // staging off the cart-ROM SDRAM (to CRAM) instead of pausing the CPU.
   reg clk_sys_en = 1'b1;
   always @(negedge clk_sys) begin
-    clk_sys_en <= ~ss_pause_cpu;
+    clk_sys_en <= 1'b1;  // gate disabled — MCLK always runs
   end
   wire mclk_gated = clk_sys & clk_sys_en;
 
