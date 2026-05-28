@@ -120,8 +120,21 @@ module save_state_controller (
     output reg  [24:0] ss_sdram_rd_addr,
     input  wire [15:0] ss_sdram_rd_data,
     input  wire        ss_sdram_rd_ack,
-    output reg         ss_loading
+    output reg         ss_loading,
+    output wire        ss_pause_cpu    // high during STAGING only — gates SNES MCLK
 );
+
+  // The CPU must be frozen only while we're actively hijacking SDRAM for
+  // staging (the serve phase needs the CPU running to execute firmware).
+  // Staging states are SYS_STAGE_* (5'd10..5'd15) and the brief STAGING
+  // start in SYS_IDLE.  Simplest robust definition: pause whenever the
+  // FSM is in any staging-related state.
+  assign ss_pause_cpu = (sys_state == SYS_STAGE_FIFO_RD)    ||
+                        (sys_state == SYS_STAGE_FIFO_WAIT)  ||
+                        (sys_state == SYS_STAGE_FIFO_LATCH) ||
+                        (sys_state == SYS_STAGE_WR_REQ)     ||
+                        (sys_state == SYS_STAGE_WR_WAIT)    ||
+                        (sys_state == SYS_STAGE_IDLE);
 
   // SDRAM staging base address.  Cart ROMs are at SDRAM word offset 0 and
   // SNES ROMs max out around 8 MB (= 4 Mwords = 25'h400000).  Place the

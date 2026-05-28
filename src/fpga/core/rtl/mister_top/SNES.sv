@@ -33,6 +33,7 @@ module MAIN_SNES (
     output wire [15:0] ss_sdram_rd_data,
     output wire        ss_sdram_rd_ack,
     input  wire        ss_loading,
+    input  wire        ss_pause_cpu,   // high during staging only — gates MCLK
 
     output wire [3:0]  dbg_rti_arms,
     output wire [3:0]  dbg_vect_reentry,
@@ -228,6 +229,27 @@ module MAIN_SNES (
   wire clk_sys = clk_sys_21_48;
   wire clk_mem = clk_mem_85_9;
 
+  // ----- CPU pause during savestate staging -----
+  // While ss_loading is high, the clk_mem-side mux hijacks the single-port
+  // SDRAM to stage the incoming save file.  The live SNES CPU also reads
+  // cart ROM from that SDRAM, so if it kept running it would starve and
+  // crash.  Gate the main system clock (MCLK) to freeze the CPU/PPU/cart
+  // logic for the duration.  ACLK (audio SMP/DSP) is intentionally left
+  // running so the existing audio keeps playing (matches GBA core's
+  // ss_loading→core-pause behaviour).
+  //
+  // Glitch-free gate: sample the enable on the negative edge of clk_sys so
+  // the AND only ever toggles while clk_sys is low, never mid-high-pulse.
+  //
+  // IMPORTANT: pause only during the STAGING phase (ss_pause_cpu), NOT the
+  // whole of ss_loading.  The serve phase needs the CPU running so the
+  // savestate firmware (in BRAM bank $FF) can execute and request chunks.
+  reg clk_sys_en = 1'b1;
+  always @(negedge clk_sys) begin
+    clk_sys_en <= ~ss_pause_cpu;
+  end
+  wire mclk_gated = clk_sys & clk_sys_en;
+
   wire code_index = &ioctl_index;
   wire code_download = ioctl_download & code_index;
   wire cart_download = ioctl_download & ioctl_index[5:0] == 0;
@@ -362,8 +384,8 @@ module MAIN_SNES (
   ) main (
       .RESET_N(RESET_N),
 
-      .MCLK(clk_sys),  // 21.47727 / 21.28137
-      .ACLK(clk_sys),
+      .MCLK(mclk_gated),  // 21.47727 / 21.28137 — gated to pause CPU during staging
+      .ACLK(clk_sys),     // audio clock left free-running
 
       // .GSU_ACTIVE(GSU_ACTIVE),
       .GSU_TURBO(gsu_turbo_enabled),

@@ -533,6 +533,7 @@ module core_top (
   wire [15:0] ss_sdram_rd_data;
   wire        ss_sdram_rd_ack;
   wire        ss_loading;
+  wire        ss_pause_cpu;
 
   // bridge_rd_data for the savestate region (0x4xxxxxxx) is produced by
   // a data_unloader instance (see below), wired directly to bridge_rd_data
@@ -687,7 +688,8 @@ module core_top (
       .ss_sdram_rd_addr(ss_sdram_rd_addr),
       .ss_sdram_rd_data(ss_sdram_rd_data),
       .ss_sdram_rd_ack (ss_sdram_rd_ack),
-      .ss_loading      (ss_loading)
+      .ss_loading      (ss_loading),
+      .ss_pause_cpu    (ss_pause_cpu)
   );
 
   reg ioctl_download = 0;
@@ -998,6 +1000,7 @@ module core_top (
       .ss_sdram_rd_data(ss_sdram_rd_data),
       .ss_sdram_rd_ack (ss_sdram_rd_ack),
       .ss_loading      (ss_loading),
+      .ss_pause_cpu    (ss_pause_cpu),
 
       .dbg_rti_arms       (dbg_rti_arms),
       .dbg_vect_reentry   (dbg_vect_reentry),
