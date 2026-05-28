@@ -371,10 +371,15 @@ module save_state_controller (
   reg [31:0] first_wr_data = 32'h00000000;
   reg [31:0] first_wr_addr = 32'h00000000;
   reg        first_wr_seen = 0;
-  assign debug_first_wr_data_b0 = first_wr_data[31:24];
-  assign debug_first_wr_data_b1 = first_wr_data[23:16];
-  assign debug_first_wr_addr_lo = first_wr_addr[7:0];
-  assign debug_first_wr_addr_hi = first_wr_addr[15:8];
+  // Repurposed for Phase C: expose serve-FSM action counters.
+  //   data_b0 → cnt_serve_wait_entries  (# entries to SERVE_WAIT_REQ)
+  //   data_b1 → cnt_serve_rd_entries    (# entries to SERVE_RD_REQ)
+  //   addr_lo → cnt_serve_ack_entries   (# entries to SERVE_ACK)
+  //   addr_hi → cnt_ss_load_pulses      (# ss_load pulses we emitted)
+  assign debug_first_wr_data_b0 = cnt_serve_wait_entries;
+  assign debug_first_wr_data_b1 = cnt_serve_rd_entries;
+  assign debug_first_wr_addr_lo = cnt_serve_ack_entries;
+  assign debug_first_wr_addr_hi = cnt_ss_load_pulses;
 
   // SAVE-side first chunk debug (kept from Phase A)
   reg [63:0] first_save_chunk = 64'h0;
@@ -408,6 +413,14 @@ module save_state_controller (
   // Saturates at $FFFF.  If this stays $00 even though red shows ss_addr
   // advancing, the SDRAM read handshake is broken end-to-end.
   reg [15:0] serve_rd_count = 16'h0000;
+
+  // Serve-FSM action counters (saturating).  All four increment on entry
+  // to / completion of specific serve states so we can prove which paths
+  // ran on hardware.
+  reg [7:0] cnt_serve_wait_entries = 8'h00;  // entered SERVE_WAIT_REQ
+  reg [7:0] cnt_serve_rd_entries   = 8'h00;  // entered SERVE_RD_REQ
+  reg [7:0] cnt_serve_ack_entries  = 8'h00;  // entered SERVE_ACK
+  reg [7:0] cnt_ss_load_pulses     = 8'h00;  // ss_load asserted
 
   // Count of staging-FIFO entries written to SDRAM (saturating)
   reg [15:0] stage_entry_count = 16'h0000;
@@ -636,6 +649,10 @@ module save_state_controller (
           savestate_load_busy  <= 1;
           ss_busy_seen         <= 0;
           ss_load              <= 1;
+          if (cnt_ss_load_pulses != 8'hFF)
+            cnt_ss_load_pulses <= cnt_ss_load_pulses + 8'd1;
+          if (cnt_serve_wait_entries != 8'hFF)
+            cnt_serve_wait_entries <= cnt_serve_wait_entries + 8'd1;
           sys_state            <= SYS_SERVE_WAIT_REQ;
         end
       end
@@ -648,6 +665,8 @@ module save_state_controller (
           // ss_addr is a 64-bit chunk index; each chunk = 4 SDRAM words.
           serve_addr     <= STAGING_BASE_WORD + ({6'd0, ss_addr, 2'b00});
           serve_word_idx <= 2'd0;
+          if (cnt_serve_rd_entries != 8'hFF)
+            cnt_serve_rd_entries <= cnt_serve_rd_entries + 8'd1;
           sys_state      <= SYS_SERVE_RD_REQ;
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
           sys_state <= SYS_SERVE_COMPLETE;
@@ -680,6 +699,8 @@ module save_state_controller (
 
       SYS_SERVE_RD_NEXT: begin
         if (serve_word_idx == 2'd3) begin
+          if (cnt_serve_ack_entries != 8'hFF)
+            cnt_serve_ack_entries <= cnt_serve_ack_entries + 8'd1;
           sys_state <= SYS_SERVE_ACK;
         end else begin
           serve_word_idx <= serve_word_idx + 2'd1;

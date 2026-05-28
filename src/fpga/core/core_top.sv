@@ -1709,18 +1709,20 @@ module core_top (
       // Row 3 (CYAN)   : save_wr_count_lo — low byte of # of SRAM core writes.
       //                  Each write = 8 bytes.  $4000 writes = 128KB. $8000
       //                  writes = 256KB.  This rolls over modulo 256.
-      // Phase C serve-diagnostic overlay v3 — sample CPU-visible bytes
-      // directly from savestates.sv so we know what the firmware
-      // actually consumed (not just what the controller thinks it sent).
-      //   RED   : dbg_load_byte0 — first byte CPU read via SSDATA on load.
-      //           $53 ='S' if SDRAM round-trip + serve FSM work end-to-end.
-      //   GREEN : dbg_load_byte1 — second byte ($4E='N' expected).
-      //   YELLOW: sys_state + flags (where controller FSM ended).
-      //   CYAN  : serve_rd_count_lo — # completed serve-side SDRAM reads.
-      2'd0: begin row_value = dbg_load_byte0_video;       row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_byte1_video;       row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_max_sram_base_hi_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_save_b0_video;    row_marker_rgb = 24'h00FFFF; end
+      // Phase C serve-diagnostic overlay v4 — FSM action counters:
+      //   RED   : cnt_ss_load_pulses (= dbg_first_wr_addr_hi).  Should be
+      //           $01 if we transitioned to serve exactly once.
+      //   GREEN : cnt_serve_wait_entries (= dbg_first_wr_data_b0).
+      //           Should match RED.
+      //   YELLOW: cnt_serve_rd_entries (= dbg_first_wr_data_b1).  # of
+      //           times firmware ss_req fired new_ddr_req && ss_rnw.
+      //           $00 = firmware never asked for a chunk.
+      //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
+      //           # of full 4-word reads completed.  Should equal yellow.
+      2'd0: begin row_value = dbg_first_addr_hi_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_data_b0_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_data_b1_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_addr_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
