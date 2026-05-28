@@ -345,6 +345,14 @@ module save_state_controller (
   reg [63:0] serve_buffer;
   reg [24:0] serve_addr;
 
+  // Diagnostic: count ALL new_ddr_req edges seen while in SERVE_WAIT_REQ
+  // (regardless of ss_rnw), and capture ss_rnw at the first such edge.
+  // If ddr_req_in_wait > 0 but cnt_serve_rd_entries == 0, then requests
+  // ARE arriving but ss_rnw is 0 (wrong direction) when they do.
+  reg [7:0] cnt_ddr_req_in_wait = 8'h00;
+  reg       ss_rnw_at_first_wait_req = 0;
+  reg       ss_rnw_at_first_wait_req_seen = 0;
+
   // ----- Debug taps: most kept zero for now (no-op overlay rows) -----
   reg       ss_save_ever     = 0;
   reg [3:0] ss_save_count    = 4'h0;
@@ -390,8 +398,11 @@ module save_state_controller (
   //   debug_first_save_byte1 → first_serve_word[15:8]
   assign debug_first_save_byte0   = serve_rd_count[7:0];
   assign debug_first_save_byte1   = first_serve_word[15:8];
-  assign debug_first_save_addr_lo = first_save_addr[7:0];
-  assign debug_first_save_addr_hi = {7'b0, first_save_addr[9:8]};
+  // Repurposed: expose ddr-req-in-wait diagnostics.
+  //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
+  //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
+  assign debug_first_save_addr_lo = cnt_ddr_req_in_wait;
+  assign debug_first_save_addr_hi = {7'b0, ss_rnw_at_first_wait_req};
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -661,6 +672,15 @@ module save_state_controller (
       // SERVE: respond to firmware ss_req's by reading SDRAM
       // ============================================================
       SYS_SERVE_WAIT_REQ: begin
+        // Diagnostic: log any ddr_req edge that arrives while we wait.
+        if (new_ddr_req) begin
+          if (cnt_ddr_req_in_wait != 8'hFF)
+            cnt_ddr_req_in_wait <= cnt_ddr_req_in_wait + 8'd1;
+          if (!ss_rnw_at_first_wait_req_seen) begin
+            ss_rnw_at_first_wait_req      <= ss_rnw;
+            ss_rnw_at_first_wait_req_seen <= 1;
+          end
+        end
         if (new_ddr_req && ss_rnw) begin
           // ss_addr is a 64-bit chunk index; each chunk = 4 SDRAM words.
           serve_addr     <= STAGING_BASE_WORD + ({6'd0, ss_addr, 2'b00});

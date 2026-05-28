@@ -1719,10 +1719,18 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      2'd0: begin row_value = dbg_first_addr_hi_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_data_b0_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_data_b1_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_addr_lo_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C serve-diagnostic overlay v5:
+      //   RED   : cnt_ss_load_pulses (expect $01)
+      //   GREEN : cnt_serve_rd_entries — # matched read requests (expect >0)
+      //   YELLOW: cnt_ddr_req_in_wait — # of ANY ddr_req edge seen while
+      //           waiting in SERVE_WAIT_REQ.  If >0 but GREEN=0, requests
+      //           arrive with ss_rnw=0 (wrong direction).
+      //   CYAN  : ss_rnw_at_first_wait_req — direction bit of first edge.
+      //           $01 = read (expected), $00 = write (bug).
+      2'd0: begin row_value = dbg_first_addr_hi_video;        row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_data_b1_video;        row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_addr_lo_video;   row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_save_addr_hi_video;   row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
