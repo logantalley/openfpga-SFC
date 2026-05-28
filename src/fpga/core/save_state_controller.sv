@@ -420,9 +420,9 @@ module save_state_controller (
   reg        first_save_seen  = 0;
   // Repurposed for Phase C diagnostics:
   //   debug_first_save_byte0 → serve_rd_count[7:0]
-  //   debug_first_save_byte1 → first_serve_word[15:8]
+  //   debug_first_save_byte1 → serve_rd_count[15:8] (progress high byte)
   assign debug_first_save_byte0   = serve_rd_count[7:0];
-  assign debug_first_save_byte1   = first_serve_word[15:8];
+  assign debug_first_save_byte1   = serve_rd_count[15:8];
   // Repurposed: expose ddr-req-in-wait diagnostics.
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)

@@ -1740,22 +1740,19 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C data-integrity overlay v9 — serve FSM works (served $FF+
-      // reads).  Now compare what the firmware CONSUMED vs what we READ
-      // from SDRAM.  All four should be the 'SN' header bytes.
-      //   RED   : dbg_load_byte0 — 1st byte firmware read via SSDATA.
-      //           $53='S' expected.
-      //   GREEN : dbg_load_byte1 — 2nd byte. $4E='N' expected.
-      //   YELLOW: first_serve_word_lo — low byte of first SDRAM word we
-      //           read in serve.  $53='S' expected.
-      //   CYAN  : first_serve_word_hi — high byte. $4E='N' expected.
-      // If YELLOW/CYAN are $53/$4E but RED/GREEN aren't, the serve→firmware
-      // hand-off (byte ordering / ss_dout packing) is wrong.  If all four
-      // are right, data path is good and the failure is in completion.
-      2'd0: begin row_value = dbg_load_byte0_video;       row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_byte1_video;       row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C completion overlay v10 — data path is correct ($53/$4E
+      // confirmed).  Now: does the load run to completion, or stall/timeout?
+      //   RED   : serve_rd_count_lo — low byte of total SDRAM reads served.
+      //   GREEN : serve_rd_count_hi — high byte.  Full 307KB load needs
+      //           ~157184 reads = $2660, so this should climb toward ~$26.
+      //           If it stalls at a low value, the load hangs partway.
+      //   YELLOW: sys_state+flags — bit7 busy_ever, bit5 req_ever, [4:0]
+      //           state.  $14=SERVE_WAIT_REQ (mid/stalled), $19=COMPLETE.
+      //   CYAN  : dbg_load_busy_cnt — hijack fired count (sanity, expect $01).
+      2'd0: begin row_value = dbg_first_save_b0_video;     row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_save_b1_video;     row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_max_sram_base_hi_video;  row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = {4'h0, dbg_load_busy_cnt_video}; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
