@@ -85,7 +85,11 @@ module savestates
 	output reg [7:0]  dbg_byte_at_8000,    // last byte read at PC=$00:$8000 (should be $5C)
 	output reg [7:0]  dbg_byte_at_8001,    // last byte read at PC=$00:$8001 (should be $09)
 	output reg [7:0]  dbg_load_byte0,      // first byte the load firmware reads from SSDATA (should be 'S' = $53)
-	output reg [7:0]  dbg_load_byte1       // second byte (should be 'N' = $4E)
+	output reg [7:0]  dbg_load_byte1,      // second byte (should be 'N' = $4E)
+	// Phase C load-trigger diagnostics
+	output reg [3:0]  dbg_load_en_cnt,     // count of load_en rising edges (= ss_load seen)
+	output reg [3:0]  dbg_load_vect_cnt,   // count of vblank NMI/IRQ vector reads while load armed
+	output reg [3:0]  dbg_load_busy_cnt    // count of ss_busy rises during a load
 );
 
 reg cpurd_n_old, cpuwr_n_old;
@@ -248,6 +252,9 @@ always @(posedge clk) begin
 		dbg_byte_at_8001 <= 8'h00;
 		dbg_load_byte0 <= 8'h00;
 		dbg_load_byte1 <= 8'h00;
+		dbg_load_en_cnt <= 4'h0;
+		dbg_load_vect_cnt <= 4'h0;
+		dbg_load_busy_cnt <= 4'h0;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
@@ -263,14 +270,23 @@ always @(posedge clk) begin
 				load_ready <= 1; // APF handles file validity, no header check needed
 				load_buf_valid <= 0;
 				load_pf_ready <= 0;
+				dbg_load_en_cnt <= dbg_load_en_cnt + 4'd1;
 			end
 		end
 
 		if (cpurd_ce) begin
 			if (nmi_vect_l | (~ss_use_nmi & irq_vect_l)) begin // Prefer to use NMI
+				// Diagnostic: count vector reads seen while a load is armed
+				// (whether or not the hijack condition fully passes).
+				if (load_en & load_ready) begin
+					dbg_load_vect_cnt <= dbg_load_vect_cnt + 4'd1;
+				end
 				if (~ss_busy & (save_en | (load_en & load_ready)) & ~vblank_n) begin
 					ss_busy    <= 1; // Override NMI/IRQ vector only during vblank
 					ss_in_vect <= 1; // Arm two-byte vector override
+					if (load_en & load_ready) begin
+						dbg_load_busy_cnt <= dbg_load_busy_cnt + 4'd1;
+					end
 				end
 				// Debug: count vector reads that happen while ss_busy is already 1
 				// (re-entrant NMI/IRQ — should never happen if firmware disables NMI fast enough)

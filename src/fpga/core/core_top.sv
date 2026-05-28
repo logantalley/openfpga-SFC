@@ -596,6 +596,9 @@ module core_top (
   wire [7:0] dbg_byte_at_8001;
   wire [7:0] dbg_load_byte0;
   wire [7:0] dbg_load_byte1;
+  wire [3:0] dbg_load_en_cnt;
+  wire [3:0] dbg_load_vect_cnt;
+  wire [3:0] dbg_load_busy_cnt;
 
   save_state_controller save_state_controller (
       .clk_74a(clk_74a),
@@ -1014,6 +1017,9 @@ module core_top (
       .dbg_byte_at_8001   (dbg_byte_at_8001),
       .dbg_load_byte0     (dbg_load_byte0),
       .dbg_load_byte1     (dbg_load_byte1),
+      .dbg_load_en_cnt    (dbg_load_en_cnt),
+      .dbg_load_vect_cnt  (dbg_load_vect_cnt),
+      .dbg_load_busy_cnt  (dbg_load_busy_cnt),
 
       // Input
       .p1_button_a(cont1_key_s[4]),
@@ -1243,6 +1249,9 @@ module core_top (
   reg [7:0] dbg_load_byte0_sync_1;
   reg [7:0] dbg_load_byte1_sync_0;
   reg [7:0] dbg_load_byte1_sync_1;
+  reg [3:0] dbg_load_en_cnt_sync_0,   dbg_load_en_cnt_sync_1;
+  reg [3:0] dbg_load_vect_cnt_sync_0, dbg_load_vect_cnt_sync_1;
+  reg [3:0] dbg_load_busy_cnt_sync_0, dbg_load_busy_cnt_sync_1;
   reg [7:0] dbg_bridge_wr_lo_sync_0;
   reg [7:0] dbg_bridge_wr_lo_sync_1;
   reg [7:0] dbg_bridge_wr_hi_sync_0;
@@ -1342,6 +1351,12 @@ module core_top (
     dbg_load_byte0_sync_1   <= dbg_load_byte0_sync_0;
     dbg_load_byte1_sync_0   <= dbg_load_byte1;
     dbg_load_byte1_sync_1   <= dbg_load_byte1_sync_0;
+    dbg_load_en_cnt_sync_0   <= dbg_load_en_cnt;
+    dbg_load_en_cnt_sync_1   <= dbg_load_en_cnt_sync_0;
+    dbg_load_vect_cnt_sync_0 <= dbg_load_vect_cnt;
+    dbg_load_vect_cnt_sync_1 <= dbg_load_vect_cnt_sync_0;
+    dbg_load_busy_cnt_sync_0 <= dbg_load_busy_cnt;
+    dbg_load_busy_cnt_sync_1 <= dbg_load_busy_cnt_sync_0;
     dbg_bridge_wr_lo_sync_0 <= debug_bridge_wr_count_lo;
     dbg_bridge_wr_lo_sync_1 <= dbg_bridge_wr_lo_sync_0;
     dbg_bridge_wr_hi_sync_0 <= debug_bridge_wr_count_hi;
@@ -1427,6 +1442,9 @@ module core_top (
   wire [7:0] dbg_byte_at_8001_video     = dbg_byte_at_8001_sync_1;
   wire [7:0] dbg_load_byte0_video       = dbg_load_byte0_sync_1;
   wire [7:0] dbg_load_byte1_video       = dbg_load_byte1_sync_1;
+  wire [3:0] dbg_load_en_cnt_video      = dbg_load_en_cnt_sync_1;
+  wire [3:0] dbg_load_vect_cnt_video    = dbg_load_vect_cnt_sync_1;
+  wire [3:0] dbg_load_busy_cnt_video    = dbg_load_busy_cnt_sync_1;
   wire [7:0] dbg_bridge_wr_lo_video     = dbg_bridge_wr_lo_sync_1;
   wire [7:0] dbg_bridge_wr_hi_video     = dbg_bridge_wr_hi_sync_1;
   wire [7:0] dbg_first_data_b0_video    = dbg_first_data_b0_sync_1;
@@ -1722,20 +1740,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C firmware-execution overlay v6 — does the CPU run the
-      // savestate firmware at all after ss_load?
-      //   RED   : dbg_byte_at_8000 — byte CPU fetched at $00:$8000.
-      //           $5C = JML opcode (BRAM firmware served correctly).
-      //           Anything else = firmware ROM not on the bus.
-      //   GREEN : dbg_fw_at_8000 — # fetches at $8000 (vector hijack
-      //           jumped CPU to firmware).  $00 = firmware never entered.
-      //   YELLOW: dbg_fw_entry — # fetches at $8009 (Save_start reached).
-      //   CYAN  : dbg_fw_nmidis — # fetches at $802C (NMI-disable reached;
-      //           CPU made it deep into the firmware).
-      2'd0: begin row_value = dbg_byte_at_8000_video;     row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = {4'h0, dbg_fw_at_8000_video}; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = {4'h0, dbg_fw_entry_video};   row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = {4'h0, dbg_fw_nmidis_video};  row_marker_rgb = 24'h00FFFF; end
+      // Phase C load-TRIGGER chain overlay v7 — find the first broken link
+      // between "controller pulses ss_load" and "firmware vector hijack".
+      //   RED   : cnt_ss_load_pulses — controller pulsed ss_load (expect $01)
+      //   GREEN : dbg_load_en_cnt — savestates saw load rising edge & set
+      //           load_en (expect $01).  $00 = ss_load never reached it.
+      //   YELLOW: dbg_load_vect_cnt — # NMI/IRQ vector reads while load
+      //           armed.  $00 = no vector fetch occurred (NMI disabled? or
+      //           load_en cleared before any vblank?).
+      //   CYAN  : dbg_load_busy_cnt — # times the hijack actually fired
+      //           (ss_busy rose).  $00 here but YELLOW>0 = the ~vblank_n
+      //           gate blocked it.
+      2'd0: begin row_value = dbg_first_addr_hi_video;        row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = {4'h0, dbg_load_en_cnt_video};  row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = {4'h0, dbg_load_vect_cnt_video};row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = {4'h0, dbg_load_busy_cnt_video};row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
