@@ -1740,21 +1740,17 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v13 — CONTROLLER's view of first served chunk
-      // (first_serve_chunk, captured at SERVE_ACK).  Localizes whether the
-      // word1==word0 aliasing is at the SDRAM read (controller sees it too)
-      // or downstream in ss_dout→firmware (controller sees correct data).
-      //   RED   : chunk[7:0]   word0 lo = byte0, want $53 ('S')
-      //   GREEN : chunk[15:8]  word0 hi = byte1, want $4E ('N')
-      //   YELLOW: chunk[23:16] word1 lo = byte2, want $45 ('E')
-      //   CYAN  : chunk[31:24] word1 hi = byte3, want $53 ('S')
-      // If YELLOW/CYAN = $53/$4E (== word0) the SDRAM read still aliases.
-      // If YELLOW/CYAN = $45/$53 (correct) but firmware reads SNSN, the
-      // bug is in ss_dout / firmware prefetch consumption.
-      2'd0: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w0_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v14 — firmware ground-truth bytes 0..3 (what the CPU
+      // actually consumed via SSDATA).  After reverting to the natural
+      // byte-reversal swizzle (stride bug now fixed), expect "SNES":
+      //   RED   : load byte0 — $53 ('S')
+      //   GREEN : load byte1 — $4E ('N')
+      //   YELLOW: load byte2 — $45 ('E')
+      //   CYAN  : load byte3 — $53 ('S')
+      2'd0: begin row_value = dbg_load_byte0_video;   row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_byte1_video;   row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_byte_at_8000_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_byte_at_8001_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

@@ -255,17 +255,13 @@ module save_state_controller (
   // Byte-swap incoming bridge_wr_data into the canonical layout the
   // firmware will read back.  bridge_wr_data is big-endian on the wire:
   //   [31:24] = file byte 0, [23:16] = byte 1, [15:8] = byte 2, [7:0] = byte 3
-  // Canonical SDRAM word at offset N has low byte = firmware byte 2N,
-  // high byte = firmware byte 2N+1.  The staging FSM writes stage_buffer
-  // word-by-word starting at [15:0].  HARDWARE-OBSERVED (overlay v9): with
-  // the previous packing the first served word was byte2,byte3 instead of
-  // byte0,byte1 — i.e. the two 16-bit halves within each 32-bit bridge
-  // word were ending up swapped in the staged word.  Fix: place the
-  // {byte1,byte0} word in the LOW half and {byte3,byte2} in the HIGH half
-  // such that stage_buffer[15:0] (written to SDRAM first) is byte0/byte1.
+  // Once the SDRAM stride bug was fixed (stride 2 per 16-bit word), the
+  // FIFO maps bridge_wr_swapped[15:0] -> stage_buffer[15:0] directly (no
+  // half-word swap).  We need stage_buffer[15:0]=word0={byte1,byte0} and
+  // [31:16]=word1={byte3,byte2} so the firmware reads byte0,1,2,3 in order.
   wire [31:0] bridge_wr_swapped = {
-      bridge_wr_data[23:16], bridge_wr_data[31:24], // [31:16] = {byte1, byte0}
-      bridge_wr_data[7:0],   bridge_wr_data[15:8]   // [15:0]  = {byte3, byte2}
+      bridge_wr_data[7:0],   bridge_wr_data[15:8],  // [31:16] = {byte3, byte2}
+      bridge_wr_data[23:16], bridge_wr_data[31:24]  // [15:0]  = {byte1, byte0}
   };
 
   reg         fifo_load_read_req = 0;
