@@ -1740,19 +1740,19 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C chunk-mapping overlay v11 — verify all 8 bytes of chunk 0
-      // against known .sta payload "SNES-SS\0" = 53 4E 45 53 2D 53 53 00.
-      // word0 already confirmed $4E53 (fb0,fb1).  Check fb2..fb5:
-      //   RED   : first_serve_chunk[23:16] = fb2 — want $45 ('E')
-      //   GREEN : first_serve_chunk[31:24] = fb3 — want $53 ('S')
-      //   YELLOW: first_serve_chunk[39:32] = fb4 — want $2D ('-')
-      //   CYAN  : first_serve_chunk[47:40] = fb5 — want $53 ('S')
-      // All correct → full chunk maps right; loop-forever is a size/term
-      // issue.  Any wrong → the scramble pattern shows the exact fix.
-      2'd0: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w1_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w0_hi_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C ground-truth overlay v12 — the bytes the CPU ACTUALLY reads
+      // via SSDATA at ss_data_addr 0..3, captured inside savestates.sv.
+      // Known .sta chunk0 = "SNES" = 53 4E 45 53.
+      //   RED   : dbg_load_byte0 — load byte 0, want $53 ('S')
+      //   GREEN : dbg_load_byte1 — load byte 1, want $4E ('N')
+      //   YELLOW: dbg_byte_at_8000 (reused) — load byte 2, want $45 ('E')
+      //   CYAN  : dbg_byte_at_8001 (reused) — load byte 3, want $53 ('S')
+      // This is immune to serve_buffer indexing confusion — it's what the
+      // firmware truly consumed.  Any mismatch = exact scramble to fix.
+      2'd0: begin row_value = dbg_load_byte0_video;   row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_byte1_video;   row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_byte_at_8000_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_byte_at_8001_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

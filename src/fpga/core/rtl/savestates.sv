@@ -328,6 +328,18 @@ always @(posedge clk) begin
 				if (ss_data_addr == 20'd1) begin
 					dbg_load_byte1 <= ss_do;
 				end
+				// Capture deeper load bytes (reuse the now-unneeded $8000/$8001
+				// snoop regs) to verify the full chunk against the known .sta
+				// payload "SNES-SS\0" = 53 4E 45 53 2D 53 53 00.
+				//   dbg_byte_at_8000 ← load byte 2 (want $45 'E')
+				//   dbg_byte_at_8001 ← load byte 3 (want $53 'S')
+				//   dbg_load_en_cnt encodes nothing here; use fw regs below.
+				if (ss_data_addr == 20'd2) begin
+					dbg_byte_at_8000 <= ss_do;
+				end
+				if (ss_data_addr == 20'd3) begin
+					dbg_byte_at_8001 <= ss_do;
+				end
 			end
 		end
 
