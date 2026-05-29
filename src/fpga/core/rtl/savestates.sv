@@ -322,22 +322,26 @@ always @(posedge clk) begin
 			// capture during a load, gated on cpurd_ce so we sample the
 			// byte that's actually consumed by the CPU.
 			if (ss_busy & load_en & ss_data_sel) begin
-				// Capture the bytes the firmware reads at a DEEP file offset
-				// (0x200..0x203) to verify staging/serve at scale.  ss_data_addr
-				// is reset exactly once (Load_start), so it tracks the global
-				// file byte offset throughout the load.
-				// Ground truth (SMW .sta +0x200): 21 CB 7F B8.
-				if (ss_data_addr == 20'h200) begin
-					dbg_load_byte0 <= ss_do;   // want $21
+				// Capture bytes at chunk-boundary CPU reads to verify
+				// staging works past chunk 0.  Load_start preamble reads
+				// addrs 0..10 via CPU.  Addr 8 = first byte of chunk 1
+				// (= file byte 8 = $00 per .sta).  This isn't great
+				// discrimination ($00 == $00), so also grab the version
+				// string at addr 0x20 if the CPU happens to traverse it
+				// during the post-WRAM lda SSDATA's.
+				//
+				// Capture targets (verify all four = expected):
+				if (ss_data_addr == 20'd8) begin
+					dbg_load_byte0 <= ss_do;   // want $00 (chunk1 byte0)
 				end
-				if (ss_data_addr == 20'h201) begin
-					dbg_load_byte1 <= ss_do;   // want $CB
+				if (ss_data_addr == 20'd9) begin
+					dbg_load_byte1 <= ss_do;   // want $00 (chunk1 byte1)
 				end
-				if (ss_data_addr == 20'h202) begin
-					dbg_byte_at_8000 <= ss_do; // want $7F
+				if (ss_data_addr == 20'd10) begin
+					dbg_byte_at_8000 <= ss_do; // want $00 (chunk1 byte2)
 				end
-				if (ss_data_addr == 20'h203) begin
-					dbg_byte_at_8001 <= ss_do; // want $B8
+				if (ss_data_addr == 20'd11) begin
+					dbg_byte_at_8001 <= ss_do; // want $00 (chunk1 byte3)
 				end
 			end
 		end

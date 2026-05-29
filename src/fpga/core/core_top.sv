@@ -1740,22 +1740,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v16 — DEEP data integrity.  No FIFO overflow (v15
-      // confirmed), header correct, but state still corrupt.  Check bytes
-      // the firmware reads at file offset +0x200 (SMW ground truth from
-      // .sta: 21 CB 7F B8).  ss_data_addr tracks global file offset (reset
-      // only once at Load_start).
-      //   RED   : byte @+0x200 — want $21
-      //   GREEN : byte @+0x201 — want $CB
-      //   YELLOW: byte @+0x202 — want $7F
-      //   CYAN  : byte @+0x203 — want $B8
-      // Correct => deep data staged/served fine, corruption is elsewhere
-      // (e.g. a specific block handler).  Wrong => staging/serve breaks
-      // past some offset.
-      2'd0: begin row_value = dbg_load_byte0_video;   row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_byte1_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_byte_at_8000_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_byte_at_8001_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v17 — STAGED-data check at file offset +0x40 (chunk
+      // index 8).  Controller-side capture of serve_buffer when serving
+      // ss_addr=8.  Compares against ground-truth SMW .sta payload:
+      // file +0x40 = "Super Ma" = 53 75 70 65 72 20 4D 61.
+      //   RED   : chunk8 byte0 — want $53 ('S')
+      //   GREEN : chunk8 byte1 — want $75 ('u')
+      //   YELLOW: chunk8 byte2 — want $70 ('p')
+      //   CYAN  : chunk8 byte3 — want $65 ('e')
+      // All correct => staging+serve is byte-perfect at least to chunk 8.
+      // Any wrong => staging/serve breaks at small offsets too, indicating
+      // an addressing bug beyond simple chunk 0.
+      2'd0: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_sram_w0_hi_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_hi_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
