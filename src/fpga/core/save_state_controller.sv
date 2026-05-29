@@ -808,16 +808,10 @@ module save_state_controller (
       SYS_SERVE_ACK: begin
         ss_dout   <= serve_buffer;
         ss_ack    <= ~ss_ack;
-        // Capture the served chunk at ss_addr==8 (file +0x40 = "Super Ma" =
-        // 53 75 70 65 72 20 4D 61).  This is deep enough to prove staging
-        // worked past chunk 0 but still on a chunk-aligned CPU-readable spot.
-        // Note: ss_addr here is the chunk index latched into serve_addr by
-        // SERVE_WAIT_REQ; we re-extract it by comparing serve_addr to base.
-        if (!first_serve_chunk_seen &&
-            (serve_addr == STAGING_BASE_WORD + 25'h46)) begin
-          // serve_addr at the END of a chunk read = base + 8*ss_addr + 6
-          // (we incremented through 4 words at stride 2: +0,+2,+4,+6).
-          // ss_addr==8 -> base+8*8=64=0x40, end at +6 -> 0x46.
+        // Capture the FIRST served chunk unconditionally so we know the
+        // capture mechanism works.  Also capture chunk index reached (via
+        // cnt_serve_ack_entries elsewhere) so we can tell how far serve got.
+        if (!first_serve_chunk_seen) begin
           first_serve_chunk      <= serve_buffer;
           first_serve_chunk_seen <= 1;
         end

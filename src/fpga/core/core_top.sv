@@ -1740,21 +1740,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v17 — STAGED-data check at file offset +0x40 (chunk
-      // index 8).  Controller-side capture of serve_buffer when serving
-      // ss_addr=8.  Compares against ground-truth SMW .sta payload:
-      // file +0x40 = "Super Ma" = 53 75 70 65 72 20 4D 61.
-      //   RED   : chunk8 byte0 — want $53 ('S')
-      //   GREEN : chunk8 byte1 — want $75 ('u')
-      //   YELLOW: chunk8 byte2 — want $70 ('p')
-      //   CYAN  : chunk8 byte3 — want $65 ('e')
-      // All correct => staging+serve is byte-perfect at least to chunk 8.
-      // Any wrong => staging/serve breaks at small offsets too, indicating
-      // an addressing bug beyond simple chunk 0.
+      // Phase C overlay v18 — capture FIRST served chunk (proves capture
+      // mechanism) + chunk-serve depth.  Expected first chunk bytes:
+      // payload +0x00 = "SNES-SS\0" = 53 4E 45 53 2D 53 53 00.
+      //   RED   : chunk0 byte0 — want $53 ('S')
+      //   GREEN : chunk0 byte1 — want $4E ('N')
+      //   YELLOW: cnt_serve_ack_entries — # full 4-word serves completed
+      //           ($FF saturated => served >=255 chunks => deep load went
+      //           through).
+      //   CYAN  : chunk0 byte2 — want $45 ('E')
+      // If all four reasonable => serve mechanism works deep; corruption
+      // is in completion handshake or a specific block handler.
       2'd0: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_sram_w0_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video; row_marker_rgb = 24'h00FFFF; end
+      2'd2: begin row_value = dbg_first_addr_lo_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
