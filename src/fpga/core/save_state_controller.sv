@@ -438,8 +438,9 @@ module save_state_controller (
   // Repurposed: expose serve chunk word2 (file bytes 4,5) for mapping check.
   //   debug_first_sram_w0_lo = first_serve_chunk[39:32] (= word2 lo = fb4, want $2D)
   //   debug_first_sram_w0_hi = first_serve_chunk[47:40] (= word2 hi = fb5, want $53)
-  assign debug_first_sram_w0_lo = first_serve_chunk[39:32];
-  assign debug_first_sram_w0_hi = first_serve_chunk[47:40];
+  // Controller-side view of served chunk0 word0 (bytes 0,1).
+  assign debug_first_sram_w0_lo = first_serve_chunk[7:0];
+  assign debug_first_sram_w0_hi = first_serve_chunk[15:8];
 
   // Serve-side first SDRAM read result (= first chunk byte 0..1)
   reg [15:0] first_serve_word = 16'h0000;
@@ -675,7 +676,10 @@ module save_state_controller (
 
       SYS_STAGE_WR_WAIT: begin
         if (sdram_wr_done) begin
-          stage_addr <= stage_addr + 25'd1;
+          // sdram.sv treats addr[24:1] as the 16-bit word and addr[0] as
+          // byte-within-word, AND skips re-access when addr[24:1] is
+          // unchanged.  So distinct 16-bit words must step addr by 2.
+          stage_addr <= stage_addr + 25'd2;
           if (stage_word_idx == 2'd3) begin
             if (stage_entry_count != 16'hFFFF)
               stage_entry_count <= stage_entry_count + 16'd1;
@@ -737,8 +741,10 @@ module save_state_controller (
           end
         end
         if (new_ddr_req && ss_rnw) begin
-          // ss_addr is a 64-bit chunk index; each chunk = 4 SDRAM words.
-          serve_addr     <= STAGING_BASE_WORD + ({6'd0, ss_addr, 2'b00});
+          // ss_addr = 64-bit chunk index.  Each chunk = 4 SDRAM 16-bit
+          // words at byte-stride 2 = 8 bytes of SDRAM addr space.  Staging
+          // wrote chunk N at STAGING_BASE_WORD + N*8.  Match here.
+          serve_addr     <= STAGING_BASE_WORD + ({5'd0, ss_addr, 3'b000});
           serve_word_idx <= 2'd0;
           if (cnt_serve_rd_entries != 8'hFF)
             cnt_serve_rd_entries <= cnt_serve_rd_entries + 8'd1;
@@ -779,7 +785,7 @@ module save_state_controller (
           sys_state <= SYS_SERVE_ACK;
         end else begin
           serve_word_idx <= serve_word_idx + 2'd1;
-          serve_addr     <= serve_addr + 25'd1;
+          serve_addr     <= serve_addr + 25'd2;  // stride 2 (see staging note)
           sys_state      <= SYS_SERVE_RD_REQ;
         end
       end
