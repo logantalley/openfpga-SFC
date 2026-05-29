@@ -322,23 +322,22 @@ always @(posedge clk) begin
 			// capture during a load, gated on cpurd_ce so we sample the
 			// byte that's actually consumed by the CPU.
 			if (ss_busy & load_en & ss_data_sel) begin
-				if (ss_data_addr == 20'd0) begin
-					dbg_load_byte0 <= ss_do;
+				// Capture the bytes the firmware reads at a DEEP file offset
+				// (0x200..0x203) to verify staging/serve at scale.  ss_data_addr
+				// is reset exactly once (Load_start), so it tracks the global
+				// file byte offset throughout the load.
+				// Ground truth (SMW .sta +0x200): 21 CB 7F B8.
+				if (ss_data_addr == 20'h200) begin
+					dbg_load_byte0 <= ss_do;   // want $21
 				end
-				if (ss_data_addr == 20'd1) begin
-					dbg_load_byte1 <= ss_do;
+				if (ss_data_addr == 20'h201) begin
+					dbg_load_byte1 <= ss_do;   // want $CB
 				end
-				// Capture deeper load bytes (reuse the now-unneeded $8000/$8001
-				// snoop regs) to verify the full chunk against the known .sta
-				// payload "SNES-SS\0" = 53 4E 45 53 2D 53 53 00.
-				//   dbg_byte_at_8000 ← load byte 2 (want $45 'E')
-				//   dbg_byte_at_8001 ← load byte 3 (want $53 'S')
-				//   dbg_load_en_cnt encodes nothing here; use fw regs below.
-				if (ss_data_addr == 20'd2) begin
-					dbg_byte_at_8000 <= ss_do;
+				if (ss_data_addr == 20'h202) begin
+					dbg_byte_at_8000 <= ss_do; // want $7F
 				end
-				if (ss_data_addr == 20'd3) begin
-					dbg_byte_at_8001 <= ss_do;
+				if (ss_data_addr == 20'h203) begin
+					dbg_byte_at_8001 <= ss_do; // want $B8
 				end
 			end
 		end
