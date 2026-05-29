@@ -435,14 +435,27 @@ module save_state_controller (
   reg        first_stage_seen = 0;
   assign debug_first_pf_addr_lo = first_stage_addr[7:0];
   assign debug_first_pf_addr_hi = first_stage_addr[15:8];
-  assign debug_first_sram_w0_lo = first_stage_word[7:0];
-  assign debug_first_sram_w0_hi = first_stage_word[15:8];
+  // Repurposed: expose serve chunk word2 (file bytes 4,5) for mapping check.
+  //   debug_first_sram_w0_lo = first_serve_chunk[39:32] (= word2 lo = fb4, want $2D)
+  //   debug_first_sram_w0_hi = first_serve_chunk[47:40] (= word2 hi = fb5, want $53)
+  assign debug_first_sram_w0_lo = first_serve_chunk[39:32];
+  assign debug_first_sram_w0_hi = first_serve_chunk[47:40];
 
   // Serve-side first SDRAM read result (= first chunk byte 0..1)
   reg [15:0] first_serve_word = 16'h0000;
   reg        first_serve_seen = 0;
-  assign debug_first_sram_w1_lo = first_serve_word[7:0];
-  assign debug_first_sram_w1_hi = first_serve_word[15:8];
+  // Repurposed: expose serve chunk word1 (file bytes 2,3) for mapping check.
+  //   debug_first_sram_w1_lo = first_serve_chunk[23:16] (= word1 lo = fb2, want $45)
+  //   debug_first_sram_w1_hi = first_serve_chunk[31:24] (= word1 hi = fb3, want $53)
+  assign debug_first_sram_w1_lo = first_serve_chunk[23:16];
+  assign debug_first_sram_w1_hi = first_serve_chunk[31:24];
+
+  // Capture the FULL first served chunk (all 4 SDRAM words) so we can
+  // verify the complete byte mapping against the known .sta payload:
+  //   chunk0 file bytes = 53 4E 45 53 2D 53 53 00  ("SNES-SS\0")
+  //   correct words: w0=$4E53 w1=$5345 w2=$532D w3=$0053
+  reg [63:0] first_serve_chunk = 64'h0;
+  reg        first_serve_chunk_seen = 0;
 
   // Phase C diagnostic: count of completed SDRAM reads during the serve
   // phase.  Increments on every sdram_rd_done in SYS_SERVE_RD_WAIT.
@@ -774,6 +787,10 @@ module save_state_controller (
       SYS_SERVE_ACK: begin
         ss_dout   <= serve_buffer;
         ss_ack    <= ~ss_ack;
+        if (!first_serve_chunk_seen) begin
+          first_serve_chunk      <= serve_buffer;
+          first_serve_chunk_seen <= 1;
+        end
         if (ss_busy_seen && ~ss_busy) begin
           sys_state <= SYS_SERVE_COMPLETE;
         end else begin
