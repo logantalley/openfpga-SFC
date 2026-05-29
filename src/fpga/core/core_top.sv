@@ -1740,17 +1740,20 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v14 — firmware ground-truth bytes 0..3 (what the CPU
-      // actually consumed via SSDATA).  After reverting to the natural
-      // byte-reversal swizzle (stride bug now fixed), expect "SNES":
-      //   RED   : load byte0 — $53 ('S')
-      //   GREEN : load byte1 — $4E ('N')
-      //   YELLOW: load byte2 — $45 ('E')
-      //   CYAN  : load byte3 — $53 ('S')
-      2'd0: begin row_value = dbg_load_byte0_video;   row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_byte1_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_byte_at_8000_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_byte_at_8001_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v15 — LOAD FIFO OVERFLOW check.  Header is correct
+      // but bulk data is corrupt for both games (size-correlated).
+      // Hypothesis: APF streams faster than staging drains -> 512-entry
+      // load FIFO overflows -> dropped writes -> holes in staged data.
+      //   RED   : fifo_load_overflow — $01 if any write was dropped.
+      //   GREEN : fifo_load_drop_cnt_lo — # dropped writes (low byte).
+      //   YELLOW: fifo_load_drop_cnt_hi — # dropped writes (high byte).
+      //           A 307KB save = ~78600 bridge writes; big drop count
+      //           confirms overflow as the corruption source.
+      //   CYAN  : stage_entry_count_hi — chunks staged (sanity).
+      2'd0: begin row_value = dbg_w0_wr_count_video;      row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_last_w0_lo_video;       row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_last_w0_hi_video;       row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_save_wr_count_hi_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

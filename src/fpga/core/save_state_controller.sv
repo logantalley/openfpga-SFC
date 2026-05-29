@@ -273,6 +273,21 @@ module save_state_controller (
   // as wrreq.  The FIFO ignores wrreq when full (overflow_checking=ON).
   wire fifo_load_write = bridge_wr && (bridge_addr[31:28] == 4'h4);
 
+  // Overflow detector (clk_74a): if a bridge_wr arrives while the FIFO is
+  // full, that write is DROPPED -> staged data has a hole.  Latch a sticky
+  // flag and count the drops (saturating).  Hypothesis: APF streams faster
+  // than the 4-SDRAM-write-per-chunk staging can drain, so the 512-entry
+  // FIFO overflows on large saves -> deterministic per-game corruption.
+  reg        fifo_load_overflow = 0;
+  reg [15:0] fifo_load_drop_cnt = 16'h0000;
+  always @(posedge clk_74a) begin
+    if (fifo_load_write && fifo_load_full) begin
+      fifo_load_overflow <= 1;
+      if (fifo_load_drop_cnt != 16'hFFFF)
+        fifo_load_drop_cnt <= fifo_load_drop_cnt + 16'd1;
+    end
+  end
+
   dcfifo_mixed_widths fifo_load (
       .data(bridge_wr_swapped),
       .rdclk(clk_sys),
@@ -498,9 +513,13 @@ module save_state_controller (
   assign debug_pf_at_first_rd_hi = fifo_drain_count[15:8];
 
   // last_w0_data / w0_wr_count — Phase A SRAM debug, now stale
-  assign debug_last_w0_data_lo = 8'h00;
-  assign debug_last_w0_data_hi = 8'h00;
-  assign debug_w0_wr_count     = 8'h00;
+  // Repurposed: FIFO-overflow diagnostics.
+  //   last_w0_data_lo → fifo_load_drop_cnt[7:0]
+  //   last_w0_data_hi → fifo_load_drop_cnt[15:8]
+  //   w0_wr_count     → {7'b0, fifo_load_overflow}  ($01 = overflowed)
+  assign debug_last_w0_data_lo = fifo_load_drop_cnt[7:0];
+  assign debug_last_w0_data_hi = fifo_load_drop_cnt[15:8];
+  assign debug_w0_wr_count     = {7'b0, fifo_load_overflow};
 
   // ----- bridge-wr counters (clk_74a) -----
   always @(posedge clk_74a) begin
