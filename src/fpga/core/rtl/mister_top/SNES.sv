@@ -233,15 +233,21 @@ module MAIN_SNES (
   wire clk_sys = clk_sys_21_48;
   wire clk_mem = clk_mem_85_9;
 
-  // ----- CPU pause during savestate staging (DISABLED for testing) -----
-  // The MCLK gate was suspected of corrupting PPU/NMI timing so the load
-  // firmware's vblank vector-hijack never fires.  Reverted to ungated MCLK
-  // to isolate the cause; ss_pause_cpu is left wired but not used to gate.
-  // If the load firmware now runs, the gate was the problem and we move
-  // staging off the cart-ROM SDRAM (to CRAM) instead of pausing the CPU.
+  // ----- CPU pause during savestate staging (RE-ENABLED 2026-06-01) -----
+  // Pause MCLK during staging to prevent CPU starvation on cart-ROM reads
+  // while we hijack SDRAM.  Without this, the live game's CPU runs ~80ms
+  // with cart-ROM reads returning staging data -> CPU crashes / writes
+  // garbage to MMIO (notably NMITIMEN), so the post-staging vblank NMI
+  // hijack never fires.  Symptom: SAVE->LOAD never serves any read req
+  // (dbg_load_vect_cnt=$00) even though save_en/load_en handshake works.
+  // ACLK left free-running so audio (SMP/DSP) continues during pause.
+  //
+  // Glitch-free gate: register the enable on negedge clk_sys so the AND
+  // only toggles while clk_sys is low.  Only pauses in SYS_STAGE_* states
+  // — NOT in SERVE_KICK_WAIT/KICK/SERVE_* (load firmware needs MCLK).
   reg clk_sys_en = 1'b1;
   always @(negedge clk_sys) begin
-    clk_sys_en <= 1'b1;  // gate disabled — MCLK always runs
+    clk_sys_en <= ~ss_pause_cpu;
   end
   wire mclk_gated = clk_sys & clk_sys_en;
 
