@@ -1746,21 +1746,19 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v19 — PREFETCH STALL count.  Chunk0 data + serve
-      // depth are correct (v18 confirmed $53/$4E/$45 and YELLOW=$FF).
-      // Hypothesis: SDRAM-based serve is slower than the old SRAM serve,
-      // so during DMA the prefetch can't keep up -> savestates clears
-      // load_buf_valid -> DMA reads stale or zero data.
-      //   RED   : stall_cnt_lo — low byte of prefetch-not-ready events.
-      //   GREEN : stall_cnt_hi — high byte.  ~30000+ DMA bytes / 8 =
-      //           ~3700 chunk boundaries; many stalls (e.g. cnt > 100)
-      //           indicates serve can't keep up.
-      //   YELLOW: cnt_serve_ack_entries — chunks served (sat $FF).
-      //   CYAN  : chunk0 byte0 ($53 sanity).
-      2'd0: begin row_value = dbg_load_stall_cnt_video[7:0];   row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_stall_cnt_video[15:8];  row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_addr_lo_video;         row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w0_lo_video;      row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v20 — SAVE->LOAD pipeline trace.  After SAVE, do a
+      // LOAD; each row pinpoints the first broken stage:
+      //   RED   : bridge_wr_count_lo — APF sent bridge writes? ($00=no)
+      //   GREEN : stage_entry_count_lo — FIFO drained to SDRAM? ($00=no)
+      //   YELLOW: cnt_serve_wait_entries — serve phase entered? ($00=no)
+      //   CYAN  : cnt_serve_rd_entries  — firmware reqs matched? ($00=no)
+      // Compare these between a fresh-boot LOAD (works partially) and a
+      // SAVE->LOAD (all $00).  First $00 in chain = where post-save state
+      // breaks the load.
+      2'd0: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_data_b0_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_data_b1_video;    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
