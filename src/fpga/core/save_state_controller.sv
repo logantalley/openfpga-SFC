@@ -444,14 +444,15 @@ module save_state_controller (
   reg [15:0] first_stage_word = 16'h0000;
   reg [24:0] first_stage_addr = 25'h0;
   reg        first_stage_seen = 0;
-  assign debug_first_pf_addr_lo = first_stage_addr[7:0];
-  assign debug_first_pf_addr_hi = first_stage_addr[15:8];
-  // Repurposed: expose serve chunk word2 (file bytes 4,5) for mapping check.
-  //   debug_first_sram_w0_lo = first_serve_chunk[39:32] (= word2 lo = fb4, want $2D)
-  //   debug_first_sram_w0_hi = first_serve_chunk[47:40] (= word2 hi = fb5, want $53)
-  // Controller-side view of served chunk0 word0 (bytes 0,1).
-  assign debug_first_sram_w0_lo = first_serve_chunk[7:0];
-  assign debug_first_sram_w0_hi = first_serve_chunk[15:8];
+  // Repurposed: multi-chunk byte sampler — 1st byte of chunks 4, 8, 40, 64.
+  //   pf_addr_lo  → sample_chunk4   (want $30)
+  //   pf_addr_hi  → sample_chunk8   (want $53)
+  //   sram_w0_lo  → sample_chunk40  (want $73)
+  //   sram_w0_hi  → sample_chunk64  (want $21)
+  assign debug_first_pf_addr_lo = sample_chunk4;
+  assign debug_first_pf_addr_hi = sample_chunk8;
+  assign debug_first_sram_w0_lo = sample_chunk40;
+  assign debug_first_sram_w0_hi = sample_chunk64;
 
   // Serve-side first SDRAM read result (= first chunk byte 0..1)
   reg [15:0] first_serve_word = 16'h0000;
@@ -468,6 +469,17 @@ module save_state_controller (
   //   correct words: w0=$4E53 w1=$5345 w2=$532D w3=$0053
   reg [63:0] first_serve_chunk = 64'h0;
   reg        first_serve_chunk_seen = 0;
+
+  // Multi-chunk byte sampler for staging-at-scale verification.
+  // First byte of chunks 4, 8, 40, 64.  Each sticky.
+  reg [7:0] sample_chunk4  = 8'h00;
+  reg [7:0] sample_chunk8  = 8'h00;
+  reg [7:0] sample_chunk40 = 8'h00;
+  reg [7:0] sample_chunk64 = 8'h00;
+  reg       sample4_seen   = 0;
+  reg       sample8_seen   = 0;
+  reg       sample40_seen  = 0;
+  reg       sample64_seen  = 0;
 
   // Phase C diagnostic: count of completed SDRAM reads during the serve
   // phase.  Increments on every sdram_rd_done in SYS_SERVE_RD_WAIT.
@@ -808,12 +820,31 @@ module save_state_controller (
       SYS_SERVE_ACK: begin
         ss_dout   <= serve_buffer;
         ss_ack    <= ~ss_ack;
-        // Capture the FIRST served chunk unconditionally so we know the
-        // capture mechanism works.  Also capture chunk index reached (via
-        // cnt_serve_ack_entries elsewhere) so we can tell how far serve got.
-        if (!first_serve_chunk_seen) begin
-          first_serve_chunk      <= serve_buffer;
-          first_serve_chunk_seen <= 1;
+        // Multi-chunk byte sampler: capture serve_buffer[7:0] (= file
+        // byte at chunk_idx*8) for several known-distinctive chunks in
+        // SMW .sta payload.  All four should be non-zero with specific
+        // expected values; any $00 = staging/serve broken at that depth.
+        //
+        // chunk N's SERVE_ACK serve_addr = STAGING_BASE_WORD + 8N + 6.
+        //   chunk  4 -> $800026,  expect byte0 = $30 ('0' from "0.0.1")
+        //   chunk  8 -> $800046,  expect byte0 = $53 ('S' from "Super")
+        //   chunk 40 -> $800146,  expect byte0 = $73 ('s' from "snes")
+        //   chunk 64 -> $800206,  expect byte0 = $21
+        if (!sample4_seen && serve_addr == STAGING_BASE_WORD + 25'h26) begin
+          sample_chunk4   <= serve_buffer[7:0];
+          sample4_seen    <= 1;
+        end
+        if (!sample8_seen && serve_addr == STAGING_BASE_WORD + 25'h46) begin
+          sample_chunk8   <= serve_buffer[7:0];
+          sample8_seen    <= 1;
+        end
+        if (!sample40_seen && serve_addr == STAGING_BASE_WORD + 25'h146) begin
+          sample_chunk40  <= serve_buffer[7:0];
+          sample40_seen   <= 1;
+        end
+        if (!sample64_seen && serve_addr == STAGING_BASE_WORD + 25'h206) begin
+          sample_chunk64  <= serve_buffer[7:0];
+          sample64_seen   <= 1;
         end
         if (ss_busy_seen && ~ss_busy) begin
           sys_state <= SYS_SERVE_COMPLETE;
