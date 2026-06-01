@@ -599,6 +599,7 @@ module core_top (
   wire [3:0] dbg_load_en_cnt;
   wire [3:0] dbg_load_vect_cnt;
   wire [3:0] dbg_load_busy_cnt;
+  wire [15:0] dbg_load_stall_cnt;
 
   save_state_controller save_state_controller (
       .clk_74a(clk_74a),
@@ -1020,6 +1021,7 @@ module core_top (
       .dbg_load_en_cnt    (dbg_load_en_cnt),
       .dbg_load_vect_cnt  (dbg_load_vect_cnt),
       .dbg_load_busy_cnt  (dbg_load_busy_cnt),
+      .dbg_load_stall_cnt (dbg_load_stall_cnt),
 
       // Input
       .p1_button_a(cont1_key_s[4]),
@@ -1252,6 +1254,7 @@ module core_top (
   reg [3:0] dbg_load_en_cnt_sync_0,   dbg_load_en_cnt_sync_1;
   reg [3:0] dbg_load_vect_cnt_sync_0, dbg_load_vect_cnt_sync_1;
   reg [3:0] dbg_load_busy_cnt_sync_0, dbg_load_busy_cnt_sync_1;
+  reg [15:0] dbg_load_stall_cnt_sync_0, dbg_load_stall_cnt_sync_1;
   reg [7:0] dbg_bridge_wr_lo_sync_0;
   reg [7:0] dbg_bridge_wr_lo_sync_1;
   reg [7:0] dbg_bridge_wr_hi_sync_0;
@@ -1357,6 +1360,8 @@ module core_top (
     dbg_load_vect_cnt_sync_1 <= dbg_load_vect_cnt_sync_0;
     dbg_load_busy_cnt_sync_0 <= dbg_load_busy_cnt;
     dbg_load_busy_cnt_sync_1 <= dbg_load_busy_cnt_sync_0;
+    dbg_load_stall_cnt_sync_0 <= dbg_load_stall_cnt;
+    dbg_load_stall_cnt_sync_1 <= dbg_load_stall_cnt_sync_0;
     dbg_bridge_wr_lo_sync_0 <= debug_bridge_wr_count_lo;
     dbg_bridge_wr_lo_sync_1 <= dbg_bridge_wr_lo_sync_0;
     dbg_bridge_wr_hi_sync_0 <= debug_bridge_wr_count_hi;
@@ -1445,6 +1450,7 @@ module core_top (
   wire [3:0] dbg_load_en_cnt_video      = dbg_load_en_cnt_sync_1;
   wire [3:0] dbg_load_vect_cnt_video    = dbg_load_vect_cnt_sync_1;
   wire [3:0] dbg_load_busy_cnt_video    = dbg_load_busy_cnt_sync_1;
+  wire [15:0] dbg_load_stall_cnt_video  = dbg_load_stall_cnt_sync_1;
   wire [7:0] dbg_bridge_wr_lo_video     = dbg_bridge_wr_lo_sync_1;
   wire [7:0] dbg_bridge_wr_hi_video     = dbg_bridge_wr_hi_sync_1;
   wire [7:0] dbg_first_data_b0_video    = dbg_first_data_b0_sync_1;
@@ -1740,21 +1746,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v18 — capture FIRST served chunk (proves capture
-      // mechanism) + chunk-serve depth.  Expected first chunk bytes:
-      // payload +0x00 = "SNES-SS\0" = 53 4E 45 53 2D 53 53 00.
-      //   RED   : chunk0 byte0 — want $53 ('S')
-      //   GREEN : chunk0 byte1 — want $4E ('N')
-      //   YELLOW: cnt_serve_ack_entries — # full 4-word serves completed
-      //           ($FF saturated => served >=255 chunks => deep load went
-      //           through).
-      //   CYAN  : chunk0 byte2 — want $45 ('E')
-      // If all four reasonable => serve mechanism works deep; corruption
-      // is in completion handshake or a specific block handler.
-      2'd0: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w0_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_addr_lo_video;    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v19 — PREFETCH STALL count.  Chunk0 data + serve
+      // depth are correct (v18 confirmed $53/$4E/$45 and YELLOW=$FF).
+      // Hypothesis: SDRAM-based serve is slower than the old SRAM serve,
+      // so during DMA the prefetch can't keep up -> savestates clears
+      // load_buf_valid -> DMA reads stale or zero data.
+      //   RED   : stall_cnt_lo — low byte of prefetch-not-ready events.
+      //   GREEN : stall_cnt_hi — high byte.  ~30000+ DMA bytes / 8 =
+      //           ~3700 chunk boundaries; many stalls (e.g. cnt > 100)
+      //           indicates serve can't keep up.
+      //   YELLOW: cnt_serve_ack_entries — chunks served (sat $FF).
+      //   CYAN  : chunk0 byte0 ($53 sanity).
+      2'd0: begin row_value = dbg_load_stall_cnt_video[7:0];   row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_stall_cnt_video[15:8];  row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_addr_lo_video;         row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w0_lo_video;      row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

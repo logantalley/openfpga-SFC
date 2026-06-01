@@ -89,7 +89,8 @@ module savestates
 	// Phase C load-trigger diagnostics
 	output reg [3:0]  dbg_load_en_cnt,     // count of load_en rising edges (= ss_load seen)
 	output reg [3:0]  dbg_load_vect_cnt,   // count of vblank NMI/IRQ vector reads while load armed
-	output reg [3:0]  dbg_load_busy_cnt    // count of ss_busy rises during a load
+	output reg [3:0]  dbg_load_busy_cnt,   // count of ss_busy rises during a load
+	output reg [15:0] dbg_load_stall_cnt   // count of prefetch stalls (load_buf_valid <= 0 at chunk boundary)
 );
 
 reg cpurd_n_old, cpuwr_n_old;
@@ -255,6 +256,7 @@ always @(posedge clk) begin
 		dbg_load_en_cnt <= 4'h0;
 		dbg_load_vect_cnt <= 4'h0;
 		dbg_load_busy_cnt <= 4'h0;
+		dbg_load_stall_cnt <= 16'h0;
 		load_buf_valid <= 0;
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
@@ -425,6 +427,8 @@ always @(posedge clk) begin
 							ddr_state      <= LOAD_DATA;
 						end else begin
 							load_buf_valid <= 0; // stall firmware via STATUS_BUSY
+							if (dbg_load_stall_cnt != 16'hFFFF)
+								dbg_load_stall_cnt <= dbg_load_stall_cnt + 16'd1;
 						end
 					end else begin
 						// Original path (should not occur — reads are load-only)

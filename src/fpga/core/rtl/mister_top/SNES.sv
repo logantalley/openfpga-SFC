@@ -50,6 +50,7 @@ module MAIN_SNES (
     output wire [3:0]  dbg_load_en_cnt,
     output wire [3:0]  dbg_load_vect_cnt,
     output wire [3:0]  dbg_load_busy_cnt,
+    output wire [15:0] dbg_load_stall_cnt,
 
     input wire multitap_enabled,
     input wire lightgun_enabled,
@@ -492,6 +493,7 @@ module MAIN_SNES (
       .DBG_LOAD_EN_CNT    (dbg_load_en_cnt),
       .DBG_LOAD_VECT_CNT  (dbg_load_vect_cnt),
       .DBG_LOAD_BUSY_CNT  (dbg_load_busy_cnt),
+      .DBG_LOAD_STALL_CNT (dbg_load_stall_cnt),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),
