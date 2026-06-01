@@ -1746,19 +1746,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v20 — SAVE->LOAD pipeline trace.  After SAVE, do a
-      // LOAD; each row pinpoints the first broken stage:
-      //   RED   : bridge_wr_count_lo — APF sent bridge writes? ($00=no)
-      //   GREEN : stage_entry_count_lo — FIFO drained to SDRAM? ($00=no)
-      //   YELLOW: cnt_serve_wait_entries — serve phase entered? ($00=no)
-      //   CYAN  : cnt_serve_rd_entries  — firmware reqs matched? ($00=no)
-      // Compare these between a fresh-boot LOAD (works partially) and a
-      // SAVE->LOAD (all $00).  First $00 in chain = where post-save state
-      // breaks the load.
-      2'd0: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_data_b0_video;    row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_data_b1_video;    row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v21 — SAVE->LOAD load-trigger chain.  After SAVE,
+      // do a LOAD.  v20 revealed serve enters (YELLOW=$01) but never
+      // matches a firmware read request (CYAN=$00) — firmware never asks.
+      // Now trace the trigger chain inside savestates.sv:
+      //   RED   : cnt_ss_load_pulses — controller pulsed ss_load
+      //   GREEN : dbg_load_en_cnt — savestates saw load edge & set load_en
+      //   YELLOW: dbg_load_vect_cnt — vblank vector read while load armed
+      //   CYAN  : dbg_load_busy_cnt — hijack actually fired (ss_busy rose)
+      // First $00 vs fresh-boot ($01 across all) = broken link.  Likely
+      // suspect: load_en gated by ~(load_en|save_en) — if save_en didn't
+      // clear after the prior save, load_en can't be set.
+      2'd0: begin row_value = dbg_first_addr_hi_video;        row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = {4'h0, dbg_load_en_cnt_video};  row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = {4'h0, dbg_load_vect_cnt_video};row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = {4'h0, dbg_load_busy_cnt_video};row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
