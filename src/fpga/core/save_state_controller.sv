@@ -505,7 +505,10 @@ module save_state_controller (
   reg [7:0] cnt_ss_load_pulses     = 8'h00;  // ss_load asserted
 
   // Count of staging-FIFO entries written to SDRAM (saturating)
-  reg [15:0] stage_entry_count = 16'h0000;
+  // 17-bit so it can count up to 65536 (savestate_size 512KB / 8) without
+  // saturating.  Reset at SERVE_COMPLETE.  Used to gate the serve kick
+  // so we only proceed once ALL chunks have been staged.
+  reg [16:0] stage_entry_count = 17'h00000;
   assign debug_save_wr_count_lo = stage_entry_count[7:0];
   assign debug_save_wr_count_hi = stage_entry_count[15:8];
 
@@ -631,7 +634,7 @@ module save_state_controller (
           // Begin staging.  stage_addr starts at STAGING_BASE_WORD on
           // the first FIFO entry of a transfer; once running, it just
           // keeps incrementing through the whole load.
-          if (stage_entry_count == 16'd0) begin
+          if (stage_entry_count == 17'd0) begin
             stage_addr <= STAGING_BASE_WORD;
             ss_loading <= 1;
           end
@@ -717,8 +720,8 @@ module save_state_controller (
           // unchanged.  So distinct 16-bit words must step addr by 2.
           stage_addr <= stage_addr + 25'd2;
           if (stage_word_idx == 2'd3) begin
-            if (stage_entry_count != 16'hFFFF)
-              stage_entry_count <= stage_entry_count + 16'd1;
+            if (stage_entry_count != 17'h1FFFF)
+              stage_entry_count <= stage_entry_count + 17'd1;
             sys_state <= SYS_STAGE_FIFO_RD;
           end else begin
             stage_word_idx <= stage_word_idx + 2'd1;
@@ -728,12 +731,23 @@ module save_state_controller (
       end
 
       SYS_STAGE_IDLE: begin
-        // Load FIFO drained.  If APF has signaled load_cmd_pending, move
-        // to the KICK state (which has ss_pause_cpu=0, so MCLK resumes)
-        // before pulsing ss_load.  Otherwise wait for more bridge writes.
+        // Load FIFO drained.  Only proceed to serve when ALL expected
+        // chunks have been staged AND APF has signaled load command.
+        // Without the staging-complete gate, a momentary FIFO empty
+        // mid-stream would prematurely kick the serve, leaving chunks
+        // past that point un-staged ($00 in SDRAM).
+        //
+        // Expected total chunks = savestate_size (512KB) / 8 = 65536.
+        // Once stage_entry_count reaches that, we're done.  Use 16-bit
+        // equality (counter wraps to 0 at 65536 boundary, which is fine
+        // because we increment up to FFFF then 0... actually we saturate
+        // at FFFF.  Treat $FFFF as "done" since the last increment is
+        // suppressed; this loses 1 chunk but APF's payload almost always
+        // has trailing zeros so it's harmless).
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
-        end else if (load_cmd_pending) begin
+        end else if (load_cmd_pending && stage_entry_count == 17'h10000) begin
+          // 65536 chunks = 512KB savestate_size completely staged
           savestate_load_busy <= 1;
           kick_wait           <= 8'd64;  // let CPU/MCLK spin up
           sys_state           <= SYS_SERVE_KICK_WAIT;
@@ -856,7 +870,7 @@ module save_state_controller (
         ss_loading          <= 0;
         // Reset the staging counter so the next load starts fresh from
         // STAGING_BASE_WORD.  bridge_wr_count etc. stay sticky for debug.
-        stage_entry_count   <= 16'h0000;
+        stage_entry_count   <= 17'h00000;
       end
 
       default: sys_state <= SYS_IDLE;
