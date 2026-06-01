@@ -470,16 +470,25 @@ module save_state_controller (
   reg [63:0] first_serve_chunk = 64'h0;
   reg        first_serve_chunk_seen = 0;
 
-  // Multi-chunk byte sampler for staging-at-scale verification.
-  // First byte of chunks 4, 8, 40, 64.  Each sticky.
-  reg [7:0] sample_chunk4  = 8'h00;
-  reg [7:0] sample_chunk8  = 8'h00;
-  reg [7:0] sample_chunk40 = 8'h00;
-  reg [7:0] sample_chunk64 = 8'h00;
+  // Diagnostic: capture serve_addr's low byte at the 2nd, 5th, 16th, 64th
+  // SERVE_ACK entries.  If chunks are served sequentially with stride 8
+  // bytes, serve_addr at the Nth ACK = STAGING_BASE_WORD + 8*(N-1) + 6,
+  // so low byte = 8*(N-1)+6.
+  //   2nd ACK: low byte = $0E
+  //   5th ACK: low byte = $26 (matches chunk 4!)
+  //   16th ACK: low byte = $7E
+  //   64th ACK: low byte = $F6
+  // If the low bytes don't match this pattern, the serve isn't iterating
+  // through sequential chunks as I expect.
+  reg [7:0] sample_chunk4  = 8'h00;  // captured at ACK #2
+  reg [7:0] sample_chunk8  = 8'h00;  // captured at ACK #5
+  reg [7:0] sample_chunk40 = 8'h00;  // captured at ACK #16
+  reg [7:0] sample_chunk64 = 8'h00;  // captured at ACK #64
   reg       sample4_seen   = 0;
   reg       sample8_seen   = 0;
   reg       sample40_seen  = 0;
   reg       sample64_seen  = 0;
+  reg [7:0] ack_idx_count  = 8'h00;  // counts SERVE_ACK entries (saturating)
 
   // Phase C diagnostic: count of completed SDRAM reads during the serve
   // phase.  Increments on every sdram_rd_done in SYS_SERVE_RD_WAIT.
@@ -820,32 +829,14 @@ module save_state_controller (
       SYS_SERVE_ACK: begin
         ss_dout   <= serve_buffer;
         ss_ack    <= ~ss_ack;
-        // Multi-chunk byte sampler: capture serve_buffer[7:0] (= file
-        // byte at chunk_idx*8) for several known-distinctive chunks in
-        // SMW .sta payload.  All four should be non-zero with specific
-        // expected values; any $00 = staging/serve broken at that depth.
-        //
-        // chunk N's SERVE_ACK serve_addr = STAGING_BASE_WORD + 8N + 6.
-        //   chunk  4 -> $800026,  expect byte0 = $30 ('0' from "0.0.1")
-        //   chunk  8 -> $800046,  expect byte0 = $53 ('S' from "Super")
-        //   chunk 40 -> $800146,  expect byte0 = $73 ('s' from "snes")
-        //   chunk 64 -> $800206,  expect byte0 = $21
-        if (!sample4_seen && serve_addr == STAGING_BASE_WORD + 25'h26) begin
-          sample_chunk4   <= serve_buffer[7:0];
-          sample4_seen    <= 1;
-        end
-        if (!sample8_seen && serve_addr == STAGING_BASE_WORD + 25'h46) begin
-          sample_chunk8   <= serve_buffer[7:0];
-          sample8_seen    <= 1;
-        end
-        if (!sample40_seen && serve_addr == STAGING_BASE_WORD + 25'h146) begin
-          sample_chunk40  <= serve_buffer[7:0];
-          sample40_seen   <= 1;
-        end
-        if (!sample64_seen && serve_addr == STAGING_BASE_WORD + 25'h206) begin
-          sample_chunk64  <= serve_buffer[7:0];
-          sample64_seen   <= 1;
-        end
+        // Capture serve_addr[7:0] at specific ACK indices, NOT predicated
+        // on address.  Tells us what addresses the controller actually
+        // ends up at, independent of any assumption about chunk ordering.
+        if (ack_idx_count != 8'hFF) ack_idx_count <= ack_idx_count + 8'd1;
+        if (!sample4_seen  && ack_idx_count == 8'd1)  begin sample_chunk4  <= serve_addr[7:0]; sample4_seen  <= 1; end
+        if (!sample8_seen  && ack_idx_count == 8'd4)  begin sample_chunk8  <= serve_addr[7:0]; sample8_seen  <= 1; end
+        if (!sample40_seen && ack_idx_count == 8'd15) begin sample_chunk40 <= serve_addr[7:0]; sample40_seen <= 1; end
+        if (!sample64_seen && ack_idx_count == 8'd63) begin sample_chunk64 <= serve_addr[7:0]; sample64_seen <= 1; end
         if (ss_busy_seen && ~ss_busy) begin
           sys_state <= SYS_SERVE_COMPLETE;
         end else begin

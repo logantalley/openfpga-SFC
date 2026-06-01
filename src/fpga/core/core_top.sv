@@ -1746,16 +1746,19 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v22 — multi-chunk byte sampler.  Trigger chain
-      // works in both fresh and SAVE->LOAD now, but loaded state still
-      // wrong.  Sample 1st byte from 4 deep chunks of SMW .sta payload:
-      //   RED   : chunk  4 byte0 — want $30 ('0' from "0.0.1")
-      //   GREEN : chunk  8 byte0 — want $53 ('S' from "Super")
-      //   YELLOW: chunk 40 byte0 — want $73 ('s' from "snes")
-      //   CYAN  : chunk 64 byte0 — want $21
-      // All correct => serving is byte-perfect well past chunk 0; failure
-      // is elsewhere (block handler / completion).  Any wrong => bug in
-      // staging or serve addressing at scale.
+      // Phase C overlay v23 — serve_addr low byte at specific ACK indices.
+      // v22 was all $00; my address predicates didn't match anything.
+      // Drop the predicates: at the Nth SERVE_ACK, just capture
+      // serve_addr[7:0].  If chunks are served sequentially with stride 8,
+      // expected low bytes:
+      //   ACK #2  ( 2nd ACK): $0E (8*1+6)
+      //   ACK #5  ( 5th ACK): $26 (8*4+6)
+      //   ACK #16 (16th ACK): $7E (8*15+6)
+      //   ACK #64 (64th ACK): $FE (8*63+6, mod 256)
+      // If actual values match these, serve iterates as expected and
+      // the chunk-byte predicates SHOULD have matched -> the capture
+      // failure was something else.  If they don't match, serve isn't
+      // iterating sequentially.
       2'd0: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFFFF00; end
