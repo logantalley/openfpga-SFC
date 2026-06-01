@@ -371,6 +371,16 @@ module save_state_controller (
   // the gated MCLK and CPU pipeline come back to life.
   reg [7:0] kick_wait = 8'd0;
 
+  // Staging-quiet detector: count clk_sys cycles since the last bridge_wr
+  // activity.  When this exceeds a threshold AND FIFO is empty, we
+  // consider staging done.  Avoids fragile exact-count gate.
+  reg [11:0] stage_quiet_cnt = 12'd0;
+  // Sync bridge_wr_count[7:0] (clk_74a) to clk_sys, then detect changes.
+  wire [7:0] bridge_wr_lo_sys;
+  synch_3 #(.WIDTH(8)) sync_bridge_wr_lo (
+      .i(bridge_wr_count[7:0]), .o(bridge_wr_lo_sys), .clk(clk_sys));
+  reg [7:0] prev_bridge_wr_lo_sys = 8'd0;
+
   // Staging book-keeping
   reg [1:0]  stage_word_idx;       // which of the 4 SDRAM words within the chunk
   reg [63:0] stage_buffer;
@@ -506,11 +516,14 @@ module save_state_controller (
 
   // Count of staging-FIFO entries written to SDRAM (saturating)
   // 17-bit so it can count up to 65536 (savestate_size 512KB / 8) without
-  // saturating.  Reset at SERVE_COMPLETE.  Used to gate the serve kick
-  // so we only proceed once ALL chunks have been staged.
+  // saturating.  Reset at SERVE_COMPLETE.
   reg [16:0] stage_entry_count = 17'h00000;
-  assign debug_save_wr_count_lo = stage_entry_count[7:0];
-  assign debug_save_wr_count_hi = stage_entry_count[15:8];
+  // STICKY max: tracks the highest stage_entry_count ever reached; NOT
+  // reset at SERVE_COMPLETE so we can read it via overlay after a load.
+  // Reveals how many chunks APF actually streamed.
+  reg [16:0] stage_max_count = 17'h00000;
+  assign debug_save_wr_count_lo = stage_max_count[7:0];
+  assign debug_save_wr_count_hi = stage_max_count[15:8];
 
   // ss_addr max (load side) — sanity check on how many chunks firmware reads
   reg [16:0] ss_addr_max = 17'd0;
@@ -589,6 +602,16 @@ module save_state_controller (
       ss_busy_seen  <= 1;
       ss_busy_ever  <= 1;
       ss_busy_rises <= ss_busy_rises + 4'd1;
+    end
+
+    // Staging-quiet tracker: reset to 0 whenever new bridge_wr activity
+    // is detected (synced bridge_wr_count low byte changes) OR FIFO is
+    // non-empty.  Otherwise increment, saturating.
+    prev_bridge_wr_lo_sys <= bridge_wr_lo_sys;
+    if ((bridge_wr_lo_sys != prev_bridge_wr_lo_sys) || ~fifo_load_empty) begin
+      stage_quiet_cnt <= 12'd0;
+    end else if (stage_quiet_cnt != 12'hFFF) begin
+      stage_quiet_cnt <= stage_quiet_cnt + 12'd1;
     end
     if (ss_req != prev_ss_req) begin
       ss_req_ever    <= 1;
@@ -720,8 +743,11 @@ module save_state_controller (
           // unchanged.  So distinct 16-bit words must step addr by 2.
           stage_addr <= stage_addr + 25'd2;
           if (stage_word_idx == 2'd3) begin
-            if (stage_entry_count != 17'h1FFFF)
+            if (stage_entry_count != 17'h1FFFF) begin
               stage_entry_count <= stage_entry_count + 17'd1;
+              if ((stage_entry_count + 17'd1) > stage_max_count)
+                stage_max_count <= stage_entry_count + 17'd1;
+            end
             sys_state <= SYS_STAGE_FIFO_RD;
           end else begin
             stage_word_idx <= stage_word_idx + 2'd1;
@@ -731,25 +757,15 @@ module save_state_controller (
       end
 
       SYS_STAGE_IDLE: begin
-        // Load FIFO drained.  Only proceed to serve when ALL expected
-        // chunks have been staged AND APF has signaled load command.
-        // Without the staging-complete gate, a momentary FIFO empty
-        // mid-stream would prematurely kick the serve, leaving chunks
-        // past that point un-staged ($00 in SDRAM).
-        //
-        // Expected total chunks = savestate_size (512KB) / 8 = 65536.
-        // Once stage_entry_count reaches that, we're done.  Use 16-bit
-        // equality (counter wraps to 0 at 65536 boundary, which is fine
-        // because we increment up to FFFF then 0... actually we saturate
-        // at FFFF.  Treat $FFFF as "done" since the last increment is
-        // suppressed; this loses 1 chunk but APF's payload almost always
-        // has trailing zeros so it's harmless).
+        // Load FIFO drained.  Only proceed to serve when APF has gone
+        // QUIET for a sustained period (stage_quiet_cnt high), proving
+        // no more bridge_wr's are coming.  This avoids prematurely
+        // kicking the serve during a brief mid-stream FIFO drain.
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
-        end else if (load_cmd_pending && stage_entry_count == 17'h10000) begin
-          // 65536 chunks = 512KB savestate_size completely staged
+        end else if (load_cmd_pending && stage_quiet_cnt > 12'h800) begin
           savestate_load_busy <= 1;
-          kick_wait           <= 8'd64;  // let CPU/MCLK spin up
+          kick_wait           <= 8'd64;
           sys_state           <= SYS_SERVE_KICK_WAIT;
         end
       end
