@@ -829,14 +829,18 @@ module save_state_controller (
       SYS_SERVE_ACK: begin
         ss_dout   <= serve_buffer;
         ss_ack    <= ~ss_ack;
-        // Capture serve_addr[7:0] at specific ACK indices, NOT predicated
-        // on address.  Tells us what addresses the controller actually
-        // ends up at, independent of any assumption about chunk ordering.
+        // Now we know chunks ARE iterated sequentially.  Capture the
+        // FIRST BYTE served at specific ACK indices to verify the data.
+        // Expected (SMW .sta):
+        //   ACK #2  (chunk  1): byte 0 = $00 (file +0x08, all zeros)
+        //   ACK #5  (chunk  4): byte 0 = $30 ('0' from "0.0.1")
+        //   ACK #9  (chunk  8): byte 0 = $53 ('S' from "Super")
+        //   ACK #41 (chunk 40): byte 0 = $73 ('s' from "snes")
         if (ack_idx_count != 8'hFF) ack_idx_count <= ack_idx_count + 8'd1;
-        if (!sample4_seen  && ack_idx_count == 8'd1)  begin sample_chunk4  <= serve_addr[7:0]; sample4_seen  <= 1; end
-        if (!sample8_seen  && ack_idx_count == 8'd4)  begin sample_chunk8  <= serve_addr[7:0]; sample8_seen  <= 1; end
-        if (!sample40_seen && ack_idx_count == 8'd15) begin sample_chunk40 <= serve_addr[7:0]; sample40_seen <= 1; end
-        if (!sample64_seen && ack_idx_count == 8'd63) begin sample_chunk64 <= serve_addr[7:0]; sample64_seen <= 1; end
+        if (!sample4_seen  && ack_idx_count == 8'd1)  begin sample_chunk4  <= serve_buffer[7:0]; sample4_seen  <= 1; end
+        if (!sample8_seen  && ack_idx_count == 8'd4)  begin sample_chunk8  <= serve_buffer[7:0]; sample8_seen  <= 1; end
+        if (!sample40_seen && ack_idx_count == 8'd8)  begin sample_chunk40 <= serve_buffer[7:0]; sample40_seen <= 1; end
+        if (!sample64_seen && ack_idx_count == 8'd40) begin sample_chunk64 <= serve_buffer[7:0]; sample64_seen <= 1; end
         if (ss_busy_seen && ~ss_busy) begin
           sys_state <= SYS_SERVE_COMPLETE;
         end else begin

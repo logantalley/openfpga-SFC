@@ -1746,19 +1746,16 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v23 — serve_addr low byte at specific ACK indices.
-      // v22 was all $00; my address predicates didn't match anything.
-      // Drop the predicates: at the Nth SERVE_ACK, just capture
-      // serve_addr[7:0].  If chunks are served sequentially with stride 8,
-      // expected low bytes:
-      //   ACK #2  ( 2nd ACK): $0E (8*1+6)
-      //   ACK #5  ( 5th ACK): $26 (8*4+6)
-      //   ACK #16 (16th ACK): $7E (8*15+6)
-      //   ACK #64 (64th ACK): $FE (8*63+6, mod 256)
-      // If actual values match these, serve iterates as expected and
-      // the chunk-byte predicates SHOULD have matched -> the capture
-      // failure was something else.  If they don't match, serve isn't
-      // iterating sequentially.
+      // Phase C overlay v24 — serve_buffer first byte at specific ACK
+      // indices.  v23 proved serve iterates sequentially up to ACK 16,
+      // then wraps (suggesting firmware crashes & re-loads from chunk 0).
+      // Now check ACTUAL byte values served at sequential chunk indices:
+      //   RED   : chunk  1 byte 0 — want $00 (file +0x08, all zeros)
+      //   GREEN : chunk  4 byte 0 — want $30 ('0' from "0.0.1")
+      //   YELLOW: chunk  8 byte 0 — want $53 ('S' from "Super")
+      //   CYAN  : chunk 40 byte 0 — want $73 ('s' from "snes")
+      // Wrong values => data is scrambled past chunk 0 (chunk 0 confirmed
+      // correct in earlier tests).
       2'd0: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFFFF00; end
