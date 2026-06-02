@@ -1746,17 +1746,25 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v26 — pipeline health.  Too many overlay rounds
-      // with zero diagnostic value; back to basics.
-      //   RED   : stage_max_count[7:0]   — chunks ever staged, low byte
-      //   GREEN : stage_max_count[15:8]  — high byte
-      //   YELLOW: cnt_serve_ack_entries  — chunks served (sat $FF)
-      //   CYAN  : bridge_wr_count_lo     — APF write count, low byte
-      // All non-zero with reasonable values => the pipeline is moving.
-      // Compare values between cases to find which stage stalls.
-      2'd0: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_save_wr_count_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_addr_lo_video;    row_marker_rgb = 24'hFFFF00; end
+      // Phase C overlay v27 — diagnose "serve runs without staging" anomaly.
+      // Last test showed stage_max_count=$00 but serve_ack=$FF.  Need to know:
+      //   - What state is the FSM in?  Did it get stuck somewhere?
+      //   - Did the load FIFO overflow (= staging too slow / never running)?
+      //   - Did chunks actually stage (stage_max_count low byte)?
+      //   - Did APF send writes (bridge_wr_count low byte)?
+      //
+      //   RED   : {ss_busy_ever, load_cmd_pending, ss_req_ever, sys_state[4:0]}
+      //           bits[7:5] = flags, bits[4:0] = FSM state.
+      //           STAGE_FIFO_RD=$0A WAIT=$0B LATCH=$0C WR_REQ=$0D WR_WAIT=$0E
+      //           STAGE_IDLE=$0F  SERVE_WAIT=$14 RD_REQ=$15 RD_WAIT=$16
+      //           RD_NEXT=$17 ACK=$18 COMPLETE=$19 SERVE_KICK=$1A KICK_WAIT=$1B
+      //           IDLE=$00 SAVE_ACTIVE=$01
+      //   GREEN : {7'b0, fifo_load_overflow} — $01 if FIFO ever overflowed.
+      //   YELLOW: stage_max_count[7:0]      — chunks ever staged
+      //   CYAN  : bridge_wr_count_lo        — APF write count, low byte
+      2'd0: begin row_value = dbg_max_sram_base_hi_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_w0_wr_count_video;      row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'hFFFF00; end
       2'd3: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'h00FFFF; end
     endcase
   end
