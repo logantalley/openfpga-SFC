@@ -1746,21 +1746,22 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v28 — instrument the staging FSM directly.
-      // v27 showed RED=SERVE_WAIT_REQ but YELLOW (stage_max_count)=$00,
-      // which should be logically impossible if the guard fired.  Either:
-      //   (a) FIFO_LATCH ran but WR_WAIT never completed -> cnt_stage_wr_done=$00, cnt_stage_fifo_latch>0
-      //   (b) FIFO_LATCH never ran -> cnt_stage_fifo_latch=$00 too
-      //   (c) Both ran but stage_word_idx never hit 3 -> count both non-zero but stage_max_count still $00
-      //
+      // Phase C overlay v29 — v28 showed FSM at SERVE_WAIT_REQ but ALL staging
+      // counters $00.  Logically impossible unless either (a) FSM is reaching
+      // serve via a path other than STAGE_IDLE (synthesis bug?), or (b)
+      // STAGE_IDLE guard is wrongly firing despite stage_entry_count==0.
+      // v29 directly traces the control flow:
       //   RED   : {ss_busy_ever, load_cmd_pending, ss_req_ever, sys_state[4:0]}
-      //   GREEN : stage_max_count[7:0]       — chunks ever staged
-      //   YELLOW: cnt_stage_fifo_latch       — # times we drained from FIFO
-      //   CYAN  : cnt_stage_wr_done          — # SDRAM writes that completed
+      //   GREEN : cnt_stage_idle_enter — # times we entered SYS_STAGE_IDLE
+      //   YELLOW: cnt_guard_pass       — # times the STAGE_IDLE guard fired
+      //                                  ($00 means we reached serve some
+      //                                   other way; $>0 means guard is
+      //                                   passing with stage_entry_count=0)
+      //   CYAN  : cnt_stage_fifo_latch — # FIFO drains (sanity)
       2'd0: begin row_value = dbg_max_sram_base_hi_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'h00FFFF; end
+      2'd1: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_sram_w0_hi_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

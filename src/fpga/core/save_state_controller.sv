@@ -343,6 +343,7 @@ module save_state_controller (
   localparam SYS_SERVE_KICK_WAIT  = 5'd27;
 
   reg [4:0] sys_state = SYS_IDLE;
+  reg [4:0] prev_sys_state = SYS_IDLE;
   assign debug_sys_state = sys_state[3:0];
 
   // Edge / handshake tracking
@@ -454,15 +455,12 @@ module save_state_controller (
   reg [15:0] first_stage_word = 16'h0000;
   reg [24:0] first_stage_addr = 25'h0;
   reg        first_stage_seen = 0;
-  // Repurposed: FIFO output at chunk-4 staging time (file +0x20 = "0.0.1").
-  //   pf_addr_lo  → sample_stage_buf4[7:0]    want $30 ('0')
-  //   pf_addr_hi  → sample_stage_buf4[15:8]   want $2E ('.')
-  //   sram_w0_lo  → sample_stage_buf4[23:16]  want $30 ('0')
-  //   sram_w0_hi  → sample_stage_buf4[31:24]  want $2E ('.')
-  assign debug_first_pf_addr_lo = sample_stage_buf4[7:0];
-  assign debug_first_pf_addr_hi = sample_stage_buf4[15:8];
-  assign debug_first_sram_w0_lo = sample_stage_buf4[23:16];
-  assign debug_first_sram_w0_hi = sample_stage_buf4[31:24];
+  // Repurposed v28b: control-flow counters to localize where the FSM fails.
+  //   sram_w0_lo  → cnt_stage_idle_enter  (# times we entered SYS_STAGE_IDLE)
+  //   sram_w0_hi  → cnt_guard_pass        (# times the STAGE_IDLE guard fired)
+  // (pf_addr_lo/hi keep cnt_stage_fifo_latch / cnt_stage_wr_done from v28.)
+  assign debug_first_sram_w0_lo = cnt_stage_idle_enter;
+  assign debug_first_sram_w0_hi = cnt_guard_pass;
 
   // Serve-side first SDRAM read result (= first chunk byte 0..1)
   reg [15:0] first_serve_word = 16'h0000;
@@ -522,6 +520,8 @@ module save_state_controller (
   // Staging-FSM action counters (saturating).
   reg [7:0] cnt_stage_fifo_latch = 8'h00;  // entered STAGE_FIFO_LATCH
   reg [7:0] cnt_stage_wr_done    = 8'h00;  // sdram_wr_done fired in WR_WAIT
+  reg [7:0] cnt_stage_idle_enter = 8'h00;  // entered SYS_STAGE_IDLE
+  reg [7:0] cnt_guard_pass       = 8'h00;  // STAGE_IDLE guard passed -> SERVE_KICK_WAIT
 
   // Count of staging-FIFO entries written to SDRAM (saturating)
   // 17-bit so it can count up to 65536 (savestate_size 512KB / 8) without
@@ -592,6 +592,7 @@ module save_state_controller (
 
   // ----- Main FSM (clk_sys) -----
   always @(posedge clk_sys) begin
+    prev_sys_state       <= sys_state;
     prev_savestate_start <= savestate_start_s;
     prev_savestate_load  <= savestate_load_s;
     prev_ss_busy         <= ss_busy;
@@ -779,6 +780,8 @@ module save_state_controller (
       end
 
       SYS_STAGE_IDLE: begin
+        if (prev_sys_state != SYS_STAGE_IDLE && cnt_stage_idle_enter != 8'hFF)
+          cnt_stage_idle_enter <= cnt_stage_idle_enter + 8'd1;
         // Load FIFO drained.  Kick serve only when:
         //   1. APF signaled load command
         //   2. We've actually staged at least one chunk (stage_entry_count > 0)
@@ -792,6 +795,7 @@ module save_state_controller (
           sys_state <= SYS_STAGE_FIFO_RD;
         end else if (load_cmd_pending && (stage_entry_count != 17'd0)
                                        && (stage_quiet_cnt >= 12'h400)) begin
+          if (cnt_guard_pass != 8'hFF) cnt_guard_pass <= cnt_guard_pass + 8'd1;
           savestate_load_busy <= 1;
           kick_wait           <= 8'd64;
           sys_state           <= SYS_SERVE_KICK_WAIT;
