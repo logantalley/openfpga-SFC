@@ -1746,21 +1746,18 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v25 — STAGE-SIDE check: what's in the FIFO when
-      // we stage chunk 4?  Captures stage_buffer[31:0] = fifo_load_dout
-      // at the moment we latch chunk 4 (stage_entry_count==4).
-      // SMW .sta payload at chunk 4 (file +0x20) = "0.0.1\0\0\0".
-      //   RED   : byte 0 — want $30 ('0')
-      //   GREEN : byte 1 — want $2E ('.')
-      //   YELLOW: byte 2 — want $30 ('0')
-      //   CYAN  : byte 3 — want $2E ('.')
-      // All correct => FIFO returns right data; chunk-4 zero is a write-
-      // side or SDRAM bug.  Wrong => FIFO itself returns zeros at chunk 4,
-      // meaning upstream (APF stream or bridge_wr capture) is broken.
-      2'd0: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w0_hi_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v26 — pipeline health.  Too many overlay rounds
+      // with zero diagnostic value; back to basics.
+      //   RED   : stage_max_count[7:0]   — chunks ever staged, low byte
+      //   GREEN : stage_max_count[15:8]  — high byte
+      //   YELLOW: cnt_serve_ack_entries  — chunks served (sat $FF)
+      //   CYAN  : bridge_wr_count_lo     — APF write count, low byte
+      // All non-zero with reasonable values => the pipeline is moving.
+      // Compare values between cases to find which stage stalls.
+      2'd0: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_save_wr_count_hi_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_addr_lo_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
