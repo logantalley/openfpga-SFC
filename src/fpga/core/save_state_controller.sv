@@ -771,12 +771,19 @@ module save_state_controller (
       end
 
       SYS_STAGE_IDLE: begin
-        // Load FIFO drained.  Kick serve when APF has signaled load
-        // command.  (Tried a quiet-period gate; it prevented kick from
-        // ever firing.  Reverted.)
+        // Load FIFO drained.  Kick serve only when:
+        //   1. APF signaled load command
+        //   2. We've actually staged at least one chunk (stage_entry_count > 0)
+        //   3. Bridge has been quiet long enough that we're sure APF stopped
+        //      streaming (stage_quiet_cnt reached threshold)
+        // Without (2), if savestate_load_s rises before any FIFO writes drain,
+        // we'd skip staging entirely and serve from uninitialized SDRAM.
+        // Without (3), a momentary FIFO drain mid-stream would kick serve
+        // prematurely.
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
-        end else if (load_cmd_pending) begin
+        end else if (load_cmd_pending && (stage_entry_count != 17'd0)
+                                       && (stage_quiet_cnt >= 12'h400)) begin
           savestate_load_busy <= 1;
           kick_wait           <= 8'd64;
           sys_state           <= SYS_SERVE_KICK_WAIT;
