@@ -468,8 +468,11 @@ module save_state_controller (
   // Repurposed: expose serve chunk word1 (file bytes 2,3) for mapping check.
   //   debug_first_sram_w1_lo = first_serve_chunk[23:16] (= word1 lo = fb2, want $45)
   //   debug_first_sram_w1_hi = first_serve_chunk[31:24] (= word1 hi = fb3, want $53)
-  assign debug_first_sram_w1_lo = first_serve_chunk[23:16];
-  assign debug_first_sram_w1_hi = first_serve_chunk[31:24];
+  // Repurposed v29b: FIFO read-side observation diagnostics.
+  //   sram_w1_lo → cnt_fifo_nonempty  (# clk_sys cycles fifo_load_empty=0)
+  //   sram_w1_hi → {7'b0, fifo_nonempty_ever}
+  assign debug_first_sram_w1_lo = cnt_fifo_nonempty;
+  assign debug_first_sram_w1_hi = {7'b0, fifo_nonempty_ever};
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -522,6 +525,9 @@ module save_state_controller (
   reg [7:0] cnt_stage_wr_done    = 8'h00;  // sdram_wr_done fired in WR_WAIT
   reg [7:0] cnt_stage_idle_enter = 8'h00;  // entered SYS_STAGE_IDLE
   reg [7:0] cnt_guard_pass       = 8'h00;  // STAGE_IDLE guard passed -> SERVE_KICK_WAIT
+  reg [7:0] cnt_fifo_nonempty    = 8'h00;  // # clk_sys cycles where fifo_load_empty=0 (saturating)
+  reg       fifo_nonempty_ever   = 0;
+  reg       have_staged_any      = 0;  // sticky: at least one chunk has been staged
 
   // Count of staging-FIFO entries written to SDRAM (saturating)
   // 17-bit so it can count up to 65536 (savestate_size 512KB / 8) without
@@ -614,6 +620,15 @@ module save_state_controller (
       ss_busy_seen  <= 1;
       ss_busy_ever  <= 1;
       ss_busy_rises <= ss_busy_rises + 4'd1;
+    end
+
+    // Track whether the load FIFO was ever observed non-empty on the
+    // clk_sys side.  If this stays 0 despite bridge_wr_count incrementing,
+    // the FIFO's CDC isn't propagating writes to the read side.
+    if (~fifo_load_empty) begin
+      fifo_nonempty_ever <= 1;
+      if (cnt_fifo_nonempty != 8'hFF)
+        cnt_fifo_nonempty <= cnt_fifo_nonempty + 8'd1;
     end
 
     // Staging-quiet tracker: reset to 0 whenever new bridge_wr activity
@@ -771,6 +786,7 @@ module save_state_controller (
               if ((stage_entry_count + 17'd1) > stage_max_count)
                 stage_max_count <= stage_entry_count + 17'd1;
             end
+            have_staged_any <= 1;
             sys_state <= SYS_STAGE_FIFO_RD;
           end else begin
             stage_word_idx <= stage_word_idx + 2'd1;
@@ -793,7 +809,7 @@ module save_state_controller (
         // prematurely.
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
-        end else if (load_cmd_pending && (stage_entry_count != 17'd0)
+        end else if (load_cmd_pending && have_staged_any
                                        && (stage_quiet_cnt >= 12'h400)) begin
           if (cnt_guard_pass != 8'hFF) cnt_guard_pass <= cnt_guard_pass + 8'd1;
           savestate_load_busy <= 1;
