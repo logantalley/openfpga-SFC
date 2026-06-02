@@ -771,13 +771,12 @@ module save_state_controller (
       end
 
       SYS_STAGE_IDLE: begin
-        // Load FIFO drained.  Only proceed to serve when APF has gone
-        // QUIET for a sustained period (stage_quiet_cnt high), proving
-        // no more bridge_wr's are coming.  This avoids prematurely
-        // kicking the serve during a brief mid-stream FIFO drain.
+        // Load FIFO drained.  Kick serve when APF has signaled load
+        // command.  (Tried a quiet-period gate; it prevented kick from
+        // ever firing.  Reverted.)
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
-        end else if (load_cmd_pending && stage_quiet_cnt > 12'h800) begin
+        end else if (load_cmd_pending) begin
           savestate_load_busy <= 1;
           kick_wait           <= 8'd64;
           sys_state           <= SYS_SERVE_KICK_WAIT;
