@@ -1746,16 +1746,17 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v24 — serve_buffer first byte at specific ACK
-      // indices.  v23 proved serve iterates sequentially up to ACK 16,
-      // then wraps (suggesting firmware crashes & re-loads from chunk 0).
-      // Now check ACTUAL byte values served at sequential chunk indices:
-      //   RED   : chunk  1 byte 0 — want $00 (file +0x08, all zeros)
-      //   GREEN : chunk  4 byte 0 — want $30 ('0' from "0.0.1")
-      //   YELLOW: chunk  8 byte 0 — want $53 ('S' from "Super")
-      //   CYAN  : chunk 40 byte 0 — want $73 ('s' from "snes")
-      // Wrong values => data is scrambled past chunk 0 (chunk 0 confirmed
-      // correct in earlier tests).
+      // Phase C overlay v25 — STAGE-SIDE check: what's in the FIFO when
+      // we stage chunk 4?  Captures stage_buffer[31:0] = fifo_load_dout
+      // at the moment we latch chunk 4 (stage_entry_count==4).
+      // SMW .sta payload at chunk 4 (file +0x20) = "0.0.1\0\0\0".
+      //   RED   : byte 0 — want $30 ('0')
+      //   GREEN : byte 1 — want $2E ('.')
+      //   YELLOW: byte 2 — want $30 ('0')
+      //   CYAN  : byte 3 — want $2E ('.')
+      // All correct => FIFO returns right data; chunk-4 zero is a write-
+      // side or SDRAM bug.  Wrong => FIFO itself returns zeros at chunk 4,
+      // meaning upstream (APF stream or bridge_wr capture) is broken.
       2'd0: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w0_lo_video; row_marker_rgb = 24'hFFFF00; end

@@ -454,15 +454,15 @@ module save_state_controller (
   reg [15:0] first_stage_word = 16'h0000;
   reg [24:0] first_stage_addr = 25'h0;
   reg        first_stage_seen = 0;
-  // Repurposed: multi-chunk byte sampler — 1st byte of chunks 4, 8, 40, 64.
-  //   pf_addr_lo  → sample_chunk4   (want $30)
-  //   pf_addr_hi  → sample_chunk8   (want $53)
-  //   sram_w0_lo  → sample_chunk40  (want $73)
-  //   sram_w0_hi  → sample_chunk64  (want $21)
-  assign debug_first_pf_addr_lo = sample_chunk4;
-  assign debug_first_pf_addr_hi = sample_chunk8;
-  assign debug_first_sram_w0_lo = sample_chunk40;
-  assign debug_first_sram_w0_hi = sample_chunk64;
+  // Repurposed: FIFO output at chunk-4 staging time (file +0x20 = "0.0.1").
+  //   pf_addr_lo  → sample_stage_buf4[7:0]    want $30 ('0')
+  //   pf_addr_hi  → sample_stage_buf4[15:8]   want $2E ('.')
+  //   sram_w0_lo  → sample_stage_buf4[23:16]  want $30 ('0')
+  //   sram_w0_hi  → sample_stage_buf4[31:24]  want $2E ('.')
+  assign debug_first_pf_addr_lo = sample_stage_buf4[7:0];
+  assign debug_first_pf_addr_hi = sample_stage_buf4[15:8];
+  assign debug_first_sram_w0_lo = sample_stage_buf4[23:16];
+  assign debug_first_sram_w0_hi = sample_stage_buf4[31:24];
 
   // Serve-side first SDRAM read result (= first chunk byte 0..1)
   reg [15:0] first_serve_word = 16'h0000;
@@ -499,6 +499,11 @@ module save_state_controller (
   reg       sample40_seen  = 0;
   reg       sample64_seen  = 0;
   reg [7:0] ack_idx_count  = 8'h00;  // counts SERVE_ACK entries (saturating)
+
+  // Capture stage_buffer at chunk 4 staging time — proves whether the
+  // FIFO output is correct.  Want $00_00_00_31_2E_30_2E_30 (file +0x20).
+  reg [63:0] sample_stage_buf4 = 64'h0;
+  reg        sample_buf4_seen  = 0;
 
   // Phase C diagnostic: count of completed SDRAM reads during the serve
   // phase.  Increments on every sdram_rd_done in SYS_SERVE_RD_WAIT.
@@ -717,6 +722,15 @@ module save_state_controller (
         stage_word_idx   <= 2'd0;
         sys_state        <= SYS_STAGE_WR_REQ;
         if (fifo_drain_count != 16'hFFFF) fifo_drain_count <= fifo_drain_count + 16'd1;
+        // Capture stage_buffer at chunk index 4 (= staging chunk 4 starts
+        // when stage_entry_count is currently 4, about to become 5).
+        // Compare against expected SMW .sta payload at chunk 4:
+        //   bytes: 30 2E 30 2E 31 00 00 00  ("0.0.1\0\0\0")
+        //   little-endian 64-bit: 64'h0000_0031_2E30_2E30
+        if (!sample_buf4_seen && stage_entry_count == 17'd4) begin
+          sample_stage_buf4  <= fifo_load_dout;
+          sample_buf4_seen   <= 1;
+        end
       end
 
       SYS_STAGE_WR_REQ: begin
