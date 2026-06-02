@@ -1746,26 +1746,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v27 — diagnose "serve runs without staging" anomaly.
-      // Last test showed stage_max_count=$00 but serve_ack=$FF.  Need to know:
-      //   - What state is the FSM in?  Did it get stuck somewhere?
-      //   - Did the load FIFO overflow (= staging too slow / never running)?
-      //   - Did chunks actually stage (stage_max_count low byte)?
-      //   - Did APF send writes (bridge_wr_count low byte)?
+      // Phase C overlay v28 — instrument the staging FSM directly.
+      // v27 showed RED=SERVE_WAIT_REQ but YELLOW (stage_max_count)=$00,
+      // which should be logically impossible if the guard fired.  Either:
+      //   (a) FIFO_LATCH ran but WR_WAIT never completed -> cnt_stage_wr_done=$00, cnt_stage_fifo_latch>0
+      //   (b) FIFO_LATCH never ran -> cnt_stage_fifo_latch=$00 too
+      //   (c) Both ran but stage_word_idx never hit 3 -> count both non-zero but stage_max_count still $00
       //
       //   RED   : {ss_busy_ever, load_cmd_pending, ss_req_ever, sys_state[4:0]}
-      //           bits[7:5] = flags, bits[4:0] = FSM state.
-      //           STAGE_FIFO_RD=$0A WAIT=$0B LATCH=$0C WR_REQ=$0D WR_WAIT=$0E
-      //           STAGE_IDLE=$0F  SERVE_WAIT=$14 RD_REQ=$15 RD_WAIT=$16
-      //           RD_NEXT=$17 ACK=$18 COMPLETE=$19 SERVE_KICK=$1A KICK_WAIT=$1B
-      //           IDLE=$00 SAVE_ACTIVE=$01
-      //   GREEN : {7'b0, fifo_load_overflow} — $01 if FIFO ever overflowed.
-      //   YELLOW: stage_max_count[7:0]      — chunks ever staged
-      //   CYAN  : bridge_wr_count_lo        — APF write count, low byte
+      //   GREEN : stage_max_count[7:0]       — chunks ever staged
+      //   YELLOW: cnt_stage_fifo_latch       — # times we drained from FIFO
+      //   CYAN  : cnt_stage_wr_done          — # SDRAM writes that completed
       2'd0: begin row_value = dbg_max_sram_base_hi_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_w0_wr_count_video;      row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'h00FFFF; end
+      2'd1: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

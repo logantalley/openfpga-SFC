@@ -519,6 +519,10 @@ module save_state_controller (
   reg [7:0] cnt_serve_ack_entries  = 8'h00;  // entered SERVE_ACK
   reg [7:0] cnt_ss_load_pulses     = 8'h00;  // ss_load asserted
 
+  // Staging-FSM action counters (saturating).
+  reg [7:0] cnt_stage_fifo_latch = 8'h00;  // entered STAGE_FIFO_LATCH
+  reg [7:0] cnt_stage_wr_done    = 8'h00;  // sdram_wr_done fired in WR_WAIT
+
   // Count of staging-FIFO entries written to SDRAM (saturating)
   // 17-bit so it can count up to 65536 (savestate_size 512KB / 8) without
   // saturating.  Reset at SERVE_COMPLETE.
@@ -549,10 +553,12 @@ module save_state_controller (
   assign debug_first_rd_addr_lo   = first_rd_addr[7:0];
   assign debug_first_rd_addr_hi   = first_rd_addr[15:8];
 
-  // pf_at_first_rd debug — repurposed: count of FIFO drains
-  reg [15:0] fifo_drain_count = 16'h0000;
-  assign debug_pf_at_first_rd_lo = fifo_drain_count[7:0];
-  assign debug_pf_at_first_rd_hi = fifo_drain_count[15:8];
+  // pf_at_first_rd debug — repurposed: stage-FSM action counters
+  //   debug_pf_at_first_rd_lo → cnt_stage_fifo_latch (# FIFO entries drained)
+  //   debug_pf_at_first_rd_hi → cnt_stage_wr_done    (# SDRAM writes completed)
+  reg [15:0] fifo_drain_count = 16'h0000;  // kept for backcompat, not on overlay
+  assign debug_pf_at_first_rd_lo = cnt_stage_fifo_latch;
+  assign debug_pf_at_first_rd_hi = cnt_stage_wr_done;
 
   // last_w0_data / w0_wr_count — Phase A SRAM debug, now stale
   // Repurposed: FIFO-overflow diagnostics.
@@ -721,6 +727,7 @@ module save_state_controller (
         stage_buffer     <= fifo_load_dout;
         stage_word_idx   <= 2'd0;
         sys_state        <= SYS_STAGE_WR_REQ;
+        if (cnt_stage_fifo_latch != 8'hFF) cnt_stage_fifo_latch <= cnt_stage_fifo_latch + 8'd1;
         if (fifo_drain_count != 16'hFFFF) fifo_drain_count <= fifo_drain_count + 16'd1;
         // Capture stage_buffer at chunk index 4 (= staging chunk 4 starts
         // when stage_entry_count is currently 4, about to become 5).
@@ -752,6 +759,7 @@ module save_state_controller (
 
       SYS_STAGE_WR_WAIT: begin
         if (sdram_wr_done) begin
+          if (cnt_stage_wr_done != 8'hFF) cnt_stage_wr_done <= cnt_stage_wr_done + 8'd1;
           // sdram.sv treats addr[24:1] as the 16-bit word and addr[0] as
           // byte-within-word, AND skips re-access when addr[24:1] is
           // unchanged.  So distinct 16-bit words must step addr by 2.
