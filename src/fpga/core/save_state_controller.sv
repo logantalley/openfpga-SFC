@@ -441,15 +441,22 @@ module save_state_controller (
   reg [16:0] first_save_addr  = 17'd0;
   reg        first_save_seen  = 0;
   // Repurposed for Phase C diagnostics:
-  //   debug_first_save_byte0 → serve_rd_count[7:0]
-  //   debug_first_save_byte1 → serve_rd_count[15:8] (progress high byte)
-  assign debug_first_save_byte0   = serve_rd_count[7:0];
-  assign debug_first_save_byte1   = serve_rd_count[15:8];
+  // Repurposed v33: chunk-4 and chunk-40 first-byte samples for data check.
+  //   sample_chunk4  = serve_buffer[7:0] at ACK #2  (= chunk 1 byte 0)
+  //   sample_chunk40 = serve_buffer[7:0] at ACK #16 (= chunk 15? wait, ACK #N → chunk N)
+  // Actually rechecked: ack_idx_count starts at 0, first chunk's ACK is at
+  // count=0, so ack_idx_count==1 captures chunk 1 (file offset 0x08, all zeros).
+  // sample_chunk8 at ack_idx==4 captures chunk 4 (file +0x20 = "0.0.1\0").
+  // sample_chunk40 at ack_idx==8 captures chunk 8 (file +0x40).
+  // sample_chunk64 at ack_idx==40 captures chunk 40 (file +0x140).
+  assign debug_first_save_byte0   = sample_chunk8;   // chunk 4 byte 0, want $30
+  assign debug_first_save_byte1   = sample_chunk40;  // chunk 8 byte 0
   // Repurposed: expose ddr-req-in-wait diagnostics.
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
-  assign debug_first_save_addr_lo = cnt_ddr_req_in_wait;
-  assign debug_first_save_addr_hi = {7'b0, ss_rnw_at_first_wait_req};
+  // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
+  assign debug_first_save_addr_lo = sample_chunk4;   // chunk 1 byte 0, expect $00
+  assign debug_first_save_addr_hi = sample_chunk64;  // chunk 40 byte 0
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;

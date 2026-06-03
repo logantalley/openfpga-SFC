@@ -1746,19 +1746,19 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v32 — staging works, load completes (no error),
-      // glitched screen = data corruption.  Show chunks staged + first
-      // served bytes to verify the served data matches the .sta payload.
-      //   RED   : stage_max_count[15:8]   — chunks high byte
-      //   GREEN : stage_max_count[7:0]    — chunks low byte
-      //                                     (expect $9600 = 38400 chunks
-      //                                      for 307KB save)
-      //   YELLOW: first_serve_chunk[7:0]  — want $53 ('S' from "SNES-SS")
-      //   CYAN  : first_serve_chunk[15:8] — want $4E ('N')
-      2'd0: begin row_value = dbg_save_wr_count_hi_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v33 — verify served data for chunks deeper into
+      // the save, not just chunk 0.  Chunk 0 already verified ($53='S',
+      // $4E='N').  Now check chunk 4 ($30='0' from "0.0.1") and chunk 8.
+      //   RED   : sample_chunk4   (= chunk 1 byte 0, expect $00)
+      //   GREEN : sample_chunk8   (= chunk 4 byte 0, expect $30='0')
+      //   YELLOW: sample_chunk40  (= chunk 8 byte 0, depends on game state)
+      //   CYAN  : sample_chunk64  (= chunk 40 byte 0, depends)
+      // If any of these are wildly wrong (esp $30 missing for GREEN), the
+      // staging is corrupting later chunks.
+      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_save_byte0_video;   row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_byte1_video;   row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
