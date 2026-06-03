@@ -1746,19 +1746,17 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v34 — v33 fix didn't help (chunks still all $00).
-      // Compare what the FIFO OUTPUTS at chunk-4 latch time vs what serve
-      // RETURNS at chunk 4.  If FIFO content is correct ($30, $2E) but
-      // serve returns $00, the bug is in staging/SDRAM addressing.  If
-      // FIFO content is also $00, the FIFO data never arrived.
-      //   RED   : sample_stage_buf4[7:0]  (FIFO @ chunk 4 byte 0, want $30)
-      //   GREEN : sample_chunk8           (served chunk 4 byte 0, want $30)
-      //   YELLOW: sample_chunk40          (served chunk 8 byte 0)
-      //   CYAN  : sample_stage_buf4[15:8] (FIFO @ chunk 4 byte 1, want $2E)
-      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_b0_video;      row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_save_b1_video;      row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v35 — sanity: show the actual saturating counters
+      // to verify they're not all stuck at $00 too (which would point to
+      // a deeper Quartus dead-code or compile issue).
+      //   RED   : cnt_stage_fifo_latch  (saturating count of FIFO_LATCH)
+      //   GREEN : cnt_stage_wr_done     (saturating count of sdram_wr_done)
+      //   YELLOW: cnt_serve_ack_entries (saturating count of SERVE_ACK)
+      //   CYAN  : bridge_wr_count[7:0]  (saturating bridge write count)
+      2'd0: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_addr_lo_video;    row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
