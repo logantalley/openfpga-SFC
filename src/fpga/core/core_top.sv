@@ -1746,19 +1746,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v30 — v29 showed guard fired ONCE with
-      // cnt_stage_fifo_latch=$00.  Best hypothesis: dcfifo CDC isn't
-      // propagating writes to the read side, so fifo_load_empty stays 1
-      // on clk_sys.  v30 measures fifo_load_empty directly:
+      // Phase C overlay v31 — FOUND THE BUG IN v28/v29:
+      // debug_first_pf_addr_lo/hi were dangling (no assign), so all my
+      // measurements of cnt_stage_* via dbg_first_pf_addr_*_video read $00
+      // regardless.  Just fixed those assigns.  v30 confirmed the FIFO IS
+      // non-empty on clk_sys (cnt_fifo_nonempty=$FF) which means staging
+      // SHOULD be running.  Re-measure the staging counters with the
+      // assign fix in place:
       //   RED   : FSM state + flags (same)
-      //   GREEN : cnt_fifo_nonempty   — # clk_sys cycles where fifo_load_empty=0
-      //                                 $00 = read side NEVER saw FIFO non-empty
-      //   YELLOW: {7'b0, fifo_nonempty_ever}  — $01 if ever non-empty, $00 if not
-      //   CYAN  : bridge_wr_count_lo  — sanity that APF really did stream writes
+      //   GREEN : cnt_stage_fifo_latch  — # FIFO drains (now properly wired)
+      //   YELLOW: cnt_stage_wr_done     — # SDRAM writes completed
+      //   CYAN  : stage_max_count[7:0]  — chunks ever staged
       2'd0: begin row_value = dbg_max_sram_base_hi_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_hi_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_bridge_wr_lo_video;     row_marker_rgb = 24'h00FFFF; end
+      2'd1: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_save_wr_count_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

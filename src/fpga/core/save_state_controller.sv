@@ -458,9 +458,13 @@ module save_state_controller (
   // Repurposed v28b: control-flow counters to localize where the FSM fails.
   //   sram_w0_lo  → cnt_stage_idle_enter  (# times we entered SYS_STAGE_IDLE)
   //   sram_w0_hi  → cnt_guard_pass        (# times the STAGE_IDLE guard fired)
-  // (pf_addr_lo/hi keep cnt_stage_fifo_latch / cnt_stage_wr_done from v28.)
   assign debug_first_sram_w0_lo = cnt_stage_idle_enter;
   assign debug_first_sram_w0_hi = cnt_guard_pass;
+  // The previously-unassigned debug_first_pf_addr_lo/hi outputs were
+  // dangling (default 0) — that's why v28/v29 readings of "cnt_stage_*"
+  // via dbg_first_pf_addr_*_video always showed $00.  Wire them up here.
+  assign debug_first_pf_addr_lo = cnt_stage_fifo_latch;
+  assign debug_first_pf_addr_hi = cnt_stage_wr_done;
 
   // Serve-side first SDRAM read result (= first chunk byte 0..1)
   reg [15:0] first_serve_word = 16'h0000;
@@ -809,7 +813,7 @@ module save_state_controller (
         // prematurely.
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
-        end else if (load_cmd_pending && have_staged_any
+        end else if (load_cmd_pending && (stage_entry_count != 17'd0)
                                        && (stage_quiet_cnt >= 12'h400)) begin
           if (cnt_guard_pass != 8'hFF) cnt_guard_pass <= cnt_guard_pass + 8'd1;
           savestate_load_busy <= 1;
