@@ -375,7 +375,7 @@ module save_state_controller (
   // Staging-quiet detector: count clk_sys cycles since the last bridge_wr
   // activity.  When this exceeds a threshold AND FIFO is empty, we
   // consider staging done.  Avoids fragile exact-count gate.
-  reg [11:0] stage_quiet_cnt = 12'd0;
+  reg [19:0] stage_quiet_cnt = 20'd0;
   // Sync bridge_wr_count[7:0] (clk_74a) to clk_sys, then detect changes.
   wire [7:0] bridge_wr_lo_sys;
   synch_3 #(.WIDTH(8)) sync_bridge_wr_lo (
@@ -639,9 +639,9 @@ module save_state_controller (
     // non-empty.  Otherwise increment, saturating.
     prev_bridge_wr_lo_sys <= bridge_wr_lo_sys;
     if ((bridge_wr_lo_sys != prev_bridge_wr_lo_sys) || ~fifo_load_empty) begin
-      stage_quiet_cnt <= 12'd0;
-    end else if (stage_quiet_cnt != 12'hFFF) begin
-      stage_quiet_cnt <= stage_quiet_cnt + 12'd1;
+      stage_quiet_cnt <= 20'd0;
+    end else if (stage_quiet_cnt != 20'hFFFFF) begin
+      stage_quiet_cnt <= stage_quiet_cnt + 20'd1;
     end
     if (ss_req != prev_ss_req) begin
       ss_req_ever    <= 1;
@@ -813,7 +813,7 @@ module save_state_controller (
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
         end else if (load_cmd_pending && (stage_entry_count != 17'd0)
-                                       && (stage_quiet_cnt >= 12'h400)) begin
+                                       && (stage_quiet_cnt >= 20'h40000)) begin
           if (cnt_guard_pass != 8'hFF) cnt_guard_pass <= cnt_guard_pass + 8'd1;
           savestate_load_busy <= 1;
           kick_wait           <= 8'd64;
