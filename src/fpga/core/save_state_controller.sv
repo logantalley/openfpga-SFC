@@ -786,8 +786,9 @@ module save_state_controller (
           if (stage_word_idx == 2'd3) begin
             if (stage_entry_count != 17'h1FFFF) begin
               stage_entry_count <= stage_entry_count + 17'd1;
-              if ((stage_entry_count + 17'd1) > stage_max_count)
-                stage_max_count <= stage_entry_count + 17'd1;
+              // Unconditionally update max — stage_entry_count is strictly
+              // increasing within a single load (only reset at COMPLETE).
+              stage_max_count <= stage_entry_count + 17'd1;
             end
             have_staged_any <= 1;
             sys_state <= SYS_STAGE_FIFO_RD;
@@ -813,7 +814,7 @@ module save_state_controller (
         if (~fifo_load_empty) begin
           sys_state <= SYS_STAGE_FIFO_RD;
         end else if (load_cmd_pending && (stage_entry_count != 17'd0)
-                                       && (stage_quiet_cnt >= 20'h40000)) begin
+                                       && (stage_quiet_cnt >= 20'h00400)) begin
           if (cnt_guard_pass != 8'hFF) cnt_guard_pass <= cnt_guard_pass + 8'd1;
           savestate_load_busy <= 1;
           kick_wait           <= 8'd64;
