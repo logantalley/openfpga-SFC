@@ -1756,8 +1756,8 @@ module core_top (
       // If any of these are wildly wrong (esp $30 missing for GREEN), the
       // staging is corrupting later chunks.
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_byte0_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_save_byte1_video;   row_marker_rgb = 24'hFFFF00; end
+      2'd1: begin row_value = dbg_first_save_b0_video;      row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_b1_video;      row_marker_rgb = 24'hFFFF00; end
       2'd3: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
