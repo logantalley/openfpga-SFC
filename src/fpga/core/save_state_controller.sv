@@ -455,8 +455,9 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  assign debug_first_save_addr_lo = sample_chunk4;   // chunk 1 byte 0, expect $00
-  assign debug_first_save_addr_hi = sample_chunk64;  // chunk 40 byte 0
+  // v34: FIFO content at chunk 4 (5th FIFO_LATCH).  Expect $30, $2E.
+  assign debug_first_save_addr_lo = sample_stage_buf4[7:0];   // want $30
+  assign debug_first_save_addr_hi = sample_stage_buf4[15:8];  // want $2E
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -763,7 +764,9 @@ module save_state_controller (
         // Compare against expected SMW .sta payload at chunk 4:
         //   bytes: 30 2E 30 2E 31 00 00 00  ("0.0.1\0\0\0")
         //   little-endian 64-bit: 64'h0000_0031_2E30_2E30
-        if (!sample_buf4_seen && stage_entry_count == 17'd4) begin
+        // Capture at the 5th FIFO_LATCH (= chunk 4) using cnt_stage_fifo_latch
+        // because stage_entry_count is unreliable in this build.
+        if (!sample_buf4_seen && cnt_stage_fifo_latch == 8'd4) begin
           sample_stage_buf4  <= fifo_load_dout;
           sample_buf4_seen   <= 1;
         end

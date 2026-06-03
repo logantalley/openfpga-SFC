@@ -1746,15 +1746,15 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v33 — verify served data for chunks deeper into
-      // the save, not just chunk 0.  Chunk 0 already verified ($53='S',
-      // $4E='N').  Now check chunk 4 ($30='0' from "0.0.1") and chunk 8.
-      //   RED   : sample_chunk4   (= chunk 1 byte 0, expect $00)
-      //   GREEN : sample_chunk8   (= chunk 4 byte 0, expect $30='0')
-      //   YELLOW: sample_chunk40  (= chunk 8 byte 0, depends on game state)
-      //   CYAN  : sample_chunk64  (= chunk 40 byte 0, depends)
-      // If any of these are wildly wrong (esp $30 missing for GREEN), the
-      // staging is corrupting later chunks.
+      // Phase C overlay v34 — v33 fix didn't help (chunks still all $00).
+      // Compare what the FIFO OUTPUTS at chunk-4 latch time vs what serve
+      // RETURNS at chunk 4.  If FIFO content is correct ($30, $2E) but
+      // serve returns $00, the bug is in staging/SDRAM addressing.  If
+      // FIFO content is also $00, the FIFO data never arrived.
+      //   RED   : sample_stage_buf4[7:0]  (FIFO @ chunk 4 byte 0, want $30)
+      //   GREEN : sample_chunk8           (served chunk 4 byte 0, want $30)
+      //   YELLOW: sample_chunk40          (served chunk 8 byte 0)
+      //   CYAN  : sample_stage_buf4[15:8] (FIFO @ chunk 4 byte 1, want $2E)
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_b0_video;      row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_save_b1_video;      row_marker_rgb = 24'hFFFF00; end
