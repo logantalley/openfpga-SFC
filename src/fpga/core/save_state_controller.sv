@@ -472,11 +472,10 @@ module save_state_controller (
   // Repurposed: expose serve chunk word1 (file bytes 2,3) for mapping check.
   //   debug_first_sram_w1_lo = first_serve_chunk[23:16] (= word1 lo = fb2, want $45)
   //   debug_first_sram_w1_hi = first_serve_chunk[31:24] (= word1 hi = fb3, want $53)
-  // Repurposed v29b: FIFO read-side observation diagnostics.
-  //   sram_w1_lo → cnt_fifo_nonempty  (# clk_sys cycles fifo_load_empty=0)
-  //   sram_w1_hi → {7'b0, fifo_nonempty_ever}
-  assign debug_first_sram_w1_lo = cnt_fifo_nonempty;
-  assign debug_first_sram_w1_hi = {7'b0, fifo_nonempty_ever};
+  // Repurposed v32: first served chunk bytes 0..1 for data-integrity check.
+  // Want $53='S' and $4E='N' as first two bytes of chunk 0.
+  assign debug_first_sram_w1_lo = first_serve_chunk[7:0];
+  assign debug_first_sram_w1_hi = first_serve_chunk[15:8];
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -911,6 +910,10 @@ module save_state_controller (
       SYS_SERVE_ACK: begin
         ss_dout   <= serve_buffer;
         ss_ack    <= ~ss_ack;
+        if (!first_serve_chunk_seen) begin
+          first_serve_chunk      <= serve_buffer;
+          first_serve_chunk_seen <= 1;
+        end
         // Now we know chunks ARE iterated sequentially.  Capture the
         // FIRST BYTE served at specific ACK indices to verify the data.
         // Expected (SMW .sta):
