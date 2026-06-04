@@ -694,11 +694,8 @@ module save_state_controller (
         if (~fifo_load_empty) begin
           // Begin staging.  stage_addr starts at STAGING_BASE_WORD on
           // the first FIFO entry of a transfer; once running, it just
-          // keeps incrementing through the whole load.  Gate the reset
-          // on `have_staged_any` (sticky) rather than `stage_entry_count`
-          // because the counter has been showing $00 in the overlay even
-          // when staging clearly ran — the comparison may be unreliable.
-          if (~have_staged_any) begin
+          // keeps incrementing through the whole load.
+          if (stage_entry_count == 17'd0) begin
             stage_addr <= STAGING_BASE_WORD;
             ss_loading <= 1;
           end
@@ -792,7 +789,6 @@ module save_state_controller (
       SYS_STAGE_WR_WAIT: begin
         if (sdram_wr_done) begin
           if (cnt_stage_wr_done != 8'hFF) cnt_stage_wr_done <= cnt_stage_wr_done + 8'd1;
-          have_staged_any <= 1;
           // sdram.sv treats addr[24:1] as the 16-bit word and addr[0] as
           // byte-within-word, AND skips re-access when addr[24:1] is
           // unchanged.  So distinct 16-bit words must step addr by 2.
