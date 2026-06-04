@@ -869,10 +869,20 @@ module save_state_controller (
       SYS_PROBE_REQ: begin
         ss_sdram_rd_req  <= ~ss_sdram_rd_req;
         case (probe_idx)
-          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;  // chunk 0 word 0 (anchor, want $53)
-          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000020;  // chunk 4 word 0  (want $30)
-          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000080;  // chunk 16 word 0
-          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000200;  // chunk 64 word 0
+          // Chunk 0 word 0 anchor (file bytes 0,1 = 'S','N')
+          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;
+          // Chunk 4 word 0 (file bytes 32,33 = '0','.')  Want low byte $30.
+          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000020;
+          // Chunk 4 word 1 (file bytes 34,35 = '0','.')  Want low byte $30.
+          // If chunk 0 had been OVERWRITTEN by chunk 4 (e.g. stage_addr
+          // reset bug), this would still be $30.  If only chunk 0 stuck,
+          // this is $00.  Disambiguates "overwrite" from "drop".
+          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000022;
+          // Same byte read as RED but in the SECOND staging slot (chunk 1).
+          // If stage_addr always resets to BASE, chunk 0's data lives at
+          // BASE+8 too (chunk 1 OVERWROTE).  We've shown chunk 0 = $53 at
+          // BASE+0.  If we see $53 at BASE+8 too, address reset bug confirmed.
+          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000008;
         endcase
         sys_state <= SYS_PROBE_WAIT;
       end

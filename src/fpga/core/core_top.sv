@@ -1746,14 +1746,19 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v39 — chunk-density probe (anchored).  v37 chunk 0
-      // intact, chunk 64+ all $00.  v38 chunk 4 was $00.  So staging dies
-      // somewhere between chunk 0 and chunk 4.  Bracket more tightly with
-      // chunk 0 anchor + chunks 4, 16, 64.
-      //   RED   : SDRAM[BASE+0]    chunk 0 word 0  (anchor, want $53)
-      //   GREEN : SDRAM[BASE+0x20] chunk 4 word 0  (want $30 from "0.0.1")
-      //   YELLOW: SDRAM[BASE+0x80] chunk 16 word 0
-      //   CYAN  : SDRAM[BASE+0x200] chunk 64 word 0
+      // Phase C overlay v40 — diagnose drop vs overwrite.  v39 shows only
+      // chunk 0 survives. Now distinguish two failure modes:
+      //   (A) Staging stops after chunk 0 → chunks 1+ slots are uninit ($00)
+      //   (B) Every chunk overwrites BASE → all chunks end up at BASE
+      //       (chunk 0 byte 0 = $53 just happens to be the final write)
+      //   (C) Stage_addr advances but data is corrupt
+      //
+      //   RED   : SDRAM[BASE+0]    chunk 0 word 0 anchor   (want $53)
+      //   GREEN : SDRAM[BASE+0x20] chunk 4 word 0 low byte (want $30)
+      //   YELLOW: SDRAM[BASE+0x22] chunk 4 word 1 low byte (want $30)
+      //   CYAN  : SDRAM[BASE+0x08] chunk 1 word 0 low byte
+      //           If $53 here too → overwrite bug (every chunk lands at BASE)
+      //           If $00 → drop bug (no chunk 1 written)
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
