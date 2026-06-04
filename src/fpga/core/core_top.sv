@@ -1746,23 +1746,19 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v42 — stage_addr RAW bytes.  v41 showed offset $0000
-      // which is bizarre: either stage_addr is 0 (never assigned BASE),
-      // OR it equals BASE exactly (chunk 0 hasn't been written yet, which
-      // contradicts probe showing $53 at BASE).  Show raw bytes:
-      //   RED   : stage_addr_at_done[15:8]  expect $00 if at BASE = $800000
-      //   GREEN : stage_addr_at_done[23:16] expect $80 if at BASE
-      //   YELLOW: SDRAM[BASE+0] low byte    (chunk 0 anchor, want $53)
-      //   CYAN  : SDRAM[BASE+8] low byte    (chunk 1)
-      //
-      // If GREEN=$80 → stage_addr WAS assigned BASE; bug is downstream
-      //   (the $53 at BASE is real but staging didn't advance past chunk 0)
-      // If GREEN=$00 → stage_addr NEVER got BASE assigned; writes were
-      //   going to SDRAM addr 0 (cart ROM region!), and the $53 we read
-      //   at BASE is from sdram.sv's last_data cache or some other source.
-      2'd0: begin row_value = dbg_first_sram_w0_lo_video;   row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w0_hi_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFFFF00; end
+      // Phase C overlay v43 — v42 confirmed stage_addr reached $880000 (full
+      // 512KB staged), but probes at chunk 4/16/64 = $00.  Walk widely to
+      // find ANY nonzero word in the staged region.
+      //   RED   : SDRAM[BASE+0]      chunk 0 anchor (want $53)
+      //   GREEN : SDRAM[BASE+0x8000] ~4 KB in
+      //   YELLOW: SDRAM[BASE+0x40000] 32 KB in (deep in real save data)
+      //   CYAN  : SDRAM[BASE+0x7FFF8] last chunk
+      // If GREEN/YELLOW are nonzero, the data IS in SDRAM and only
+      // narrowly-targeted probes happened to land on zero regions.
+      // If all are $00 (except RED), the writes degenerated to zero data.
+      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
       2'd3: begin row_value = dbg_first_sram_w1_hi_video;   row_marker_rgb = 24'h00FFFF; end
     endcase
   end
