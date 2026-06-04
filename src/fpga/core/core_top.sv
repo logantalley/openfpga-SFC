@@ -1746,16 +1746,14 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v38 — chunk-density probe.  v37 showed chunk 0
-      // intact (RED=$53,GREEN=$45) but chunks 64 and 1024 both $00.
-      // Move probes closer to chunk 0 to see how far the staging actually
-      // reaches:
-      //   RED   : SDRAM[BASE+8]    chunk 1 word 0 low byte (file +0x08, all-zero region in SMW)
-      //   GREEN : SDRAM[BASE+0x20] chunk 4 word 0 low byte (want $30 = '0' from "0.0.1")
-      //   YELLOW: SDRAM[BASE+0x200]  chunk 64 word 0 low byte
-      //   CYAN  : SDRAM[BASE+0x2000] chunk 1024 word 0 low byte
-      // If GREEN=$30 and YELLOW=$00, staging reaches chunk 4 but not chunk 64.
-      // If GREEN=$00, staging dies before even chunk 4.
+      // Phase C overlay v39 — chunk-density probe (anchored).  v37 chunk 0
+      // intact, chunk 64+ all $00.  v38 chunk 4 was $00.  So staging dies
+      // somewhere between chunk 0 and chunk 4.  Bracket more tightly with
+      // chunk 0 anchor + chunks 4, 16, 64.
+      //   RED   : SDRAM[BASE+0]    chunk 0 word 0  (anchor, want $53)
+      //   GREEN : SDRAM[BASE+0x20] chunk 4 word 0  (want $30 from "0.0.1")
+      //   YELLOW: SDRAM[BASE+0x80] chunk 16 word 0
+      //   CYAN  : SDRAM[BASE+0x200] chunk 64 word 0
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end

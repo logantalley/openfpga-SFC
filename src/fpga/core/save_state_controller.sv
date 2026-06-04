@@ -869,10 +869,10 @@ module save_state_controller (
       SYS_PROBE_REQ: begin
         ss_sdram_rd_req  <= ~ss_sdram_rd_req;
         case (probe_idx)
-          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000008;  // chunk 1 word 0
-          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000020;  // chunk 4 word 0
-          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000200;  // chunk 64 word 0
-          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0002000;  // chunk 1024 word 0
+          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;  // chunk 0 word 0 (anchor, want $53)
+          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000020;  // chunk 4 word 0  (want $30)
+          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000080;  // chunk 16 word 0
+          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000200;  // chunk 64 word 0
         endcase
         sys_state <= SYS_PROBE_WAIT;
       end
