@@ -1746,16 +1746,17 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v43 — v42 confirmed stage_addr reached $880000 (full
-      // 512KB staged), but probes at chunk 4/16/64 = $00.  Walk widely to
-      // find ANY nonzero word in the staged region.
-      //   RED   : SDRAM[BASE+0]      chunk 0 anchor (want $53)
-      //   GREEN : SDRAM[BASE+0x8000] ~4 KB in
-      //   YELLOW: SDRAM[BASE+0x40000] 32 KB in (deep in real save data)
-      //   CYAN  : SDRAM[BASE+0x7FFF8] last chunk
-      // If GREEN/YELLOW are nonzero, the data IS in SDRAM and only
-      // narrowly-targeted probes happened to land on zero regions.
-      // If all are $00 (except RED), the writes degenerated to zero data.
+      // Phase C overlay v44 — settle fix didn't help.  Test next hypothesis:
+      // maybe FIFO returns zeros for chunks 1+.  Capture stage_buffer
+      // contents directly (no value-comparison gates).
+      //   RED   : second_stage_buf[7:0]  = chunk 1 byte 0 from FIFO
+      //                                    (file +0x08, all zeros in SMW — uninformative on own)
+      //   GREEN : latest_stage_buf[7:0]  = LAST staged chunk byte 0 from FIFO
+      //                                    (deep in save state, should be non-zero!)
+      //   YELLOW: SDRAM[BASE+0]    chunk 0 anchor (want $53)
+      //   CYAN  : SDRAM[BASE+8000] ~4KB in - data check
+      // If GREEN is nonzero → FIFO IS giving real data; bug is in writes
+      // If GREEN is $00 → FIFO returned zero for all chunks past chunk 0
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end

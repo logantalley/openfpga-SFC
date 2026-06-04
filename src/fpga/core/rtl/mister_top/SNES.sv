@@ -686,10 +686,10 @@ module MAIN_SNES (
         // clk_mem cycles before sampling, so unsynchronized multi-bit
         // buses settle across the CDC.
         if (ss_sdram_wr_edge_mem) begin
-          ss_settle_cnt <= 3'd3;
+          ss_settle_cnt <= 3'd1;
           ss_mem_state  <= SS_WR_SETTLE;
         end else if (ss_sdram_rd_edge_mem) begin
-          ss_settle_cnt <= 3'd3;
+          ss_settle_cnt <= 3'd1;
           ss_mem_state  <= SS_RD_SETTLE;
         end
       end
