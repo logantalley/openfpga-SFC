@@ -1746,22 +1746,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v40 — diagnose drop vs overwrite.  v39 shows only
-      // chunk 0 survives. Now distinguish two failure modes:
-      //   (A) Staging stops after chunk 0 → chunks 1+ slots are uninit ($00)
-      //   (B) Every chunk overwrites BASE → all chunks end up at BASE
-      //       (chunk 0 byte 0 = $53 just happens to be the final write)
-      //   (C) Stage_addr advances but data is corrupt
-      //
-      //   RED   : SDRAM[BASE+0]    chunk 0 word 0 anchor   (want $53)
-      //   GREEN : SDRAM[BASE+0x20] chunk 4 word 0 low byte (want $30)
-      //   YELLOW: SDRAM[BASE+0x22] chunk 4 word 1 low byte (want $30)
-      //   CYAN  : SDRAM[BASE+0x08] chunk 1 word 0 low byte
-      //           If $53 here too → overwrite bug (every chunk lands at BASE)
-      //           If $00 → drop bug (no chunk 1 written)
-      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
+      // Phase C overlay v41 — stage_addr snapshot at end of staging.
+      // v40 confirmed only chunk 0 survives at BASE; BASE+8 = $00 (no
+      // overwrite, just drop).  Now read how far stage_addr advanced.
+      //   RED   : stage_addr_at_done offset [7:0]
+      //   GREEN : stage_addr_at_done offset [15:8]
+      //   YELLOW: SDRAM[BASE+0] low byte (anchor, want $53)
+      //   CYAN  : SDRAM[BASE+8] low byte (chunk 1, expect $00 if drop)
+      // If RED=$08, GREEN=$00 → stage_addr stayed at BASE+8 → only chunk 0
+      //   staged.  Staging halted right after.
+      // If RED+GREEN show a much larger offset (e.g. RED=$00 GREEN=$96 →
+      //   offset $9600 ≈ 38400 chunks * 8 / wait that's wrong, 38400 chunks
+      //   * 8 bytes = $4B000), staging advanced.  Then bug is data, not addr.
+      2'd0: begin row_value = dbg_first_sram_w0_lo_video;   row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_sram_w0_hi_video;   row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFFFF00; end
       2'd3: begin row_value = dbg_first_sram_w1_hi_video;   row_marker_rgb = 24'h00FFFF; end
     endcase
   end

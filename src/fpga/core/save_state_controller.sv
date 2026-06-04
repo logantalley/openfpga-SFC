@@ -407,6 +407,12 @@ module save_state_controller (
   reg  [15:0] probe_result_3;   // SDRAM word at STAGING_BASE_WORD+0x2000 (chunk 1024 word 0)
   reg         probe_done = 0;
 
+  // Sticky snapshot of stage_addr taken when STAGE_IDLE guard fires (right
+  // before entering PROBE).  Tells us how far staging advanced — if this
+  // equals BASE+8, only chunk 0 staged.  If BASE+0x20, only 4 chunks staged.
+  // If BASE+0x12345, many chunks but ended at addr 0x12345.
+  reg  [24:0] stage_addr_at_done = 25'd0;
+
   // Diagnostic: count ALL new_ddr_req edges seen while in SERVE_WAIT_REQ
   // (regardless of ss_rnw), and capture ss_rnw at the first such edge.
   // If ddr_req_in_wait > 0 but cnt_serve_rd_entries == 0, then requests
@@ -480,11 +486,11 @@ module save_state_controller (
   reg [15:0] first_stage_word = 16'h0000;
   reg [24:0] first_stage_addr = 25'h0;
   reg        first_stage_seen = 0;
-  // Repurposed v28b: control-flow counters to localize where the FSM fails.
-  //   sram_w0_lo  → cnt_stage_idle_enter  (# times we entered SYS_STAGE_IDLE)
-  //   sram_w0_hi  → cnt_guard_pass        (# times the STAGE_IDLE guard fired)
-  assign debug_first_sram_w0_lo = cnt_stage_idle_enter;
-  assign debug_first_sram_w0_hi = cnt_guard_pass;
+  // Repurposed v41: stage_addr at time guard fired = how far staging got.
+  // Expose bytes [0]=offset[7:0] and [1]=offset[15:8] (offset = stage_addr - BASE).
+  wire [24:0] stage_offset = stage_addr_at_done - STAGING_BASE_WORD;
+  assign debug_first_sram_w0_lo = stage_offset[7:0];
+  assign debug_first_sram_w0_hi = stage_offset[15:8];
   // The previously-unassigned debug_first_pf_addr_lo/hi outputs were
   // dangling (default 0) — that's why v28/v29 readings of "cnt_stage_*"
   // via dbg_first_pf_addr_*_video always showed $00.  Wire them up here.
@@ -849,8 +855,9 @@ module save_state_controller (
           // about what is actually staged.  After 4 probe reads, fall
           // through to SERVE_KICK_WAIT.
           if (!probe_done) begin
-            probe_idx <= 2'd0;
-            sys_state <= SYS_PROBE_REQ;
+            probe_idx          <= 2'd0;
+            stage_addr_at_done <= stage_addr;  // sticky snapshot
+            sys_state          <= SYS_PROBE_REQ;
           end else begin
             kick_wait <= 8'd64;
             sys_state <= SYS_SERVE_KICK_WAIT;
