@@ -341,6 +341,13 @@ module save_state_controller (
   // the savestates module (clocked by the gated MCLK) actually sees it.
   localparam SYS_SERVE_KICK       = 5'd26;
   localparam SYS_SERVE_KICK_WAIT  = 5'd27;
+  // Probe: after staging completes, read 4 known SDRAM locations directly
+  // (no firmware involvement) and latch the results.  Isolates whether
+  // staged data survives in SDRAM vs whether the serve/firmware path is
+  // the bug.
+  localparam SYS_PROBE_REQ        = 5'd28;
+  localparam SYS_PROBE_WAIT       = 5'd29;
+  localparam SYS_PROBE_NEXT       = 5'd30;
 
   reg [4:0] sys_state = SYS_IDLE;
   reg [4:0] prev_sys_state = SYS_IDLE;
@@ -391,6 +398,14 @@ module save_state_controller (
   reg [1:0]  serve_word_idx;
   reg [63:0] serve_buffer;
   reg [24:0] serve_addr;
+
+  // Probe book-keeping
+  reg  [1:0]  probe_idx;        // which of 4 probe addresses we're reading
+  reg  [15:0] probe_result_0;   // SDRAM word at STAGING_BASE_WORD+0    (chunk 0 word 0, want $4E53)
+  reg  [15:0] probe_result_1;   // SDRAM word at STAGING_BASE_WORD+2    (chunk 0 word 1, want $5345)
+  reg  [15:0] probe_result_2;   // SDRAM word at STAGING_BASE_WORD+0x200 (chunk 64 word 0)
+  reg  [15:0] probe_result_3;   // SDRAM word at STAGING_BASE_WORD+0x2000 (chunk 1024 word 0)
+  reg         probe_done = 0;
 
   // Diagnostic: count ALL new_ddr_req edges seen while in SERVE_WAIT_REQ
   // (regardless of ss_rnw), and capture ss_rnw at the first such edge.
@@ -455,9 +470,11 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  // v34: FIFO content at chunk 4 (5th FIFO_LATCH).  Expect $30, $2E.
-  assign debug_first_save_addr_lo = sample_stage_buf4[7:0];   // want $30
-  assign debug_first_save_addr_hi = sample_stage_buf4[15:8];  // want $2E
+  // Repurposed v37: SDRAM probe results.
+  //   first_save_addr_lo → probe_result_0[7:0]  (chunk 0 word 0, want $53)
+  //   first_save_addr_hi → probe_result_1[7:0]  (chunk 0 word 1, want $45)
+  assign debug_first_save_addr_lo = probe_result_0[7:0];
+  assign debug_first_save_addr_hi = probe_result_1[7:0];
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -480,10 +497,11 @@ module save_state_controller (
   // Repurposed: expose serve chunk word1 (file bytes 2,3) for mapping check.
   //   debug_first_sram_w1_lo = first_serve_chunk[23:16] (= word1 lo = fb2, want $45)
   //   debug_first_sram_w1_hi = first_serve_chunk[31:24] (= word1 hi = fb3, want $53)
-  // Repurposed v32: first served chunk bytes 0..1 for data-integrity check.
-  // Want $53='S' and $4E='N' as first two bytes of chunk 0.
-  assign debug_first_sram_w1_lo = first_serve_chunk[7:0];
-  assign debug_first_sram_w1_hi = first_serve_chunk[15:8];
+  // Repurposed v37: SDRAM probe results.
+  //   sram_w1_lo → probe_result_2[7:0]  (chunk 64 word 0, low byte)
+  //   sram_w1_hi → probe_result_3[7:0]  (chunk 1024 word 0, low byte)
+  assign debug_first_sram_w1_lo = probe_result_2[7:0];
+  assign debug_first_sram_w1_hi = probe_result_3[7:0];
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -827,8 +845,58 @@ module save_state_controller (
                                        && (stage_quiet_cnt >= 20'h00400)) begin
           if (cnt_guard_pass != 8'hFF) cnt_guard_pass <= cnt_guard_pass + 8'd1;
           savestate_load_busy <= 1;
-          kick_wait           <= 8'd64;
-          sys_state           <= SYS_SERVE_KICK_WAIT;
+          // Run the SDRAM read-back probe first to capture ground truth
+          // about what is actually staged.  After 4 probe reads, fall
+          // through to SERVE_KICK_WAIT.
+          if (!probe_done) begin
+            probe_idx <= 2'd0;
+            sys_state <= SYS_PROBE_REQ;
+          end else begin
+            kick_wait <= 8'd64;
+            sys_state <= SYS_SERVE_KICK_WAIT;
+          end
+        end
+      end
+
+      // ------------------------------------------------------------
+      // PROBE: read 4 known SDRAM locations directly (no firmware) to
+      // verify staged data integrity.  Targets:
+      //   probe 0: STAGING_BASE_WORD + 0       (chunk 0 word 0, want $4E53)
+      //   probe 1: STAGING_BASE_WORD + 2       (chunk 0 word 1, want $5345)
+      //   probe 2: STAGING_BASE_WORD + 16'h200 (chunk 64 word 0)
+      //   probe 3: STAGING_BASE_WORD + 16'h2000(chunk 1024 word 0)
+      // ------------------------------------------------------------
+      SYS_PROBE_REQ: begin
+        ss_sdram_rd_req  <= ~ss_sdram_rd_req;
+        case (probe_idx)
+          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD;
+          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000002;
+          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000200;
+          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0002000;
+        endcase
+        sys_state <= SYS_PROBE_WAIT;
+      end
+
+      SYS_PROBE_WAIT: begin
+        if (sdram_rd_done) begin
+          case (probe_idx)
+            2'd0: probe_result_0 <= ss_sdram_rd_data;
+            2'd1: probe_result_1 <= ss_sdram_rd_data;
+            2'd2: probe_result_2 <= ss_sdram_rd_data;
+            2'd3: probe_result_3 <= ss_sdram_rd_data;
+          endcase
+          sys_state <= SYS_PROBE_NEXT;
+        end
+      end
+
+      SYS_PROBE_NEXT: begin
+        if (probe_idx == 2'd3) begin
+          probe_done <= 1;
+          kick_wait  <= 8'd64;
+          sys_state  <= SYS_SERVE_KICK_WAIT;
+        end else begin
+          probe_idx <= probe_idx + 2'd1;
+          sys_state <= SYS_PROBE_REQ;
         end
       end
 

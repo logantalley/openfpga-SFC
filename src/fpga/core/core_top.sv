@@ -1746,17 +1746,20 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v36 — post-revert baseline.  Reverted the
-      // have_staged_any stage_addr gate (back to stage_entry_count==0).
-      // Mix pipeline-health counters with chunk-0 data sanity:
-      //   RED   : cnt_stage_fifo_latch  (pipeline: staging FIFO drains)
-      //   GREEN : cnt_serve_ack_entries (pipeline: serve ACKs)
-      //   YELLOW: first_serve_chunk[7:0]  (chunk 0 byte 0, want $53='S')
-      //   CYAN  : first_serve_chunk[15:8] (chunk 0 byte 1, want $4E='N')
-      2'd0: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_addr_lo_video;    row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video; row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v37 — SDRAM probe results.  After staging completes
+      // and before serve kicks off, the controller reads 4 known SDRAM
+      // addresses directly (no firmware) and latches the low byte of each.
+      // Tests whether staged data SURVIVES in SDRAM at deep offsets — if
+      // RED=$53 but YELLOW=$00, that's DRAM decay or staging only writing
+      // the first chunk.
+      //   RED   : probe_result_0[7:0]  (BASE+0    chunk 0 word 0,    want $53)
+      //   GREEN : probe_result_1[7:0]  (BASE+2    chunk 0 word 1,    want $45)
+      //   YELLOW: probe_result_2[7:0]  (BASE+200  chunk 64 word 0)
+      //   CYAN  : probe_result_3[7:0]  (BASE+2000 chunk 1024 word 0)
+      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_hi_video;   row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
