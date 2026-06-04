@@ -646,11 +646,13 @@ module MAIN_SNES (
   // ss_loading_mem stays high through the entire access, so the input
   // mux gives us the bus the whole time.  rd/wr go through dedicated
   // FSM-driven regs so they hold for as long as needed.
-  localparam SS_IDLE     = 3'd0;
-  localparam SS_WR_ISSUE = 3'd1;
-  localparam SS_WR_WAIT  = 3'd2;
-  localparam SS_RD_ISSUE = 3'd3;
-  localparam SS_RD_WAIT  = 3'd4;
+  localparam SS_IDLE       = 3'd0;
+  localparam SS_WR_SETTLE  = 3'd5;  // wait for unsynced addr/data bus to settle
+  localparam SS_WR_ISSUE   = 3'd1;
+  localparam SS_WR_WAIT    = 3'd2;
+  localparam SS_RD_SETTLE  = 3'd6;
+  localparam SS_RD_ISSUE   = 3'd3;
+  localparam SS_RD_WAIT    = 3'd4;
 
   reg [2:0]  ss_mem_state = SS_IDLE;
   reg        ss_mem_rd        = 1'b0;
@@ -662,6 +664,14 @@ module MAIN_SNES (
   reg [15:0] ss_sdram_rd_data_mem = 16'h0000;
   wire       sdram_busy;
   reg        sdram_busy_seen = 0;
+  // Settle counter: after detecting the toggle edge, the unsynchronized
+  // multi-bit address/data buses (ss_sdram_wr_addr / ss_sdram_wr_data /
+  // ss_sdram_rd_addr) may have per-bit skew across the CDC boundary.
+  // Wait a few clk_mem cycles before sampling so all bits settle.  Synch_3
+  // takes 3 clk_mem cycles to propagate the toggle edge; pad with 3 more
+  // to be safe (total ~70 ns at 85.9 MHz, well within the >180 ns the
+  // clk_sys side holds addr/data stable).
+  reg [2:0] ss_settle_cnt = 3'd0;
 
   always @(posedge clk_mem) begin
     prev_ss_sdram_wr_req_mem <= ss_sdram_wr_req_mem;
@@ -672,15 +682,26 @@ module MAIN_SNES (
         ss_mem_rd <= 0;
         ss_mem_wr <= 0;
         sdram_busy_seen <= 0;
-        // Latch address/data when an edge arrives; the clk_sys side
-        // holds them stable for ~4 clk_mem cycles so this is safe.
+        // Defer addr/data sampling — go to a SETTLE state and wait a few
+        // clk_mem cycles before sampling, so unsynchronized multi-bit
+        // buses settle across the CDC.
         if (ss_sdram_wr_edge_mem) begin
+          ss_settle_cnt <= 3'd3;
+          ss_mem_state  <= SS_WR_SETTLE;
+        end else if (ss_sdram_rd_edge_mem) begin
+          ss_settle_cnt <= 3'd3;
+          ss_mem_state  <= SS_RD_SETTLE;
+        end
+      end
+
+      SS_WR_SETTLE: begin
+        if (ss_settle_cnt == 3'd0) begin
+          // All addr/data bits should now be settled across CDC.  Sample.
           ss_mem_addr  <= ss_sdram_wr_addr;
           ss_mem_din   <= ss_sdram_wr_data;
           ss_mem_state <= SS_WR_ISSUE;
-        end else if (ss_sdram_rd_edge_mem) begin
-          ss_mem_addr  <= ss_sdram_rd_addr;
-          ss_mem_state <= SS_RD_ISSUE;
+        end else begin
+          ss_settle_cnt <= ss_settle_cnt - 3'd1;
         end
       end
 
@@ -700,6 +721,15 @@ module MAIN_SNES (
         if (sdram_busy_seen && ~sdram_busy) begin
           ss_sdram_wr_ack_mem <= ~ss_sdram_wr_ack_mem;
           ss_mem_state        <= SS_IDLE;
+        end
+      end
+
+      SS_RD_SETTLE: begin
+        if (ss_settle_cnt == 3'd0) begin
+          ss_mem_addr  <= ss_sdram_rd_addr;
+          ss_mem_state <= SS_RD_ISSUE;
+        end else begin
+          ss_settle_cnt <= ss_settle_cnt - 3'd1;
         end
       end
 
