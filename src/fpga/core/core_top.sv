@@ -1746,18 +1746,20 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v41 — stage_addr snapshot at end of staging.
-      // v40 confirmed only chunk 0 survives at BASE; BASE+8 = $00 (no
-      // overwrite, just drop).  Now read how far stage_addr advanced.
-      //   RED   : stage_addr_at_done offset [7:0]
-      //   GREEN : stage_addr_at_done offset [15:8]
-      //   YELLOW: SDRAM[BASE+0] low byte (anchor, want $53)
-      //   CYAN  : SDRAM[BASE+8] low byte (chunk 1, expect $00 if drop)
-      // If RED=$08, GREEN=$00 → stage_addr stayed at BASE+8 → only chunk 0
-      //   staged.  Staging halted right after.
-      // If RED+GREEN show a much larger offset (e.g. RED=$00 GREEN=$96 →
-      //   offset $9600 ≈ 38400 chunks * 8 / wait that's wrong, 38400 chunks
-      //   * 8 bytes = $4B000), staging advanced.  Then bug is data, not addr.
+      // Phase C overlay v42 — stage_addr RAW bytes.  v41 showed offset $0000
+      // which is bizarre: either stage_addr is 0 (never assigned BASE),
+      // OR it equals BASE exactly (chunk 0 hasn't been written yet, which
+      // contradicts probe showing $53 at BASE).  Show raw bytes:
+      //   RED   : stage_addr_at_done[15:8]  expect $00 if at BASE = $800000
+      //   GREEN : stage_addr_at_done[23:16] expect $80 if at BASE
+      //   YELLOW: SDRAM[BASE+0] low byte    (chunk 0 anchor, want $53)
+      //   CYAN  : SDRAM[BASE+8] low byte    (chunk 1)
+      //
+      // If GREEN=$80 → stage_addr WAS assigned BASE; bug is downstream
+      //   (the $53 at BASE is real but staging didn't advance past chunk 0)
+      // If GREEN=$00 → stage_addr NEVER got BASE assigned; writes were
+      //   going to SDRAM addr 0 (cart ROM region!), and the $53 we read
+      //   at BASE is from sdram.sv's last_data cache or some other source.
       2'd0: begin row_value = dbg_first_sram_w0_lo_video;   row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_sram_w0_hi_video;   row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFFFF00; end

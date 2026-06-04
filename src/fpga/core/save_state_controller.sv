@@ -486,11 +486,13 @@ module save_state_controller (
   reg [15:0] first_stage_word = 16'h0000;
   reg [24:0] first_stage_addr = 25'h0;
   reg        first_stage_seen = 0;
-  // Repurposed v41: stage_addr at time guard fired = how far staging got.
-  // Expose bytes [0]=offset[7:0] and [1]=offset[15:8] (offset = stage_addr - BASE).
-  wire [24:0] stage_offset = stage_addr_at_done - STAGING_BASE_WORD;
-  assign debug_first_sram_w0_lo = stage_offset[7:0];
-  assign debug_first_sram_w0_hi = stage_offset[15:8];
+  // Repurposed v42: stage_addr RAW bytes (no offset math) to verify it
+  // ever got assigned STAGING_BASE_WORD = $800000 (bit 23 = 1).
+  //   sram_w0_lo → stage_addr_at_done[15:8]  (mid byte; for $800000 it's $00)
+  //   sram_w0_hi → stage_addr_at_done[23:16] (high byte; for $800000 it's $80)
+  // If high byte is NOT $80, stage_addr never got the BASE assignment!
+  assign debug_first_sram_w0_lo = stage_addr_at_done[15:8];
+  assign debug_first_sram_w0_hi = stage_addr_at_done[23:16];
   // The previously-unassigned debug_first_pf_addr_lo/hi outputs were
   // dangling (default 0) — that's why v28/v29 readings of "cnt_stage_*"
   // via dbg_first_pf_addr_*_video always showed $00.  Wire them up here.
