@@ -1746,21 +1746,19 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v44 — settle fix didn't help.  Test next hypothesis:
-      // maybe FIFO returns zeros for chunks 1+.  Capture stage_buffer
-      // contents directly (no value-comparison gates).
-      //   RED   : second_stage_buf[7:0]  = chunk 1 byte 0 from FIFO
-      //                                    (file +0x08, all zeros in SMW — uninformative on own)
-      //   GREEN : latest_stage_buf[7:0]  = LAST staged chunk byte 0 from FIFO
-      //                                    (deep in save state, should be non-zero!)
-      //   YELLOW: SDRAM[BASE+0]    chunk 0 anchor (want $53)
-      //   CYAN  : SDRAM[BASE+8000] ~4KB in - data check
-      // If GREEN is nonzero → FIFO IS giving real data; bug is in writes
-      // If GREEN is $00 → FIFO returned zero for all chunks past chunk 0
-      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video;   row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v45 — v44 confirmed FIFO returns $00 for last chunk.
+      // Check FIFO overflow: did APF write so fast that FIFO dropped writes?
+      //   RED   : fifo_load_drop_cnt[7:0]   (low byte of dropped wr count)
+      //   GREEN : fifo_load_drop_cnt[15:8]  (high byte)
+      //   YELLOW: {7'b0, fifo_load_overflow}  ($01 if FIFO ever overflowed)
+      //   CYAN  : SDRAM[BASE+0]  chunk 0 anchor sanity ($53)
+      // If RED+GREEN non-zero → FIFO is dropping writes, that's the bug.
+      // If YELLOW=$00 → no overflow; FIFO got all writes; bug is downstream
+      //                 (perhaps stage_buffer assignment is broken).
+      2'd0: begin row_value = dbg_last_w0_lo_video;       row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_last_w0_hi_video;       row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_w0_wr_count_video;      row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
