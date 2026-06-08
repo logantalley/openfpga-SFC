@@ -267,6 +267,7 @@ module save_state_controller (
   reg         fifo_load_read_req = 0;
   wire        fifo_load_empty;
   wire        fifo_load_full;
+  wire  [7:0] fifo_load_rdusedw;  // read-side used count (0..255 entries)
   wire [63:0] fifo_load_dout;
 
   // bridge_wr at 4xxxxxxx is a 1-cycle pulse on clk_74a — feed it directly
@@ -296,6 +297,7 @@ module save_state_controller (
       .wrreq(fifo_load_write),
       .q(fifo_load_dout),
       .rdempty(fifo_load_empty),
+      .rdusedw(fifo_load_rdusedw),
       .wrfull(fifo_load_full),
       .aclr(1'b0)
   );
@@ -550,11 +552,24 @@ module save_state_controller (
   reg [63:0] second_stage_buf  = 64'h0;
   reg        first_buf_seen    = 0;
   reg        second_buf_seen   = 0;
-  // v46: count how many FIFO_LATCH events have non-zero data.  If the FIFO
-  // returned real data most of the time, this saturates at $FF (after only
-  // 255 latches — but we run ~65K).  If it stays low, FIFO mostly returns
-  // zeros = real bug.
+  // v46: count how many FIFO_LATCH events have non-zero data.
   reg [15:0] cnt_nonzero_fifo_dout = 16'h0000;
+
+  // v48: confidence-gated drain.  Hypothesis: dcfifo's rdempty has CDC lag,
+  // so we sometimes see "non-empty" briefly even when the data hasn't fully
+  // settled into the read side.  Track how long rdempty has been LOW
+  // continuously.  Only drain when it's been LOW for several cycles AND
+  // rdusedw indicates real depth.
+  reg [3:0] fifo_nonempty_settled = 4'd0;
+  always @(posedge clk_sys) begin
+    if (fifo_load_empty)
+      fifo_nonempty_settled <= 4'd0;
+    else if (fifo_nonempty_settled != 4'hF)
+      fifo_nonempty_settled <= fifo_nonempty_settled + 4'd1;
+  end
+  // Considered "safe to read" only after rdempty has been low for several
+  // consecutive cycles.  Filters CDC glitches.
+  wire fifo_drain_ok = (fifo_nonempty_settled >= 4'd4);
   // OR-checksum: bitwise OR of every fifo_load_dout latched.  Each bit is
   // sticky-set if any FIFO read had that bit high.  Almost-all-bits-high
   // means FIFO is delivering varied data; mostly-zero means FIFO is dry.
@@ -625,8 +640,9 @@ module save_state_controller (
   //   last_w0_data_lo → fifo_load_drop_cnt[7:0]
   //   last_w0_data_hi → fifo_load_drop_cnt[15:8]
   //   w0_wr_count     → {7'b0, fifo_load_overflow}  ($01 = overflowed)
-  assign debug_last_w0_data_lo = fifo_load_drop_cnt[7:0];
-  assign debug_last_w0_data_hi = fifo_load_drop_cnt[15:8];
+  // v47: chunk 4 word 0 / word 1 low bytes.  Want $30 / $30 for SMW.
+  assign debug_last_w0_data_lo = probe_result_1[7:0];
+  assign debug_last_w0_data_hi = probe_result_2[7:0];
   assign debug_w0_wr_count     = {7'b0, fifo_load_overflow};
 
   // ----- bridge-wr counters (clk_74a) -----
@@ -734,7 +750,7 @@ module save_state_controller (
       // ============================================================
       SYS_IDLE: begin
         if (~savestate_load_s) savestate_load_ack <= 0;
-        if (~fifo_load_empty) begin
+        if (fifo_drain_ok) begin
           // Begin staging.  stage_addr starts at STAGING_BASE_WORD on
           // the first FIFO entry of a transfer; once running, it just
           // keeps incrementing through the whole load.
@@ -778,12 +794,15 @@ module save_state_controller (
       // STAGING: drain load FIFO 64-bit chunks into SDRAM, 4 words each
       // ============================================================
       SYS_STAGE_FIFO_RD: begin
-        if (~fifo_load_empty) begin
+        // Require fifo_drain_ok: rdempty must have been low for several
+        // cycles continuously.  This filters CDC-lag glitches where rdempty
+        // briefly deasserts before the read-side has latched real data.
+        if (fifo_drain_ok) begin
           fifo_load_read_req <= 1;
           sys_state          <= SYS_STAGE_FIFO_WAIT;
         end else begin
-          // FIFO momentarily empty.  If APF says go, switch to serve;
-          // otherwise wait for more bridge writes.
+          // FIFO empty or not yet settled.  Park in STAGE_IDLE; we'll come
+          // back when data has been present long enough to trust.
           sys_state <= SYS_STAGE_IDLE;
         end
       end
@@ -877,7 +896,7 @@ module save_state_controller (
         // we'd skip staging entirely and serve from uninitialized SDRAM.
         // Without (3), a momentary FIFO drain mid-stream would kick serve
         // prematurely.
-        if (~fifo_load_empty) begin
+        if (fifo_drain_ok) begin
           sys_state <= SYS_STAGE_FIFO_RD;
         end else if (load_cmd_pending && (stage_entry_count != 17'd0)
                                        && (stage_quiet_cnt >= 20'h00400)) begin
@@ -908,16 +927,13 @@ module save_state_controller (
       SYS_PROBE_REQ: begin
         ss_sdram_rd_req  <= ~ss_sdram_rd_req;
         case (probe_idx)
-          // Walk widely-spaced addresses across the staged region to find
-          // ANY nonzero word.  stage_addr_at_done shows stage_addr reached
-          // BASE+$80000 (full 512KB staged) so writes occurred everywhere.
-          // If all 4 of these read $00, the data being written WAS $00.
-          // If even one reads non-$00 (other than chunk 0 anchor), staging
-          // DID write data — bug is elsewhere.
-          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;  // chunk 0 anchor
-          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0008000;  // ~4 KB in
-          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0040000;  // 32 KB in
-          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h007FFF8;  // very last chunk
+          // Probe addresses we KNOW should have non-zero data per known
+          // SMW .sta layout to disambiguate "FIFO returns zero" from "data
+          // happens to be zero in that region":
+          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;  // chunk 0 word 0, want $53 (sanity)
+          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000020;  // chunk 4 word 0, want $30 ("0.0.1")
+          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000022;  // chunk 4 word 1, want $30 (or '.')
+          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000028;  // chunk 5 word 0
         endcase
         sys_state <= SYS_PROBE_WAIT;
       end

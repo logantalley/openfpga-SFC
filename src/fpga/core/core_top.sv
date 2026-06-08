@@ -1746,23 +1746,18 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v46 — FIFO health.  Counts non-zero FIFO outputs
-      // and OR-checksum of all reads.  Diagnoses whether FIFO is supplying
-      // mostly-zero data or genuine save state bytes.
-      //   RED   : cnt_nonzero_fifo_dout[7:0]   how many FIFO reads were nonzero
-      //   GREEN : cnt_nonzero_fifo_dout[15:8]  high byte (16-bit count)
-      //   YELLOW: fifo_or_checksum[7:0]        bitwise OR of all FIFO bytes 0
-      //   CYAN  : fifo_or_checksum[15:8]       byte 1
-      //
-      // Expected if FIFO is healthy (real save data is varied):
-      //   RED+GREEN = thousands (saturated $FFFF more likely)
-      //   YELLOW+CYAN approaching $FF (varied bytes set all bits)
-      // If RED+GREEN low or YELLOW $00 → FIFO is mostly returning zeros
-      //   even though APF sent real data.
+      // Phase C overlay v48 — confidence-gated drain fix.  Only issue
+      // FIFO read when rdempty has been LOW for 4+ consecutive cycles.
+      // Validate by checking chunk 4 (file +0x20 = "0.0.1") = $30.
+      //   RED   : cnt_nonzero_fifo_dout[7:0]  (should now be MUCH higher
+      //                                        than 13 if fix worked)
+      //   GREEN : SDRAM[BASE+0]    chunk 0 word 0 low byte, want $53
+      //   YELLOW: SDRAM[BASE+0x20] chunk 4 word 0 low byte, want $30
+      //   CYAN  : SDRAM[BASE+0x22] chunk 4 word 1 low byte
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video;   row_marker_rgb = 24'h00FFFF; end
+      2'd1: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_last_w0_lo_video;         row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_last_w0_hi_video;         row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
