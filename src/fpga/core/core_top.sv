@@ -1746,22 +1746,25 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v51 — measure bridge_wr_data nonzero count on the
-      // clk_74a SIDE, before FIFO/CDC/FSM.  This bypasses everything in
-      // our staging path and asks: did APF actually send real data?
-      //
-      //   RED   : bridge_wr_nonzero_count[7:0]   low byte
-      //   GREEN : bridge_wr_nonzero_count[15:8]  high byte
-      //                  (16-bit total of bridge_wr events with non-zero data)
-      //   YELLOW: SDRAM[BASE+0x20]  chunk 4 word 0 sanity (want $30 if working)
-      //   CYAN  : SDRAM[BASE+0]   chunk 0 anchor ($53)
-      //
-      // Expected if APF healthy: RED+GREEN saturated $FFFF
-      // If ~13: bug is upstream of our module entirely (APF / wiring)
+      // Phase C overlay v52 — broad-net bridge_wr counters.  v51 showed
+      // only 22 bridge_wr-to-0x4xxxxxxx events had nonzero data.  But the
+      // .sta file should have ~10000 nonzero 32-bit words for SMW (and
+      // ~100000 for Super Metroid).  Maybe APF writes nonzero data to a
+      // DIFFERENT address (we filter on 0x4xxxxxxx).  Count any-address
+      // and 0x4xxxxxxx separately:
+      //   RED   : bridge_wr_any_nonzero[7:0]   ALL bridge_wr w/ nonzero data
+      //   GREEN : bridge_wr_any_nonzero[15:8]
+      //   YELLOW: bridge_wr_4xxx_count[7:0]    ALL bridge_wr to 0x4xxxxxxx
+      //                                        (regardless of data value)
+      //   CYAN  : bridge_wr_4xxx_count[15:8]
+      // If RED+GREEN >> YELLOW+CYAN: APF writes nonzero data to addresses
+      //   we don't recognize.  Re-examine APF protocol.
+      // If both pairs similar: APF is just sending what we see.  Different
+      //   bug.
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_last_w0_lo_video;         row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'h00FFFF; end
+      2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_hi_video;   row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

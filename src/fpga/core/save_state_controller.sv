@@ -478,9 +478,11 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  // v51: bridge_wr_nonzero_count (clk_74a domain, bypasses FIFO entirely).
-  assign debug_first_save_addr_lo = bridge_wr_nonzero_count[7:0];
-  assign debug_first_save_addr_hi = bridge_wr_nonzero_count[15:8];
+  // v52: broader bridge_wr counters — ALL writes regardless of address.
+  //   first_save_addr_lo → bridge_wr_any_nonzero[7:0]
+  //   first_save_addr_hi → bridge_wr_any_nonzero[15:8]
+  assign debug_first_save_addr_lo = bridge_wr_any_nonzero[7:0];
+  assign debug_first_save_addr_hi = bridge_wr_any_nonzero[15:8];
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -511,9 +513,9 @@ module save_state_controller (
   // Repurposed v37: SDRAM probe results.
   //   sram_w1_lo → probe_result_2[7:0]  (chunk 64 word 0, low byte)
   //   sram_w1_hi → probe_result_3[7:0]  (chunk 1024 word 0, low byte)
-  // v48: chunk 0 word 0 low byte (probe anchor, want $53).
-  assign debug_first_sram_w1_lo = probe_result_0[7:0];
-  assign debug_first_sram_w1_hi = probe_result_0[15:8];
+  // v52: bridge_wr_4xxx_count (all bridge_wr to 0x4xxxxxxx, irrespective of data).
+  assign debug_first_sram_w1_lo = bridge_wr_4xxx_count[7:0];
+  assign debug_first_sram_w1_hi = bridge_wr_4xxx_count[15:8];
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -648,12 +650,25 @@ module save_state_controller (
 
   // Count of fifo_load_write events with non-zero bridge_wr_data.  Lives
   // entirely on clk_74a domain — bypasses FIFO, CDC, and FSM entirely.
-  // If APF is genuinely sending real save state data, this should reach
-  // tens of thousands.  If it's ~13, the data is zero at APF's wire.
   reg [15:0] bridge_wr_nonzero_count = 16'h0000;
+  // v52: count ALL bridge_wr events (any address) with nonzero data,
+  // and separately count bridge_wr to 0x4xxxxxxx with ANY data.  If
+  // bridge_wr_any_nonzero is much larger than bridge_wr_nonzero_count,
+  // APF is writing nonzero data but to addresses we're not filtering on.
+  reg [15:0] bridge_wr_any_nonzero = 16'h0000;
+  reg [15:0] bridge_wr_4xxx_count  = 16'h0000;
 
   // ----- bridge-wr counters (clk_74a) -----
   always @(posedge clk_74a) begin
+    // v52 broad-net counters: count ALL bridge_wr regardless of address.
+    if (bridge_wr) begin
+      if (bridge_wr_data != 32'h0 && bridge_wr_any_nonzero != 16'hFFFF) begin
+        bridge_wr_any_nonzero <= bridge_wr_any_nonzero + 16'h0001;
+      end
+      if (bridge_addr[31:28] == 4'h4 && bridge_wr_4xxx_count != 16'hFFFF) begin
+        bridge_wr_4xxx_count <= bridge_wr_4xxx_count + 16'h0001;
+      end
+    end
     if (fifo_load_write) begin
       if (bridge_wr_count != 16'hFFFF) begin
         bridge_wr_count <= bridge_wr_count + 16'h0001;
