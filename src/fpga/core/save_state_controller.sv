@@ -476,11 +476,11 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  // Repurposed v44: stage_buffer captures, NOT SDRAM probes.
-  //   first_save_addr_lo → second_stage_buf[7:0]  (chunk 1's data from FIFO)
-  //   first_save_addr_hi → latest_stage_buf[7:0]  (LAST chunk's data from FIFO)
-  assign debug_first_save_addr_lo = second_stage_buf[7:0];
-  assign debug_first_save_addr_hi = latest_stage_buf[7:0];
+  // Repurposed v46: FIFO health diagnostics.
+  //   first_save_addr_lo → cnt_nonzero_fifo_dout[7:0]
+  //   first_save_addr_hi → cnt_nonzero_fifo_dout[15:8]
+  assign debug_first_save_addr_lo = cnt_nonzero_fifo_dout[7:0];
+  assign debug_first_save_addr_hi = cnt_nonzero_fifo_dout[15:8];
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -508,9 +508,10 @@ module save_state_controller (
   // Repurposed v37: SDRAM probe results.
   //   sram_w1_lo → probe_result_2[7:0]  (chunk 64 word 0, low byte)
   //   sram_w1_hi → probe_result_3[7:0]  (chunk 1024 word 0, low byte)
-  // v44 wiring: YELLOW/CYAN show chunk 0 anchor and 4KB-in probe.
-  assign debug_first_sram_w1_lo = probe_result_0[7:0];
-  assign debug_first_sram_w1_hi = probe_result_1[7:0];
+  // v46: OR-checksum bytes of all FIFO outputs.  If FIFO is delivering
+  // varied data these accumulate to ~$FF.  If mostly zero, stays low.
+  assign debug_first_sram_w1_lo = fifo_or_checksum[7:0];
+  assign debug_first_sram_w1_hi = fifo_or_checksum[15:8];
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -544,14 +545,20 @@ module save_state_controller (
   reg [63:0] sample_stage_buf4 = 64'h0;
   reg        sample_buf4_seen  = 0;
 
-  // v44: ungated capture of EVERY stage_buffer load.  By end of staging
-  // this holds the LAST chunk's data.  And second_stage_buf captures the
-  // SECOND FIFO_LATCH (= chunk 1).  Both use simple sticky flags, no
-  // value-comparison gates (which have been unreliable in this design).
+  // v44: ungated capture of EVERY stage_buffer load.
   reg [63:0] latest_stage_buf  = 64'h0;
   reg [63:0] second_stage_buf  = 64'h0;
-  reg        first_buf_seen    = 0;  // becomes 1 on first FIFO_LATCH
-  reg        second_buf_seen   = 0;  // becomes 1 on second FIFO_LATCH
+  reg        first_buf_seen    = 0;
+  reg        second_buf_seen   = 0;
+  // v46: count how many FIFO_LATCH events have non-zero data.  If the FIFO
+  // returned real data most of the time, this saturates at $FF (after only
+  // 255 latches — but we run ~65K).  If it stays low, FIFO mostly returns
+  // zeros = real bug.
+  reg [15:0] cnt_nonzero_fifo_dout = 16'h0000;
+  // OR-checksum: bitwise OR of every fifo_load_dout latched.  Each bit is
+  // sticky-set if any FIFO read had that bit high.  Almost-all-bits-high
+  // means FIFO is delivering varied data; mostly-zero means FIFO is dry.
+  reg [63:0] fifo_or_checksum = 64'h0;
 
   // Phase C diagnostic: count of completed SDRAM reads during the serve
   // phase.  Increments on every sdram_rd_done in SYS_SERVE_RD_WAIT.
@@ -795,14 +802,16 @@ module save_state_controller (
         // v44 unconditional captures (don't gate on counter==N — that
         // pattern has been unreliable in this design).
         latest_stage_buf <= fifo_load_dout;
-        // First FIFO_LATCH = chunk 0; second = chunk 1.  Use sticky bool
-        // flags, not counter compares.
         if (!first_buf_seen) begin
           first_buf_seen <= 1;
         end else if (!second_buf_seen) begin
           second_stage_buf <= fifo_load_dout;
           second_buf_seen  <= 1;
         end
+        // v46: track FIFO health.
+        fifo_or_checksum <= fifo_or_checksum | fifo_load_dout;
+        if (fifo_load_dout != 64'h0 && cnt_nonzero_fifo_dout != 16'hFFFF)
+          cnt_nonzero_fifo_dout <= cnt_nonzero_fifo_dout + 16'd1;
         // Capture stage_buffer at chunk index 4 (= staging chunk 4 starts
         // when stage_entry_count is currently 4, about to become 5).
         // Compare against expected SMW .sta payload at chunk 4:
