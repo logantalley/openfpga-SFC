@@ -1746,16 +1746,15 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v53 — v52 showed both counters saturated $FFFF.
-      // APF writes lots of nonzero data AND lots to 0x4xxxxxxx, but their
-      // intersection (nonzero-data writes to 0x4xxxxxxx) was only 22.
-      // So APF puts the nonzero data at a DIFFERENT address range.
-      //   RED   : first_nonzero_addr[23:16]  (3rd byte of address)
-      //   GREEN : first_nonzero_addr[31:24]  (top byte; want $40 for savestate)
-      //   YELLOW: nz_writes_per_top_nibble[0][7:0]  (writes to 0x0xxxxxxx)
-      //   CYAN  : nz_writes_per_top_nibble[4][7:0]  (writes to 0x4xxxxxxx)
-      // If GREEN ≠ $40, APF puts savestate data at a different top nibble.
-      // YELLOW saturated → APF writes nonzero data to 0x0xxxxxxx (ROM region).
+      // Phase C overlay v54 — measure 16-bit precise count of nonzero-data
+      // writes to 0x4xxxxxxx (savestate region).  SMW should give ~13K,
+      // SM should give ~144K.  Also show first such address — its low
+      // bytes reveal whether APF starts streaming at offset 0 or some
+      // other position.
+      //   RED   : nz_4xxx_count_wide[7:0]   nonzero-data 0x4xxx writes (lo)
+      //   GREEN : nz_4xxx_count_wide[15:8]  (hi)
+      //   YELLOW: first_nz_4xxx_addr[7:0]   addr byte of first nonzero 0x4xxx wr
+      //   CYAN  : first_nz_4xxx_addr[15:8]  addr byte of first nonzero 0x4xxx wr
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end

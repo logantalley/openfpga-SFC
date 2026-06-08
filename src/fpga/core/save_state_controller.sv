@@ -478,13 +478,10 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  // v53: first nonzero-data bridge_addr (top 2 bytes — the interesting ones).
-  //   first_save_addr_lo → first_nonzero_addr[23:16]
-  //   first_save_addr_hi → first_nonzero_addr[31:24]
-  // For APF savestate range (0x40000000+), expect hi=$40, mid=$00.
-  // For data-slot ROM region (0xxxxxxxxx), expect hi=$00.
-  assign debug_first_save_addr_lo = first_nonzero_addr[23:16];
-  assign debug_first_save_addr_hi = first_nonzero_addr[31:24];
+  // v54: 16-bit nonzero-data writes to 0x4xxxxxxx (savestate region).
+  // SM should give ~144K (saturate $FFFF).  SMW should give ~13K.
+  assign debug_first_save_addr_lo = nz_4xxx_count_wide[7:0];
+  assign debug_first_save_addr_hi = nz_4xxx_count_wide[15:8];
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -519,8 +516,10 @@ module save_state_controller (
   // low byte counts (saturated 8 bit) — if nibble $0 (i.e. low addresses
   // like 0x0xxxxxxx ROM area) has MORE nonzero writes than nibble $4
   // (savestate area), then APF is putting the data somewhere unexpected.
-  assign debug_first_sram_w1_lo = nz_writes_per_top_nibble[0][7:0];
-  assign debug_first_sram_w1_hi = nz_writes_per_top_nibble[4][7:0];
+  // v54: first nonzero-data 0x4xxxxxxx write — low 2 bytes of bridge_addr.
+  // Reveals the starting OFFSET APF uses within savestate region.
+  assign debug_first_sram_w1_lo = first_nz_4xxx_addr[7:0];
+  assign debug_first_sram_w1_hi = first_nz_4xxx_addr[15:8];
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -659,10 +658,15 @@ module save_state_controller (
   reg [15:0] bridge_wr_any_nonzero = 16'h0000;
   reg [15:0] bridge_wr_4xxx_count  = 16'h0000;
   // v53: capture bridge_addr at the FIRST and a LATE nonzero-data write.
-  // If APF puts real save data at a different address than 0x4xxxxxxx,
-  // these capture the actual top byte and bytes of the target address.
   reg [31:0] first_nonzero_addr  = 32'h0;
   reg        first_nonzero_seen  = 0;
+  // v54: track the FIRST nonzero-data write that ALSO targets 0x4xxxxxxx
+  // (the savestate region we care about).  Captures the actual addr bits
+  // [27:16] so we can see if APF strides through chunks or what.
+  reg [31:0] first_nz_4xxx_addr  = 32'h0;
+  reg        first_nz_4xxx_seen  = 0;
+  // Count nonzero-data writes to ANY 0x4xxxxxxx, full 16-bit.
+  reg [15:0] nz_4xxx_count_wide  = 16'h0000;
   // Histogram: count nonzero-data writes per top-nibble of bridge_addr.
   // 16 buckets.  Reveals where APF's nonzero writes actually go.
   reg [15:0] nz_writes_per_top_nibble [0:15];
@@ -691,6 +695,16 @@ module save_state_controller (
         if (nz_writes_per_top_nibble[bridge_addr[31:28]] != 16'hFFFF) begin
           nz_writes_per_top_nibble[bridge_addr[31:28]] <=
               nz_writes_per_top_nibble[bridge_addr[31:28]] + 16'h0001;
+        end
+      end
+      // v54: 16-bit precise count of nonzero-data writes to 0x4xxxxxxx only
+      // (the savestate region we care about).  And first such address.
+      if (bridge_wr_data != 32'h0 && bridge_addr[31:28] == 4'h4) begin
+        if (nz_4xxx_count_wide != 16'hFFFF)
+          nz_4xxx_count_wide <= nz_4xxx_count_wide + 16'h0001;
+        if (!first_nz_4xxx_seen) begin
+          first_nz_4xxx_addr <= bridge_addr;
+          first_nz_4xxx_seen <= 1;
         end
       end
     end
