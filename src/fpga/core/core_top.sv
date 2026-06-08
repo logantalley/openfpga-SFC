@@ -1746,18 +1746,18 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v48 — confidence-gated drain fix.  Only issue
-      // FIFO read when rdempty has been LOW for 4+ consecutive cycles.
-      // Validate by checking chunk 4 (file +0x20 = "0.0.1") = $30.
-      //   RED   : cnt_nonzero_fifo_dout[7:0]  (should now be MUCH higher
-      //                                        than 13 if fix worked)
-      //   GREEN : SDRAM[BASE+0]    chunk 0 word 0 low byte, want $53
-      //   YELLOW: SDRAM[BASE+0x20] chunk 4 word 0 low byte, want $30
-      //   CYAN  : SDRAM[BASE+0x22] chunk 4 word 1 low byte
-      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_last_w0_lo_video;         row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_last_w0_hi_video;         row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v49 — measure ACTUAL count of sdram_wr_done events.
+      // Theory: stage_addr advanced 65536 chunks * 4 words = 262144 wr events.
+      // If wide counter saturates $FFFF, we got plenty.  If it's far lower,
+      // stage_addr is advancing somehow WITHOUT real SDRAM acks.
+      //   RED   : cnt_stage_wr_done_wide[7:0]
+      //   GREEN : cnt_stage_wr_done_wide[15:8]
+      //   YELLOW: cnt_nonzero_fifo_dout[7:0]  recap (was 13)
+      //   CYAN  : SDRAM[BASE+0]  chunk 0 anchor sanity (want $53)
+      2'd0: begin row_value = dbg_first_pf_addr_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_pf_addr_hi_video; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_lo_video; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

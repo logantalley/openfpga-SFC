@@ -498,8 +498,11 @@ module save_state_controller (
   // The previously-unassigned debug_first_pf_addr_lo/hi outputs were
   // dangling (default 0) — that's why v28/v29 readings of "cnt_stage_*"
   // via dbg_first_pf_addr_*_video always showed $00.  Wire them up here.
-  assign debug_first_pf_addr_lo = cnt_stage_fifo_latch;
-  assign debug_first_pf_addr_hi = cnt_stage_wr_done;
+  // v49: 16-bit true count of sdram_wr_done events.  Expected ~262144 if
+  // each chunk had 4 distinct writes (saturates 16-bit at $FFFF = 65535).
+  // If MUCH LOWER, sdram_wr_done isn't firing as often as we thought.
+  assign debug_first_pf_addr_lo = cnt_stage_wr_done_wide[7:0];
+  assign debug_first_pf_addr_hi = cnt_stage_wr_done_wide[15:8];
 
   // Serve-side first SDRAM read result (= first chunk byte 0..1)
   reg [15:0] first_serve_word = 16'h0000;
@@ -510,10 +513,9 @@ module save_state_controller (
   // Repurposed v37: SDRAM probe results.
   //   sram_w1_lo → probe_result_2[7:0]  (chunk 64 word 0, low byte)
   //   sram_w1_hi → probe_result_3[7:0]  (chunk 1024 word 0, low byte)
-  // v46: OR-checksum bytes of all FIFO outputs.  If FIFO is delivering
-  // varied data these accumulate to ~$FF.  If mostly zero, stays low.
-  assign debug_first_sram_w1_lo = fifo_or_checksum[7:0];
-  assign debug_first_sram_w1_hi = fifo_or_checksum[15:8];
+  // v48: chunk 0 word 0 low byte (probe anchor, want $53).
+  assign debug_first_sram_w1_lo = probe_result_0[7:0];
+  assign debug_first_sram_w1_hi = probe_result_0[15:8];
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -592,6 +594,7 @@ module save_state_controller (
   // Staging-FSM action counters (saturating).
   reg [7:0] cnt_stage_fifo_latch = 8'h00;  // entered STAGE_FIFO_LATCH
   reg [7:0] cnt_stage_wr_done    = 8'h00;  // sdram_wr_done fired in WR_WAIT
+  reg [15:0] cnt_stage_wr_done_wide = 16'h0000;  // 16-bit version (true count up to 65535)
   reg [7:0] cnt_stage_idle_enter = 8'h00;  // entered SYS_STAGE_IDLE
   reg [7:0] cnt_guard_pass       = 8'h00;  // STAGE_IDLE guard passed -> SERVE_KICK_WAIT
   reg [7:0] cnt_fifo_nonempty    = 8'h00;  // # clk_sys cycles where fifo_load_empty=0 (saturating)
@@ -864,6 +867,7 @@ module save_state_controller (
       SYS_STAGE_WR_WAIT: begin
         if (sdram_wr_done) begin
           if (cnt_stage_wr_done != 8'hFF) cnt_stage_wr_done <= cnt_stage_wr_done + 8'd1;
+          if (cnt_stage_wr_done_wide != 16'hFFFF) cnt_stage_wr_done_wide <= cnt_stage_wr_done_wide + 16'd1;
           // sdram.sv treats addr[24:1] as the 16-bit word and addr[0] as
           // byte-within-word, AND skips re-access when addr[24:1] is
           // unchanged.  So distinct 16-bit words must step addr by 2.
