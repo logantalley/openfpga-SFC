@@ -1746,21 +1746,16 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v52 — broad-net bridge_wr counters.  v51 showed
-      // only 22 bridge_wr-to-0x4xxxxxxx events had nonzero data.  But the
-      // .sta file should have ~10000 nonzero 32-bit words for SMW (and
-      // ~100000 for Super Metroid).  Maybe APF writes nonzero data to a
-      // DIFFERENT address (we filter on 0x4xxxxxxx).  Count any-address
-      // and 0x4xxxxxxx separately:
-      //   RED   : bridge_wr_any_nonzero[7:0]   ALL bridge_wr w/ nonzero data
-      //   GREEN : bridge_wr_any_nonzero[15:8]
-      //   YELLOW: bridge_wr_4xxx_count[7:0]    ALL bridge_wr to 0x4xxxxxxx
-      //                                        (regardless of data value)
-      //   CYAN  : bridge_wr_4xxx_count[15:8]
-      // If RED+GREEN >> YELLOW+CYAN: APF writes nonzero data to addresses
-      //   we don't recognize.  Re-examine APF protocol.
-      // If both pairs similar: APF is just sending what we see.  Different
-      //   bug.
+      // Phase C overlay v53 — v52 showed both counters saturated $FFFF.
+      // APF writes lots of nonzero data AND lots to 0x4xxxxxxx, but their
+      // intersection (nonzero-data writes to 0x4xxxxxxx) was only 22.
+      // So APF puts the nonzero data at a DIFFERENT address range.
+      //   RED   : first_nonzero_addr[23:16]  (3rd byte of address)
+      //   GREEN : first_nonzero_addr[31:24]  (top byte; want $40 for savestate)
+      //   YELLOW: nz_writes_per_top_nibble[0][7:0]  (writes to 0x0xxxxxxx)
+      //   CYAN  : nz_writes_per_top_nibble[4][7:0]  (writes to 0x4xxxxxxx)
+      // If GREEN ≠ $40, APF puts savestate data at a different top nibble.
+      // YELLOW saturated → APF writes nonzero data to 0x0xxxxxxx (ROM region).
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end

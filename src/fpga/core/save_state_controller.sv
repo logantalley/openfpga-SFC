@@ -478,11 +478,13 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  // v52: broader bridge_wr counters — ALL writes regardless of address.
-  //   first_save_addr_lo → bridge_wr_any_nonzero[7:0]
-  //   first_save_addr_hi → bridge_wr_any_nonzero[15:8]
-  assign debug_first_save_addr_lo = bridge_wr_any_nonzero[7:0];
-  assign debug_first_save_addr_hi = bridge_wr_any_nonzero[15:8];
+  // v53: first nonzero-data bridge_addr (top 2 bytes — the interesting ones).
+  //   first_save_addr_lo → first_nonzero_addr[23:16]
+  //   first_save_addr_hi → first_nonzero_addr[31:24]
+  // For APF savestate range (0x40000000+), expect hi=$40, mid=$00.
+  // For data-slot ROM region (0xxxxxxxxx), expect hi=$00.
+  assign debug_first_save_addr_lo = first_nonzero_addr[23:16];
+  assign debug_first_save_addr_hi = first_nonzero_addr[31:24];
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -513,9 +515,12 @@ module save_state_controller (
   // Repurposed v37: SDRAM probe results.
   //   sram_w1_lo → probe_result_2[7:0]  (chunk 64 word 0, low byte)
   //   sram_w1_hi → probe_result_3[7:0]  (chunk 1024 word 0, low byte)
-  // v52: bridge_wr_4xxx_count (all bridge_wr to 0x4xxxxxxx, irrespective of data).
-  assign debug_first_sram_w1_lo = bridge_wr_4xxx_count[7:0];
-  assign debug_first_sram_w1_hi = bridge_wr_4xxx_count[15:8];
+  // v53: nonzero-data writes per top-nibble.  Expose nibble $0 and nibble $4
+  // low byte counts (saturated 8 bit) — if nibble $0 (i.e. low addresses
+  // like 0x0xxxxxxx ROM area) has MORE nonzero writes than nibble $4
+  // (savestate area), then APF is putting the data somewhere unexpected.
+  assign debug_first_sram_w1_lo = nz_writes_per_top_nibble[0][7:0];
+  assign debug_first_sram_w1_hi = nz_writes_per_top_nibble[4][7:0];
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -651,12 +656,21 @@ module save_state_controller (
   // Count of fifo_load_write events with non-zero bridge_wr_data.  Lives
   // entirely on clk_74a domain — bypasses FIFO, CDC, and FSM entirely.
   reg [15:0] bridge_wr_nonzero_count = 16'h0000;
-  // v52: count ALL bridge_wr events (any address) with nonzero data,
-  // and separately count bridge_wr to 0x4xxxxxxx with ANY data.  If
-  // bridge_wr_any_nonzero is much larger than bridge_wr_nonzero_count,
-  // APF is writing nonzero data but to addresses we're not filtering on.
   reg [15:0] bridge_wr_any_nonzero = 16'h0000;
   reg [15:0] bridge_wr_4xxx_count  = 16'h0000;
+  // v53: capture bridge_addr at the FIRST and a LATE nonzero-data write.
+  // If APF puts real save data at a different address than 0x4xxxxxxx,
+  // these capture the actual top byte and bytes of the target address.
+  reg [31:0] first_nonzero_addr  = 32'h0;
+  reg        first_nonzero_seen  = 0;
+  // Histogram: count nonzero-data writes per top-nibble of bridge_addr.
+  // 16 buckets.  Reveals where APF's nonzero writes actually go.
+  reg [15:0] nz_writes_per_top_nibble [0:15];
+  integer i_init;
+  initial begin
+    for (i_init = 0; i_init < 16; i_init = i_init + 1)
+      nz_writes_per_top_nibble[i_init] = 16'h0000;
+  end
 
   // ----- bridge-wr counters (clk_74a) -----
   always @(posedge clk_74a) begin
@@ -667,6 +681,17 @@ module save_state_controller (
       end
       if (bridge_addr[31:28] == 4'h4 && bridge_wr_4xxx_count != 16'hFFFF) begin
         bridge_wr_4xxx_count <= bridge_wr_4xxx_count + 16'h0001;
+      end
+      // v53: capture first nonzero-data write's address; histogram top nibble.
+      if (bridge_wr_data != 32'h0) begin
+        if (!first_nonzero_seen) begin
+          first_nonzero_addr <= bridge_addr;
+          first_nonzero_seen <= 1;
+        end
+        if (nz_writes_per_top_nibble[bridge_addr[31:28]] != 16'hFFFF) begin
+          nz_writes_per_top_nibble[bridge_addr[31:28]] <=
+              nz_writes_per_top_nibble[bridge_addr[31:28]] + 16'h0001;
+        end
       end
     end
     if (fifo_load_write) begin
