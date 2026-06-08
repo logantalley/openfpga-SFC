@@ -478,11 +478,9 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  // Repurposed v46: FIFO health diagnostics.
-  //   first_save_addr_lo → cnt_nonzero_fifo_dout[7:0]
-  //   first_save_addr_hi → cnt_nonzero_fifo_dout[15:8]
-  assign debug_first_save_addr_lo = cnt_nonzero_fifo_dout[7:0];
-  assign debug_first_save_addr_hi = cnt_nonzero_fifo_dout[15:8];
+  // v51: bridge_wr_nonzero_count (clk_74a domain, bypasses FIFO entirely).
+  assign debug_first_save_addr_lo = bridge_wr_nonzero_count[7:0];
+  assign debug_first_save_addr_hi = bridge_wr_nonzero_count[15:8];
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -648,11 +646,20 @@ module save_state_controller (
   assign debug_last_w0_data_hi = probe_result_2[7:0];
   assign debug_w0_wr_count     = {7'b0, fifo_load_overflow};
 
+  // Count of fifo_load_write events with non-zero bridge_wr_data.  Lives
+  // entirely on clk_74a domain — bypasses FIFO, CDC, and FSM entirely.
+  // If APF is genuinely sending real save state data, this should reach
+  // tens of thousands.  If it's ~13, the data is zero at APF's wire.
+  reg [15:0] bridge_wr_nonzero_count = 16'h0000;
+
   // ----- bridge-wr counters (clk_74a) -----
   always @(posedge clk_74a) begin
     if (fifo_load_write) begin
       if (bridge_wr_count != 16'hFFFF) begin
         bridge_wr_count <= bridge_wr_count + 16'h0001;
+      end
+      if (bridge_wr_data != 32'h0 && bridge_wr_nonzero_count != 16'hFFFF) begin
+        bridge_wr_nonzero_count <= bridge_wr_nonzero_count + 16'h0001;
       end
       if (!first_wr_seen) begin
         first_wr_data <= bridge_wr_data;
