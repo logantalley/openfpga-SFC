@@ -706,8 +706,14 @@ module MAIN_SNES (
       end
 
       SS_WR_ISSUE: begin
-        ss_mem_wr    <= 1;
-        ss_mem_state <= SS_WR_WAIT;
+        // Gate on ~sdram_busy: sdram.sv only accepts new requests in
+        // STATE_IDLE.  Issuing wr=1 while busy is silently ignored, yet
+        // our FSM would still see busy fall and toggle ack, dropping the
+        // write.  Hold here until sdram is idle.
+        if (~sdram_busy) begin
+          ss_mem_wr    <= 1;
+          ss_mem_state <= SS_WR_WAIT;
+        end
       end
 
       SS_WR_WAIT: begin
@@ -734,8 +740,11 @@ module MAIN_SNES (
       end
 
       SS_RD_ISSUE: begin
-        ss_mem_rd    <= 1;
-        ss_mem_state <= SS_RD_WAIT;
+        // Same gate as SS_WR_ISSUE — only assert rd when sdram is idle.
+        if (~sdram_busy) begin
+          ss_mem_rd    <= 1;
+          ss_mem_state <= SS_RD_WAIT;
+        end
       end
 
       SS_RD_WAIT: begin

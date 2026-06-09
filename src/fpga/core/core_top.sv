@@ -1149,15 +1149,8 @@ module core_top (
 
       // Audio
       .audio_l(audio_l),
-      .audio_r(audio_r),
-
-      // v55: clk_mem-side staging FSM diagnostic counters
-      .dbg_cnt_busy_at_issue(snes_dbg_cnt_busy_at_issue),
-      .dbg_cnt_loading_low  (snes_dbg_cnt_loading_low)
+      .audio_r(audio_r)
   );
-
-  wire [15:0] snes_dbg_cnt_busy_at_issue;
-  wire [15:0] snes_dbg_cnt_loading_low;
 
   // Video
 
@@ -1278,12 +1271,6 @@ module core_top (
   reg [7:0] dbg_first_save_b0_sync_1;
   reg [7:0] dbg_first_save_b1_sync_0;
   reg [7:0] dbg_first_save_b1_sync_1;
-  // v55 SNES.sv staging FSM diagnostic counter sync regs (clk_video).
-  reg [15:0] snes_busy_at_issue_sync_0;
-  reg [15:0] snes_busy_at_issue_sync_1;
-  reg [15:0] snes_loading_low_sync_0;
-  reg [15:0] snes_loading_low_sync_1;
-
   reg [7:0] dbg_first_save_addr_lo_sync_0;
   reg [7:0] dbg_first_save_addr_lo_sync_1;
   reg [7:0] dbg_first_save_addr_hi_sync_0;
@@ -1405,10 +1392,6 @@ module core_top (
     dbg_last_w0_hi_sync_1    <= dbg_last_w0_hi_sync_0;
     dbg_w0_wr_count_sync_0   <= debug_w0_wr_count;
     dbg_w0_wr_count_sync_1   <= dbg_w0_wr_count_sync_0;
-    snes_busy_at_issue_sync_0 <= snes_dbg_cnt_busy_at_issue;
-    snes_busy_at_issue_sync_1 <= snes_busy_at_issue_sync_0;
-    snes_loading_low_sync_0   <= snes_dbg_cnt_loading_low;
-    snes_loading_low_sync_1   <= snes_loading_low_sync_0;
     dbg_first_save_addr_lo_sync_0 <= debug_first_save_addr_lo;
     dbg_first_save_addr_lo_sync_1 <= dbg_first_save_addr_lo_sync_0;
     dbg_first_save_addr_hi_sync_0 <= debug_first_save_addr_hi;
@@ -1480,12 +1463,6 @@ module core_top (
   wire [7:0] dbg_first_save_addr_hi_video = dbg_first_save_addr_hi_sync_1;
   wire [7:0] dbg_first_pf_addr_lo_video   = dbg_first_pf_addr_lo_sync_1;
   wire [7:0] dbg_first_pf_addr_hi_video   = dbg_first_pf_addr_hi_sync_1;
-  // v55: 16-bit SNES staging FSM counters split into hi/lo bytes for overlay
-  wire [7:0] snes_busy_at_issue_lo_video = snes_busy_at_issue_sync_1[7:0];
-  wire [7:0] snes_busy_at_issue_hi_video = snes_busy_at_issue_sync_1[15:8];
-  wire [7:0] snes_loading_low_lo_video   = snes_loading_low_sync_1[7:0];
-  wire [7:0] snes_loading_low_hi_video   = snes_loading_low_sync_1[15:8];
-
   wire [7:0] dbg_first_sram_w0_lo_video   = dbg_first_sram_w0_lo_sync_1;
   wire [7:0] dbg_first_sram_w0_hi_video   = dbg_first_sram_w0_hi_sync_1;
   wire [7:0] dbg_first_sram_w1_lo_video   = dbg_first_sram_w1_lo_sync_1;
@@ -1769,24 +1746,18 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v55 — TEST SUBAGENT'S HANDSHAKE-RACE HYPOTHESIS.
-      // sdram.sv only accepts a new request in STATE_IDLE.  Our clk_mem
-      // FSM may fire ss_mem_wr=1 while sdram_busy is already high (from
-      // a prior op).  If so, write is dropped, but our FSM still sees busy
-      // fall and toggles ack — matching the "all writes ack but only chunk
-      // 0 lands" symptom exactly.
-      //
-      //   RED   : cnt_busy_at_issue[7:0]   # writes where sdram was already busy
-      //   GREEN : cnt_busy_at_issue[15:8]
-      //   YELLOW: cnt_loading_low[7:0]     # clk_mem cycles ss_loading_mem was low at issue
-      //   CYAN  : cnt_loading_low[15:8]
-      //
-      // If RED+GREEN > 0: the race is real. Most writes are being dropped.
-      // If 0: handshake is fine, real bug is elsewhere.
-      2'd0: begin row_value = snes_busy_at_issue_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = snes_busy_at_issue_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = snes_loading_low_lo_video;   row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = snes_loading_low_hi_video;   row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v55b — applied subagent's fix directly: gate
+      // SS_WR_ISSUE on ~sdram_busy so we never issue a write while sdram
+      // is mid-transaction (which would be silently dropped).  Re-probe
+      // chunks beyond chunk 0 to see if data now lands.
+      //   RED   : SDRAM[BASE+0]      chunk 0 word 0, want $53 (anchor)
+      //   GREEN : SDRAM[BASE+0x20]   chunk 4 word 0, want $30 if fix worked
+      //   YELLOW: SDRAM[BASE+0x40000] 32 KB in (middle of save region)
+      //   CYAN  : SDRAM[BASE+0x7FFF8] last chunk
+      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_last_w0_lo_video;         row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_hi_video;   row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

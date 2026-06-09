@@ -478,10 +478,9 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  // v54: 16-bit nonzero-data writes to 0x4xxxxxxx (savestate region).
-  // SM should give ~144K (saturate $FFFF).  SMW should give ~13K.
-  assign debug_first_save_addr_lo = nz_4xxx_count_wide[7:0];
-  assign debug_first_save_addr_hi = nz_4xxx_count_wide[15:8];
+  // v55b: re-wire to chunk 0 anchor probe.
+  assign debug_first_save_addr_lo = probe_result_0[7:0];
+  assign debug_first_save_addr_hi = probe_result_0[15:8];
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -518,8 +517,9 @@ module save_state_controller (
   // (savestate area), then APF is putting the data somewhere unexpected.
   // v54: first nonzero-data 0x4xxxxxxx write — low 2 bytes of bridge_addr.
   // Reveals the starting OFFSET APF uses within savestate region.
-  assign debug_first_sram_w1_lo = first_nz_4xxx_addr[7:0];
-  assign debug_first_sram_w1_hi = first_nz_4xxx_addr[15:8];
+  // v55b: re-wire to deep SDRAM probes after the ~sdram_busy gate fix.
+  assign debug_first_sram_w1_lo = probe_result_2[7:0];  // 32 KB in
+  assign debug_first_sram_w1_hi = probe_result_3[7:0];  // last chunk
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -992,13 +992,11 @@ module save_state_controller (
       SYS_PROBE_REQ: begin
         ss_sdram_rd_req  <= ~ss_sdram_rd_req;
         case (probe_idx)
-          // Probe addresses we KNOW should have non-zero data per known
-          // SMW .sta layout to disambiguate "FIFO returns zero" from "data
-          // happens to be zero in that region":
-          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;  // chunk 0 word 0, want $53 (sanity)
-          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000020;  // chunk 4 word 0, want $30 ("0.0.1")
-          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000022;  // chunk 4 word 1, want $30 (or '.')
-          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000028;  // chunk 5 word 0
+          // v55b: spread probes after applying ~sdram_busy gate fix
+          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;  // chunk 0 anchor
+          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000020;  // chunk 4 (want $30 for SMW; nonzero for SM)
+          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0040000;  // 32 KB in
+          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h007FFF8;  // last chunk
         endcase
         sys_state <= SYS_PROBE_WAIT;
       end
