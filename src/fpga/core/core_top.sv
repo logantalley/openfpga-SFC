@@ -1746,17 +1746,22 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v57 — settle reverted from 7 to 1 cycle.  Probe
-      // all 4 words of chunk 0 again to see if longer settle was breaking
-      // words 2 and 3:
-      //   RED   : SDRAM[BASE+0] word 0 LOW (want $53 'S')
-      //   GREEN : SDRAM[BASE+2] word 1 LOW (want $45 'E')
-      //   YELLOW: SDRAM[BASE+4] word 2 LOW (want $2D '-')
-      //   CYAN  : SDRAM[BASE+6] word 3 LOW (want $53 'S')
-      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_last_w0_lo_video;         row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_last_w0_hi_video;         row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v59 — one-flash bisect: FIFO vs SDRAM-write vs
+      // read-back.  RTL sim (tb_ss_staging) passed clean, so this isolates
+      // where silicon diverges:
+      //   RED   : FIFO byte-lane OR map (debug_first_save_byte0).  Bit per
+      //           byte lane of fifo_load_dout that ever carried nonzero.
+      //           Want $FF.  $0F = dcfifo upper 32 bits dead in silicon.
+      //   GREEN : sdram cnt_wr_lo[16:9] (dbg_load_stall_cnt[7:0]).  Real
+      //           CMD_WRITE count for chunk words 0/1, /512.  Want $80.
+      //   YELLOW: sdram cnt_wr_hi[16:9] (dbg_load_stall_cnt[15:8]).  Same
+      //           for words 2/3.  Want $80; $00 = those writes never
+      //           reached the chip.
+      //   CYAN  : SDRAM[BASE+4] word 2 LOW via probe (want $2D '-').
+      2'd0: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_stall_cnt_video[7:0];  row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_load_stall_cnt_video[15:8]; row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_last_w0_lo_video;           row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

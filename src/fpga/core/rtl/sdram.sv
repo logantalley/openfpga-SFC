@@ -22,7 +22,7 @@ module sdram
 (
 
 	// interface to the MT48LC16M16 chip
-	inout  reg [15:0] SDRAM_DQ,   // 16 bit bidirectional data bus
+	inout      [15:0] SDRAM_DQ,   // 16 bit bidirectional data bus
 	output reg [12:0] SDRAM_A,    // 13 bit multiplexed address bus
 	output reg        SDRAM_DQML, // byte mask
 	output reg        SDRAM_DQMH, // byte mask
@@ -44,13 +44,20 @@ module sdram
 	input             word,
 	input      [15:0] din,
 	output     [15:0] dout,
-	output reg        busy,
+	output reg        busy = 1'b0,
 
-	// Diagnostic: counts real CMD_WRITE issuances (= ram_req_test asserted
-	// for a write at STATE_START).  Distinguishes "write reached chip" from
-	// "write request silently converted to AUTO_REFRESH because ram_req_test
-	// evaluated false at STATE_START".
-	output reg [15:0] dbg_real_writes
+	// Diagnostic v59: real CMD_WRITE commits split by word-class within a
+	// 64-bit savestate chunk.  addr[2:1] = word index 0..3 within the chunk
+	// (staging base is 8-byte aligned).  Classes 0/1 vs 2/3 are counted in
+	// separate 17-bit counters; the output packs bits [16:9] of each:
+	//   dbg_real_writes[7:0]  = cnt_wr_lo[16:9]  (classes 0,1 — expect $80
+	//                            after a full 512KB load = 131072 writes)
+	//   dbg_real_writes[15:8] = cnt_wr_hi[16:9]  (classes 2,3 — expect $80;
+	//                            $00 means words 2/3 writes never reached
+	//                            the chip)
+	// Replaces the old single 16-bit saturating count, which could not
+	// distinguish 131072 (2 writes/chunk) from 262144 (4 writes/chunk).
+	output wire [15:0] dbg_real_writes
 );
 
 assign SDRAM_nCS = 0;
@@ -72,10 +79,27 @@ localparam STATE_CONT  = STATE_START+RASCAS_DELAY;
 localparam STATE_READY = STATE_CONT+CAS_LATENCY+1'd1;
 localparam STATE_LAST  = STATE_READY;      // last state in cycle
 
-reg  [2:0] state;
+// (declarations hoisted above first use so ModelSim's vlog accepts the
+// file; Quartus tolerated the original forward references.  No functional
+// change.)
+localparam MODE_NORMAL = 2'b00;
+localparam MODE_RESET  = 2'b01;
+localparam MODE_LDM    = 2'b10;
+localparam MODE_PRE    = 2'b11;
+
+// Explicit power-up values matching Quartus's default (registers come up
+// 0 on Cyclone V).  Without these, simulation starts them at X and the
+// state machine deadlocks — hardware behavior is unchanged.
+reg [1:0] mode = 2'b00;
+reg [4:0] reset = '1;
+
+reg  [2:0] state = 3'd0;
+reg [16:0] cnt_wr_lo = 17'd0;
+reg [16:0] cnt_wr_hi = 17'd0;
+assign dbg_real_writes = {cnt_wr_hi[16:9], cnt_wr_lo[16:9]};
 reg [24:0] a;
 reg [15:0] data;
-reg        we;
+reg        we = 1'b0;
 reg        ds;
 reg        ram_req=0;
 wire       ram_req_test = (we || (a[24:1] != addr[24:1]));
@@ -104,10 +128,16 @@ always @(posedge clk) begin
 		a <= addr;
 		data <= word ? din : {din[7:0],din[7:0]};
 		ram_req <= ram_req_test;
-		// Diagnostic: count real writes that actually reach the chip
-		// (ram_req_test=true AND we=1 = CMD_WRITE will fire at STATE_CONT).
-		if (ram_req_test && we && dbg_real_writes != 16'hFFFF)
-			dbg_real_writes <= dbg_real_writes + 16'd1;
+		// Diagnostic v59: count real writes by word-class (addr[2:1]).
+		// ram_req_test=true AND we=1 = CMD_WRITE will fire at STATE_CONT.
+		// Gated to the savestate staging region (byte addr $800000..$FFFFFF,
+		// addr[24:23]=01) so cart-download writes don't pollute the counts.
+		if (ram_req_test && we && addr[24:23] == 2'b01) begin
+			if (addr[2])
+				cnt_wr_hi <= cnt_wr_hi + 17'd1;   // word 2 or 3 of a chunk
+			else
+				cnt_wr_lo <= cnt_wr_lo + 17'd1;   // word 0 or 1 of a chunk
+		end
 	end
 
 	if(state == STATE_READY && busy) begin
@@ -132,14 +162,7 @@ end
 
 assign dout = ((~ds & a[0]) ? {last_data[7:0],last_data[15:8]} : last_data);
 
-localparam MODE_NORMAL = 2'b00;
-localparam MODE_RESET  = 2'b01;
-localparam MODE_LDM    = 2'b10;
-localparam MODE_PRE    = 2'b11;
-
-// initialization 
-reg [1:0] mode;
-reg [4:0] reset = '1;
+// initialization
 always @(posedge clk) begin
 	reg init_old=0;
 	init_old <= init;
@@ -167,14 +190,20 @@ localparam CMD_LOAD_MODE       = 3'b000;
 
 wire [1:0] dqm = {we & ~ds & ~a[0], we & ~ds & a[0]};
 
+// DQ tristate driver: ModelSim requires the inout port to be a net, so
+// drive it from an internal reg via a continuous assign (synthesizes to
+// the same tristate buffer Quartus inferred from the old `inout reg`).
+reg [15:0] SDRAM_DQ_out;
+assign SDRAM_DQ = SDRAM_DQ_out;
+
 // SDRAM state machines
 always @(posedge clk) begin
 	if(state == STATE_START) SDRAM_BA <= (mode == MODE_NORMAL) ? addr[24:23] : 2'b00;
 
-	SDRAM_DQ <= 'Z;
+	SDRAM_DQ_out <= 'Z;
 	casex({ram_req,we,mode,state})
 		{2'bXX, MODE_NORMAL, STATE_START}: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= ram_req_test ? CMD_ACTIVE : CMD_AUTO_REFRESH;
-		{2'b11, MODE_NORMAL, STATE_CONT }: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE, SDRAM_DQ} <= {CMD_WRITE, data};
+		{2'b11, MODE_NORMAL, STATE_CONT }: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE, SDRAM_DQ_out} <= {CMD_WRITE, data};
 		{2'b10, MODE_NORMAL, STATE_CONT }: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_READ;
 
 		// init

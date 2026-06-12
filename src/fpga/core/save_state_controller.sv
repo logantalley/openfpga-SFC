@@ -52,12 +52,14 @@ module save_state_controller (
     output wire savestate_start_err_s,
 
     // Core-side savestate control
-    output reg ss_save,
-    output reg ss_load,
+    // (= initializers on output regs mirror Quartus's power-up-to-0
+    // default; required so simulation doesn't start them at X)
+    output reg ss_save = 0,
+    output reg ss_load = 0,
 
     // Core-side DDR-style interface (toggle-based req/ack)
     input wire [63:0] ss_din,     // Data from core (save)
-    output reg [63:0] ss_dout,    // Data to core (load)
+    output reg [63:0] ss_dout = 64'h0,  // Data to core (load)
     input wire [16:0] ss_addr,    // DDR word address from savestates.sv
     input wire ss_rnw,            // Read/not-write (0=write/save, 1=read/load)
     input wire ss_req,            // Toggle request from savestates.sv
@@ -112,29 +114,21 @@ module save_state_controller (
     output wire [7:0] debug_w0_wr_count,
 
     // SDRAM staging interface — CDC'd into clk_mem by SNES.sv.
-    output reg         ss_sdram_wr_req,
-    output reg  [24:0] ss_sdram_wr_addr,
-    output reg  [15:0] ss_sdram_wr_data,
+    output reg         ss_sdram_wr_req  = 0,
+    output reg  [24:0] ss_sdram_wr_addr = 25'h0,
+    output reg  [15:0] ss_sdram_wr_data = 16'h0,
     input  wire        ss_sdram_wr_ack,
-    output reg         ss_sdram_rd_req,
-    output reg  [24:0] ss_sdram_rd_addr,
+    output reg         ss_sdram_rd_req  = 0,
+    output reg  [24:0] ss_sdram_rd_addr = 25'h0,
     input  wire [15:0] ss_sdram_rd_data,
     input  wire        ss_sdram_rd_ack,
-    output reg         ss_loading,
+    output reg         ss_loading = 0,
     output wire        ss_pause_cpu    // high during STAGING only — gates SNES MCLK
 );
 
-  // The CPU must be frozen only while we're actively hijacking SDRAM for
-  // staging (the serve phase needs the CPU running to execute firmware).
-  // Staging states are SYS_STAGE_* (5'd10..5'd15) and the brief STAGING
-  // start in SYS_IDLE.  Simplest robust definition: pause whenever the
-  // FSM is in any staging-related state.
-  assign ss_pause_cpu = (sys_state == SYS_STAGE_FIFO_RD)    ||
-                        (sys_state == SYS_STAGE_FIFO_WAIT)  ||
-                        (sys_state == SYS_STAGE_FIFO_LATCH) ||
-                        (sys_state == SYS_STAGE_WR_REQ)     ||
-                        (sys_state == SYS_STAGE_WR_WAIT)    ||
-                        (sys_state == SYS_STAGE_IDLE);
+  // (The ss_pause_cpu assign moved below the sys_state declaration so
+  // ModelSim's vlog accepts the forward references; Quartus tolerated
+  // them.  No functional change.)
 
   // SDRAM staging base address.  Cart ROMs are at SDRAM word offset 0 and
   // SNES ROMs max out around 8 MB (= 4 Mwords = 25'h400000).  Place the
@@ -355,6 +349,18 @@ module save_state_controller (
   reg [4:0] prev_sys_state = SYS_IDLE;
   assign debug_sys_state = sys_state[3:0];
 
+  // The CPU must be frozen only while we're actively hijacking SDRAM for
+  // staging (the serve phase needs the CPU running to execute firmware).
+  // Staging states are SYS_STAGE_* (5'd10..5'd15) and the brief STAGING
+  // start in SYS_IDLE.  Simplest robust definition: pause whenever the
+  // FSM is in any staging-related state.
+  assign ss_pause_cpu = (sys_state == SYS_STAGE_FIFO_RD)    ||
+                        (sys_state == SYS_STAGE_FIFO_WAIT)  ||
+                        (sys_state == SYS_STAGE_FIFO_LATCH) ||
+                        (sys_state == SYS_STAGE_WR_REQ)     ||
+                        (sys_state == SYS_STAGE_WR_WAIT)    ||
+                        (sys_state == SYS_STAGE_IDLE);
+
   // Edge / handshake tracking
   reg prev_savestate_start = 0;
   reg prev_savestate_load  = 0;
@@ -385,6 +391,9 @@ module save_state_controller (
   // activity.  When this exceeds a threshold AND FIFO is empty, we
   // consider staging done.  Avoids fragile exact-count gate.
   reg [19:0] stage_quiet_cnt = 20'd0;
+  // Bridge-wr count (clk_74a) — useful to confirm APF wrote all chunks.
+  // (declaration hoisted above its first use for ModelSim)
+  reg [15:0] bridge_wr_count = 16'h0000;
   // Sync bridge_wr_count[7:0] (clk_74a) to clk_sys, then detect changes.
   wire [7:0] bridge_wr_lo_sys;
   synch_3 #(.WIDTH(8)) sync_bridge_wr_lo (
@@ -441,8 +450,6 @@ module save_state_controller (
   assign debug_core_wr_ever     = 1'b0;
   assign debug_sram_wr_ack_ever = 1'b0;
 
-  // Bridge-wr count (clk_74a) — useful to confirm APF wrote all chunks.
-  reg [15:0] bridge_wr_count = 16'h0000;
   assign debug_bridge_wr_count_lo = bridge_wr_count[7:0];
   assign debug_bridge_wr_count_hi = bridge_wr_count[15:8];
 
@@ -455,10 +462,8 @@ module save_state_controller (
   //   data_b1 → cnt_serve_rd_entries    (# entries to SERVE_RD_REQ)
   //   addr_lo → cnt_serve_ack_entries   (# entries to SERVE_ACK)
   //   addr_hi → cnt_ss_load_pulses      (# ss_load pulses we emitted)
-  assign debug_first_wr_data_b0 = cnt_serve_wait_entries;
-  assign debug_first_wr_data_b1 = cnt_serve_rd_entries;
-  assign debug_first_wr_addr_lo = cnt_serve_ack_entries;
-  assign debug_first_wr_addr_hi = cnt_ss_load_pulses;
+  // (assigns moved below the counter declarations for ModelSim — see
+  // "deferred debug assigns" block after cnt_stage_wr_done_wide.)
 
   // SAVE-side first chunk debug (kept from Phase A)
   reg [63:0] first_save_chunk = 64'h0;
@@ -473,8 +478,8 @@ module save_state_controller (
   // sample_chunk8 at ack_idx==4 captures chunk 4 (file +0x20 = "0.0.1\0").
   // sample_chunk40 at ack_idx==8 captures chunk 8 (file +0x40).
   // sample_chunk64 at ack_idx==40 captures chunk 40 (file +0x140).
-  assign debug_first_save_byte0   = sample_chunk8;   // chunk 4 byte 0, want $30
-  assign debug_first_save_byte1   = sample_chunk40;  // chunk 8 byte 0
+  // (debug_first_save_byte0/1 assigns moved below sample_chunk8/40
+  // declarations for ModelSim — see "deferred debug assigns" block.)
   // Repurposed: expose ddr-req-in-wait diagnostics.
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
@@ -500,8 +505,8 @@ module save_state_controller (
   // v49: 16-bit true count of sdram_wr_done events.  Expected ~262144 if
   // each chunk had 4 distinct writes (saturates 16-bit at $FFFF = 65535).
   // If MUCH LOWER, sdram_wr_done isn't firing as often as we thought.
-  assign debug_first_pf_addr_lo = cnt_stage_wr_done_wide[7:0];
-  assign debug_first_pf_addr_hi = cnt_stage_wr_done_wide[15:8];
+  // (debug_first_pf_addr_lo/hi assigns moved below the
+  // cnt_stage_wr_done_wide declaration for ModelSim — see below.)
 
   // Serve-side first SDRAM read result (= first chunk byte 0..1)
   reg [15:0] first_serve_word = 16'h0000;
@@ -600,6 +605,35 @@ module save_state_controller (
   reg [7:0] cnt_stage_fifo_latch = 8'h00;  // entered STAGE_FIFO_LATCH
   reg [7:0] cnt_stage_wr_done    = 8'h00;  // sdram_wr_done fired in WR_WAIT
   reg [15:0] cnt_stage_wr_done_wide = 16'h0000;  // 16-bit version (true count up to 65535)
+
+  // ----- Deferred debug assigns (moved here so every referenced reg is
+  // declared above; Quartus tolerated the forward references, ModelSim's
+  // vlog does not.  No functional change.) -----
+  //   data_b0 → cnt_serve_wait_entries  (# entries to SERVE_WAIT_REQ)
+  //   data_b1 → cnt_serve_rd_entries    (# entries to SERVE_RD_REQ)
+  //   addr_lo → cnt_serve_ack_entries   (# entries to SERVE_ACK)
+  //   addr_hi → cnt_ss_load_pulses      (# ss_load pulses we emitted)
+  assign debug_first_wr_data_b0 = cnt_serve_wait_entries;
+  assign debug_first_wr_data_b1 = cnt_serve_rd_entries;
+  assign debug_first_wr_addr_lo = cnt_serve_ack_entries;
+  assign debug_first_wr_addr_hi = cnt_ss_load_pulses;
+  // v59: byte-lane OR map of every 64-bit FIFO dout ever latched.  Bit N
+  // set = byte lane N of fifo_load_dout carried nonzero data at least once.
+  // Expect $FF for a dense file.  $0F = upper 32 bits (the second bridge
+  // word of each chunk — exactly the words that read back zero from SDRAM)
+  // NEVER carried data out of the dcfifo_mixed_widths → FIFO upper lane is
+  // dead in silicon.  $FF = FIFO fine, bug is downstream of stage_buffer.
+  assign debug_first_save_byte0 = {
+      |fifo_or_checksum[63:56], |fifo_or_checksum[55:48],
+      |fifo_or_checksum[47:40], |fifo_or_checksum[39:32],
+      |fifo_or_checksum[31:24], |fifo_or_checksum[23:16],
+      |fifo_or_checksum[15:8],  |fifo_or_checksum[7:0]
+  };
+  assign debug_first_save_byte1 = sample_chunk40;  // chunk 8 byte 0
+  // v49: 16-bit true count of sdram_wr_done events (see comment at the
+  // original site above).
+  assign debug_first_pf_addr_lo = cnt_stage_wr_done_wide[7:0];
+  assign debug_first_pf_addr_hi = cnt_stage_wr_done_wide[15:8];
   reg [7:0] cnt_stage_idle_enter = 8'h00;  // entered SYS_STAGE_IDLE
   reg [7:0] cnt_guard_pass       = 8'h00;  // STAGE_IDLE guard passed -> SERVE_KICK_WAIT
   reg [7:0] cnt_fifo_nonempty    = 8'h00;  // # clk_sys cycles where fifo_load_empty=0 (saturating)

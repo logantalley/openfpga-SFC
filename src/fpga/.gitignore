@@ -27,3 +27,11 @@ cr_ie_info.json
 *.sld
 *.cdf
 
+# ModelSim simulation artifacts (simulate_staging.do / simulate.do)
+work/
+transcript
+modelsim.ini
+vsim.wlf
+*.wlf
+ap_core_assignment_defaults.qdf
+
