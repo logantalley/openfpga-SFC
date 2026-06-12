@@ -44,7 +44,13 @@ module sdram
 	input             word,
 	input      [15:0] din,
 	output     [15:0] dout,
-	output reg        busy
+	output reg        busy,
+
+	// Diagnostic: counts real CMD_WRITE issuances (= ram_req_test asserted
+	// for a write at STATE_START).  Distinguishes "write reached chip" from
+	// "write request silently converted to AUTO_REFRESH because ram_req_test
+	// evaluated false at STATE_START".
+	output reg [15:0] dbg_real_writes
 );
 
 assign SDRAM_nCS = 0;
@@ -98,6 +104,10 @@ always @(posedge clk) begin
 		a <= addr;
 		data <= word ? din : {din[7:0],din[7:0]};
 		ram_req <= ram_req_test;
+		// Diagnostic: count real writes that actually reach the chip
+		// (ram_req_test=true AND we=1 = CMD_WRITE will fire at STATE_CONT).
+		if (ram_req_test && we && dbg_real_writes != 16'hFFFF)
+			dbg_real_writes <= dbg_real_writes + 16'd1;
 	end
 
 	if(state == STATE_READY && busy) begin

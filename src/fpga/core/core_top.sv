@@ -1746,18 +1746,26 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v55b — applied subagent's fix directly: gate
-      // SS_WR_ISSUE on ~sdram_busy so we never issue a write while sdram
-      // is mid-transaction (which would be silently dropped).  Re-probe
-      // chunks beyond chunk 0 to see if data now lands.
-      //   RED   : SDRAM[BASE+0]      chunk 0 word 0, want $53 (anchor)
-      //   GREEN : SDRAM[BASE+0x20]   chunk 4 word 0, want $30 if fix worked
-      //   YELLOW: SDRAM[BASE+0x40000] 32 KB in (middle of save region)
-      //   CYAN  : SDRAM[BASE+0x7FFF8] last chunk
-      2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_last_w0_lo_video;         row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video;   row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video;   row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v56 — GROUND TRUTH from inside sdram.sv.  The
+      // dbg_load_stall_cnt port is REPURPOSED to carry sdram's
+      // dbg_real_writes (count of CMD_WRITE actually issued to the chip).
+      // Compare to staging-side cnt_stage_wr_done_wide ($FFFF saturated).
+      //   RED   : dbg_real_writes[7:0]   (real CMD_WRITE count, low)
+      //   GREEN : dbg_real_writes[15:8]  (high)
+      //   YELLOW: SDRAM[BASE+0]    chunk 0 anchor sanity (want $53)
+      //   CYAN  : SDRAM[BASE+0x20] chunk 4 (want $30 / nonzero if any
+      //                                     chunks past chunk 0 land)
+      //
+      // If RED+GREEN saturate $FFFF: SDRAM really did receive 65535+
+      //   writes.  Data should be there.  Bug is elsewhere (refresh decay,
+      //   mux, addressing).
+      // If RED+GREEN are small/zero: sdram.sv is silently converting our
+      //   write requests to AUTO_REFRESH.  ram_req_test is evaluating
+      //   false for most writes.
+      2'd0: begin row_value = dbg_load_stall_cnt_video[7:0];  row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_stall_cnt_video[15:8]; row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_addr_lo_video;   row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_last_w0_lo_video;           row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

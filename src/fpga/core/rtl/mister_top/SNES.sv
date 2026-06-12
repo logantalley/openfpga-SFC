@@ -50,6 +50,8 @@ module MAIN_SNES (
     output wire [3:0]  dbg_load_en_cnt,
     output wire [3:0]  dbg_load_vect_cnt,
     output wire [3:0]  dbg_load_busy_cnt,
+    // dbg_load_stall_cnt is REPURPOSED — now carries sdram.dbg_real_writes
+    // to diagnose whether SDRAM commits as many writes as we issue.
     output wire [15:0] dbg_load_stall_cnt,
 
     input wire multitap_enabled,
@@ -499,7 +501,7 @@ module MAIN_SNES (
       .DBG_LOAD_EN_CNT    (dbg_load_en_cnt),
       .DBG_LOAD_VECT_CNT  (dbg_load_vect_cnt),
       .DBG_LOAD_BUSY_CNT  (dbg_load_busy_cnt),
-      .DBG_LOAD_STALL_CNT (dbg_load_stall_cnt),
+      .DBG_LOAD_STALL_CNT (main_dbg_load_stall_cnt_unused),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),
@@ -795,6 +797,10 @@ module MAIN_SNES (
       ss_loading_mem  ? 1'b1 :
                         ROM_WORD;
 
+  wire [15:0] sdram_dbg_real_writes;
+  wire [15:0] main_dbg_load_stall_cnt_unused;
+  assign dbg_load_stall_cnt = sdram_dbg_real_writes;
+
   sdram sdram (
       .init(0),  //~clock_locked),
       .clk(clk_mem),
@@ -806,6 +812,8 @@ module MAIN_SNES (
       .wr  (sdram_wr_mux),
       .word(sdram_word_mux),
       .busy(sdram_busy),
+
+      .dbg_real_writes(sdram_dbg_real_writes),
 
       // Actual SDRAM interface
       .SDRAM_DQ(dram_dq),
