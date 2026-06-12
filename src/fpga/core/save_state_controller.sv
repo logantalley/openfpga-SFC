@@ -393,6 +393,7 @@ module save_state_controller (
 
   // Staging book-keeping
   reg [1:0]  stage_word_idx;       // which of the 4 SDRAM words within the chunk
+  reg [3:0]  wr_gap_cnt = 4'd0;    // v58: cooldown after each word write
   reg [63:0] stage_buffer;
   reg [24:0] stage_addr;
 
@@ -746,6 +747,8 @@ module save_state_controller (
     ss_load             <= 0;
     fifo_save_write_req <= 0;
     fifo_load_read_req  <= 0;
+
+    if (wr_gap_cnt != 4'd0) wr_gap_cnt <= wr_gap_cnt - 4'd1;
     // NOTE: ss_sdram_wr_req / ss_sdram_rd_req are TOGGLE bits, not
     // pulses — the SNES.sv clk_mem-side FSM edge-detects them via
     // synch_3.  Don't default them to 0 here.
@@ -910,20 +913,25 @@ module save_state_controller (
       end
 
       SYS_STAGE_WR_REQ: begin
-        ss_sdram_wr_req  <= ~ss_sdram_wr_req;  // toggle to request a write
-        ss_sdram_wr_addr <= stage_addr;
-        case (stage_word_idx)
-          2'd0: ss_sdram_wr_data <= stage_buffer[15:0];
-          2'd1: ss_sdram_wr_data <= stage_buffer[31:16];
-          2'd2: ss_sdram_wr_data <= stage_buffer[47:32];
-          2'd3: ss_sdram_wr_data <= stage_buffer[63:48];
-        endcase
-        if (!first_stage_seen) begin
-          first_stage_word <= stage_buffer[15:0];
-          first_stage_addr <= stage_addr;
-          first_stage_seen <= 1;
+        // v58: hold off until the wr_gap_cnt cooldown elapses (set in
+        // WR_WAIT after previous word's ack).  Tests if rapid-fire
+        // back-to-back writes are dropping words 2,3.
+        if (wr_gap_cnt == 4'd0) begin
+          ss_sdram_wr_req  <= ~ss_sdram_wr_req;  // toggle to request a write
+          ss_sdram_wr_addr <= stage_addr;
+          case (stage_word_idx)
+            2'd0: ss_sdram_wr_data <= stage_buffer[15:0];
+            2'd1: ss_sdram_wr_data <= stage_buffer[31:16];
+            2'd2: ss_sdram_wr_data <= stage_buffer[47:32];
+            2'd3: ss_sdram_wr_data <= stage_buffer[63:48];
+          endcase
+          if (!first_stage_seen) begin
+            first_stage_word <= stage_buffer[15:0];
+            first_stage_addr <= stage_addr;
+            first_stage_seen <= 1;
+          end
+          sys_state <= SYS_STAGE_WR_WAIT;
         end
-        sys_state <= SYS_STAGE_WR_WAIT;
       end
 
       SYS_STAGE_WR_WAIT: begin
@@ -934,6 +942,9 @@ module save_state_controller (
           // byte-within-word, AND skips re-access when addr[24:1] is
           // unchanged.  So distinct 16-bit words must step addr by 2.
           stage_addr <= stage_addr + 25'd2;
+          // v58 test: add a settle gap before next word's WR_REQ to see
+          // if rapid-fire writes were dropping words 2,3.
+          wr_gap_cnt <= 4'd8;
           if (stage_word_idx == 2'd3) begin
             if (stage_entry_count != 17'h1FFFF) begin
               stage_entry_count <= stage_entry_count + 17'd1;
