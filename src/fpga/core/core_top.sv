@@ -1746,16 +1746,13 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v56c — show full 16-bit content of words 0 and 1
-      // separately to distinguish "wrong byte" from "wrong word":
-      //   RED   : SDRAM[BASE+0] word 0 LOW  byte (want $53 'S')
-      //   GREEN : SDRAM[BASE+0] word 0 HIGH byte (want $4E 'N')
-      //   YELLOW: SDRAM[BASE+2] word 1 LOW  byte (want $45 'E')
-      //   CYAN  : SDRAM[BASE+2] word 1 HIGH byte (want $53 'S')
-      // If word 0 reads $4E53 correctly and word 1 reads $5345 correctly,
-      //   stride-2 staging IS working for the first chunk's writes.
-      // If word 1 returns $4E53 (same as word 0), the read is reading
-      //   from word 0's address even though we asked for word 1.
+      // Phase C overlay v57 — settle reverted from 7 to 1 cycle.  Probe
+      // all 4 words of chunk 0 again to see if longer settle was breaking
+      // words 2 and 3:
+      //   RED   : SDRAM[BASE+0] word 0 LOW (want $53 'S')
+      //   GREEN : SDRAM[BASE+2] word 1 LOW (want $45 'E')
+      //   YELLOW: SDRAM[BASE+4] word 2 LOW (want $2D '-')
+      //   CYAN  : SDRAM[BASE+6] word 3 LOW (want $53 'S')
       2'd0: begin row_value = dbg_first_save_addr_lo_video; row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video; row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_last_w0_lo_video;         row_marker_rgb = 24'hFFFF00; end
