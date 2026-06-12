@@ -340,17 +340,24 @@ module tb_ss_staging #(
   // -------------------------------------------------------------------
   localparam SYS_STAGE_FIFO_LATCH = 5'd12;
 
-  int fifo_latch_count       = 0;
+  // v61: the load FIFO is now plain 32-bit; a chunk = two FIFO_LATCH
+  // visits (stage_half 0 then 1).  Count assembled chunks and check both
+  // halves carried nonzero data (the TB pattern guarantees nonzero).
+  int fifo_latch_count       = 0;   // completed chunks
   int fifo_upper_zero_count  = 0;
   int fifo_lower_zero_count  = 0;
   logic [63:0] first_fifo_dout = 'x;
 
   always @(posedge clk_sys) begin
     if (ssc.sys_state == SYS_STAGE_FIFO_LATCH) begin
-      fifo_latch_count++;
-      if (fifo_latch_count == 1) first_fifo_dout = ssc.fifo_load_dout;
-      if (ssc.fifo_load_dout[63:32] == 32'h0) fifo_upper_zero_count++;
-      if (ssc.fifo_load_dout[31:0]  == 32'h0) fifo_lower_zero_count++;
+      if (!ssc.stage_half) begin
+        if (ssc.fifo_load_dout == 32'h0) fifo_lower_zero_count++;
+      end else begin
+        fifo_latch_count++;
+        if (fifo_latch_count == 1)
+          first_fifo_dout = {ssc.fifo_load_dout, ssc.stage_buffer[31:0]};
+        if (ssc.fifo_load_dout == 32'h0) fifo_upper_zero_count++;
+      end
     end
   end
 

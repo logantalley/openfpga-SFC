@@ -261,8 +261,8 @@ module save_state_controller (
   reg         fifo_load_read_req = 0;
   wire        fifo_load_empty;
   wire        fifo_load_full;
-  wire  [7:0] fifo_load_rdusedw;  // read-side used count (0..255 entries)
-  wire [63:0] fifo_load_dout;
+  wire  [8:0] fifo_load_rdusedw;  // read-side used count (0..511 words)
+  wire [31:0] fifo_load_dout;
 
   // bridge_wr at 4xxxxxxx is a 1-cycle pulse on clk_74a — feed it directly
   // as wrreq.  The FIFO ignores wrreq when full (overflow_checking=ON).
@@ -283,7 +283,18 @@ module save_state_controller (
     end
   end
 
-  dcfifo_mixed_widths fifo_load (
+  // v61 FIX: was dcfifo_mixed_widths 32→64.  v59/v60 hardware evidence
+  // (FIFO upper byte lanes carry data at SOME latches, yet chunk 0's
+  // word-2/3 writes commit at the correct address with data $0000) points
+  // at the mixed-width read side popping a 64-bit word when only its
+  // first 32-bit half has been written (upper half reads as 0; M10K
+  // powers up zeroed).  The RTL sim model doesn't do this, which is why
+  // tb_ss_staging passed.  Chunk 0 holds the "SNES-SS" magic the load
+  // firmware validates, so a single half-pop at stream start kills every
+  // load while leaving all later chunks perfectly aligned.
+  // Fix: plain 32-bit dcfifo (rdempty is exact per 32-bit word) and
+  // explicit two-pop 64-bit assembly in the staging FSM (stage_half).
+  dcfifo fifo_load (
       .data(bridge_wr_swapped),
       .rdclk(clk_sys),
       .rdreq(fifo_load_read_req),
@@ -298,11 +309,9 @@ module save_state_controller (
   defparam fifo_load.intended_device_family = "Cyclone V",
       fifo_load.lpm_numwords  = 512,
       fifo_load.lpm_showahead = "OFF",
-      fifo_load.lpm_type      = "dcfifo_mixed_widths",
+      fifo_load.lpm_type      = "dcfifo",
       fifo_load.lpm_width     = 32,
       fifo_load.lpm_widthu    = 9,
-      fifo_load.lpm_widthu_r  = 8,
-      fifo_load.lpm_width_r   = 64,
       fifo_load.overflow_checking  = "ON",
       fifo_load.underflow_checking = "ON",
       fifo_load.rdsync_delaypipe = 5,
@@ -402,6 +411,8 @@ module save_state_controller (
 
   // Staging book-keeping
   reg [1:0]  stage_word_idx;       // which of the 4 SDRAM words within the chunk
+  reg        stage_half = 1'b0;    // v61: which 32-bit half of the chunk the
+                                   // next FIFO pop fills (0=lower, 1=upper)
   reg [3:0]  wr_gap_cnt = 4'd0;    // v58: cooldown after each word write
   reg [63:0] stage_buffer;
   reg [24:0] stage_addr;
@@ -858,6 +869,7 @@ module save_state_controller (
           // keeps incrementing through the whole load.
           if (stage_entry_count == 17'd0) begin
             stage_addr <= STAGING_BASE_WORD;
+            stage_half <= 1'b0;
             ss_loading <= 1;
           end
           sys_state <= SYS_STAGE_FIFO_RD;
@@ -893,7 +905,11 @@ module save_state_controller (
       end
 
       // ============================================================
-      // STAGING: drain load FIFO 64-bit chunks into SDRAM, 4 words each
+      // STAGING: assemble each 64-bit chunk from TWO 32-bit FIFO pops
+      // (stage_half selects the destination half), then 4 SDRAM writes.
+      // v61: plain 32-bit dcfifo — each pop is gated by fifo_drain_ok
+      // individually, so a chunk's upper half can never be popped before
+      // it has actually been written (the mixed-width half-pop bug).
       // ============================================================
       SYS_STAGE_FIFO_RD: begin
         // Require fifo_drain_ok: rdempty must have been low for several
@@ -904,7 +920,9 @@ module save_state_controller (
           sys_state          <= SYS_STAGE_FIFO_WAIT;
         end else begin
           // FIFO empty or not yet settled.  Park in STAGE_IDLE; we'll come
-          // back when data has been present long enough to trust.
+          // back when data has been present long enough to trust.  A
+          // half-assembled chunk (stage_half=1) is preserved — stage_half
+          // only resets after the chunk completes its 4 SDRAM writes.
           sys_state <= SYS_STAGE_IDLE;
         end
       end
@@ -915,24 +933,32 @@ module save_state_controller (
       end
 
       SYS_STAGE_FIFO_LATCH: begin
-        stage_buffer     <= fifo_load_dout;
-        stage_word_idx   <= 2'd0;
-        sys_state        <= SYS_STAGE_WR_REQ;
-        if (cnt_stage_fifo_latch != 8'hFF) cnt_stage_fifo_latch <= cnt_stage_fifo_latch + 8'd1;
-        if (fifo_drain_count != 16'hFFFF) fifo_drain_count <= fifo_drain_count + 16'd1;
-        // v44 unconditional captures (don't gate on counter==N — that
-        // pattern has been unreliable in this design).
-        latest_stage_buf <= fifo_load_dout;
-        if (!first_buf_seen) begin
-          first_buf_seen <= 1;
-        end else if (!second_buf_seen) begin
-          second_stage_buf <= fifo_load_dout;
-          second_buf_seen  <= 1;
+        if (!stage_half) begin
+          // First 32-bit word of the chunk → lower half; go pop the second.
+          stage_buffer[31:0] <= fifo_load_dout;
+          stage_half         <= 1'b1;
+          sys_state          <= SYS_STAGE_FIFO_RD;
+          fifo_or_checksum[31:0] <= fifo_or_checksum[31:0] | fifo_load_dout;
+        end else begin
+          // Second word → upper half; chunk complete, start SDRAM writes.
+          stage_buffer[63:32] <= fifo_load_dout;
+          stage_half          <= 1'b0;
+          stage_word_idx      <= 2'd0;
+          sys_state           <= SYS_STAGE_WR_REQ;
+          fifo_or_checksum[63:32] <= fifo_or_checksum[63:32] | fifo_load_dout;
+          // Per-chunk debug counters/captures (once per assembled chunk).
+          if (cnt_stage_fifo_latch != 8'hFF) cnt_stage_fifo_latch <= cnt_stage_fifo_latch + 8'd1;
+          if (fifo_drain_count != 16'hFFFF) fifo_drain_count <= fifo_drain_count + 16'd1;
+          latest_stage_buf <= {fifo_load_dout, stage_buffer[31:0]};
+          if (!first_buf_seen) begin
+            first_buf_seen <= 1;
+          end else if (!second_buf_seen) begin
+            second_stage_buf <= {fifo_load_dout, stage_buffer[31:0]};
+            second_buf_seen  <= 1;
+          end
+          if ({fifo_load_dout, stage_buffer[31:0]} != 64'h0 && cnt_nonzero_fifo_dout != 16'hFFFF)
+            cnt_nonzero_fifo_dout <= cnt_nonzero_fifo_dout + 16'd1;
         end
-        // v46: track FIFO health.
-        fifo_or_checksum <= fifo_or_checksum | fifo_load_dout;
-        if (fifo_load_dout != 64'h0 && cnt_nonzero_fifo_dout != 16'hFFFF)
-          cnt_nonzero_fifo_dout <= cnt_nonzero_fifo_dout + 16'd1;
         // Capture stage_buffer at chunk index 4 (= staging chunk 4 starts
         // when stage_entry_count is currently 4, about to become 5).
         // Compare against expected SMW .sta payload at chunk 4:
@@ -940,8 +966,8 @@ module save_state_controller (
         //   little-endian 64-bit: 64'h0000_0031_2E30_2E30
         // Capture at the 5th FIFO_LATCH (= chunk 4) using cnt_stage_fifo_latch
         // because stage_entry_count is unreliable in this build.
-        if (!sample_buf4_seen && cnt_stage_fifo_latch == 8'd4) begin
-          sample_stage_buf4  <= fifo_load_dout;
+        if (stage_half && !sample_buf4_seen && cnt_stage_fifo_latch == 8'd4) begin
+          sample_stage_buf4  <= {fifo_load_dout, stage_buffer[31:0]};
           sample_buf4_seen   <= 1;
         end
       end
@@ -1194,6 +1220,7 @@ module save_state_controller (
         // Reset the staging counter so the next load starts fresh from
         // STAGING_BASE_WORD.  bridge_wr_count etc. stay sticky for debug.
         stage_entry_count   <= 17'h00000;
+        stage_half          <= 1'b0;
       end
 
       default: sys_state <= SYS_IDLE;
