@@ -293,7 +293,8 @@ module tb_ss_staging #(
   wire        dram_dqml, dram_dqmh;
   wire        dram_ncs, dram_nwe, dram_nras, dram_ncas;
   wire        dram_clk, dram_cke;
-  wire [15:0] dbg_real_writes_unused;
+  wire [15:0] dbg_real_writes_unused;  // = first_w2_data in v60
+  wire [15:0] dbg_w2_info;             // = {cnt_wr_hi[17:10], first_w2_addr_lo}
 
   sdram sdram (
       .init(1'b0),
@@ -308,6 +309,7 @@ module tb_ss_staging #(
       .busy(sdram_busy),
 
       .dbg_real_writes(dbg_real_writes_unused),
+      .dbg_w2_info    (dbg_w2_info),
 
       .SDRAM_DQ(dram_dq),
       .SDRAM_A(dram_a),
@@ -432,6 +434,20 @@ module tb_ss_staging #(
     $display("[tb] probe_result_0..3       : %h %h %h %h",
              ssc.probe_result_0, ssc.probe_result_1,
              ssc.probe_result_2, ssc.probe_result_3);
+    $display("[tb] v60 first_w2_data       : %h (expect %h)",
+             dbg_real_writes_unused, expected_word(2));
+    $display("[tb] v60 first_w2_addr_lo    : %h (expect 04)", dbg_w2_info[7:0]);
+
+    // v60 chip-boundary capture must match chunk0 word2.
+    if (dbg_real_writes_unused !== expected_word(2)) begin
+      errors++;
+      $display("ERROR: first_w2_data = %h, expected %h",
+               dbg_real_writes_unused, expected_word(2));
+    end
+    if (dbg_w2_info[7:0] !== 8'h04) begin
+      errors++;
+      $display("ERROR: first_w2_addr_lo = %h, expected 04", dbg_w2_info[7:0]);
+    end
 
     // Per-class write counts — the saturated-counter evidence gap, resolved.
     for (k = 0; k < 4; k++) begin

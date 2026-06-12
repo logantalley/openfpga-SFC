@@ -496,8 +496,10 @@ module MAIN_SNES (
       .DBG_FW_AT_8003     (dbg_fw_at_8003),
       .DBG_BYTE_AT_8000   (dbg_byte_at_8000),
       .DBG_BYTE_AT_8001   (dbg_byte_at_8001),
-      .DBG_LOAD_BYTE0     (dbg_load_byte0),
-      .DBG_LOAD_BYTE1     (dbg_load_byte1),
+      // v60: dbg_load_byte0/1 outputs are HIJACKED below to carry
+      // sdram.dbg_w2_info; main's original drivers go to dummy wires.
+      .DBG_LOAD_BYTE0     (main_dbg_load_byte0_unused),
+      .DBG_LOAD_BYTE1     (main_dbg_load_byte1_unused),
       .DBG_LOAD_EN_CNT    (dbg_load_en_cnt),
       .DBG_LOAD_VECT_CNT  (dbg_load_vect_cnt),
       .DBG_LOAD_BUSY_CNT  (dbg_load_busy_cnt),
@@ -678,8 +680,16 @@ module MAIN_SNES (
                         ROM_WORD;
 
   wire [15:0] sdram_dbg_real_writes;
+  wire [15:0] sdram_dbg_w2_info;
   wire [15:0] main_dbg_load_stall_cnt_unused;
+  wire  [7:0] main_dbg_load_byte0_unused;
+  wire  [7:0] main_dbg_load_byte1_unused;
+  // v60 hijacks: dbg_load_stall_cnt carries first_w2_data ($532D expected);
+  // dbg_load_byte0 = cnt_wr_hi[17:10] ($80 expected); dbg_load_byte1 =
+  // first_w2_addr[7:0] ($04 expected).
   assign dbg_load_stall_cnt = sdram_dbg_real_writes;
+  assign dbg_load_byte0     = sdram_dbg_w2_info[15:8];
+  assign dbg_load_byte1     = sdram_dbg_w2_info[7:0];
 
   sdram sdram (
       .init(0),  //~clock_locked),
@@ -694,6 +704,7 @@ module MAIN_SNES (
       .busy(sdram_busy),
 
       .dbg_real_writes(sdram_dbg_real_writes),
+      .dbg_w2_info    (sdram_dbg_w2_info),
 
       // Actual SDRAM interface
       .SDRAM_DQ(dram_dq),
