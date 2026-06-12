@@ -478,7 +478,8 @@ module save_state_controller (
   //   addr_lo → cnt_ddr_req_in_wait (# ddr_req edges seen in SERVE_WAIT)
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
-  // v55b: re-wire to chunk 0 anchor probe.
+  // v56c: probe_result_0 full word (low + high bytes) for chunk 0 word 0.
+  // Want $4E53 (low $53='S', high $4E='N')
   assign debug_first_save_addr_lo = probe_result_0[7:0];
   assign debug_first_save_addr_hi = probe_result_0[15:8];
 
@@ -648,8 +649,9 @@ module save_state_controller (
   //   last_w0_data_hi → fifo_load_drop_cnt[15:8]
   //   w0_wr_count     → {7'b0, fifo_load_overflow}  ($01 = overflowed)
   // v47: chunk 4 word 0 / word 1 low bytes.  Want $30 / $30 for SMW.
+  // v56c: probe_result_1 full word (chunk 0 word 1).  Want $5345.
   assign debug_last_w0_data_lo = probe_result_1[7:0];
-  assign debug_last_w0_data_hi = probe_result_2[7:0];
+  assign debug_last_w0_data_hi = probe_result_1[15:8];
   assign debug_w0_wr_count     = {7'b0, fifo_load_overflow};
 
   // Count of fifo_load_write events with non-zero bridge_wr_data.  Lives
@@ -992,11 +994,14 @@ module save_state_controller (
       SYS_PROBE_REQ: begin
         ss_sdram_rd_req  <= ~ss_sdram_rd_req;
         case (probe_idx)
-          // v55b: spread probes after applying ~sdram_busy gate fix
-          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;  // chunk 0 anchor
-          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000020;  // chunk 4 (want $30 for SMW; nonzero for SM)
-          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0040000;  // 32 KB in
-          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h007FFF8;  // last chunk
+          // v56b: probe ALL 4 SDRAM words of chunk 0.  If only word 0
+          // ($800000) has data and words 1/2/3 (+2/+4/+6) are zero, that
+          // proves each chunk's 4 word writes are landing at the SAME
+          // SDRAM address (clk_mem-side captured addr is sticky).
+          2'd0: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000000;  // chunk 0 word 0 (want $53)
+          2'd1: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000002;  // chunk 0 word 1 (want $45 'E')
+          2'd2: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000004;  // chunk 0 word 2 (want $2D '-')
+          2'd3: ss_sdram_rd_addr <= STAGING_BASE_WORD + 25'h0000006;  // chunk 0 word 3 (want $53 'S')
         endcase
         sys_state <= SYS_PROBE_WAIT;
       end
