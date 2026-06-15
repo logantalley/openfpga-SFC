@@ -1746,25 +1746,37 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v67 — is the load DROPPING odd words, or was the
-      // data faithful all along?  Hex-dump of the .sta file showed it is
-      // dense/correct, and the payload's word 1 is genuinely $00000000 in
-      // the file — so dbg_wr2=$00 was FAITHFUL, not a bug.  Test a file
-      // position that is NONZERO at an odd word: payload words 2,3
-      // (0x0d1feb00, 0x0000d1e2) = the 3rd/4th words pushed into the FIFO.
-      //   RED   : dbg_wr3[7:0]  (payload w2 lo)  want $00
-      //   GREEN : dbg_wr3[15:8] (payload w2 hi)  want $EB
-      //   YELLOW: dbg_wr4[7:0]  (payload w3 lo)  want $E2
-      //   CYAN  : dbg_wr4[15:8] (payload w3 hi)  want $D1
-      // Verdict:
-      //   $00,$EB,$E2,$D1 → bridge delivers odd words faithfully → NO drop
-      //                     bug; the load datapath is fine and the failure
-      //                     is in applying state / the file's payload magic
-      //   $00,$00,$00,$00 → odd words really are dropped → real load bug
-      2'd0: begin row_value = dbg_first_save_addr_lo_video;   row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_addr_hi_video;   row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_save_b1_video;        row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v68 — FIRMWARE-EXECUTION bisect.  The datapath is no
+      // longer suspect (every "zero" was faithful file data; v67 proved the
+      // bridge delivers nonzero words).  Two expert reviews converged: the
+      // load firmware's addressing IS linear (matches BASE+N*8), so the
+      // failure is in firmware-run / apply / handshake.  Show how far the
+      // firmware actually got, in one flash:
+      //   RED   : dbg_load_stall_cnt[7:0] (UN-HIJACKED).  Prefetch-underrun
+      //           count.  NONZERO ⇒ the SNES DMA out-ran the CDC serve
+      //           round-trip and DMA'd STALE bytes ⇒ corrupt apply (the
+      //           leading hypothesis).  Want $00.
+      //   GREEN : ss_addr_max[15:8] (dbg_max_sram_base_hi).  How far the
+      //           firmware read.  Full state ≈ 307KB/8 ≈ 0x9600 chunks, so
+      //           ~$96 = read everything; small ($00-$0x) = aborted/hung early.
+      //   YELLOW: {dbg_load_en_cnt[3:0], dbg_rti_arms[3:0]}.  hi nibble =
+      //           load command reached firmware; lo nibble = firmware hit RTI
+      //           (= load COMPLETED).  lo=0 ⇒ never completed (hang/desync).
+      //   CYAN  : {dbg_load_vect_cnt[3:0], dbg_load_busy_cnt[3:0]}.  hi =
+      //           vblank vector hijack fired; lo = ss_busy rose.  Both 0 ⇒
+      //           firmware never even started (kick/handshake problem).
+      // Bisect:
+      //   CYAN=$00 → firmware never ran → serve-kick/ss_load/handshake
+      //   CYAN nonzero, YELLOW lo=0 / GREEN small → ran but hung/aborted early
+      //   YELLOW lo>0, GREEN ~$96, RED>0 → completed but prefetch underran →
+      //                                    corrupt apply (Finding A) — fix the
+      //                                    DMA-vs-CDC race / serve from BRAM
+      //   completed, GREEN ~$96, RED=$00 → data applied clean → APF handshake
+      //                                    or apply-correctness is the issue
+      2'd0: begin row_value = dbg_load_stall_cnt_video[7:0];                       row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_max_sram_base_hi_video;                          row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = {dbg_load_en_cnt_video,   dbg_rti_arms_video};       row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = {dbg_load_vect_cnt_video, dbg_load_busy_cnt_video};  row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

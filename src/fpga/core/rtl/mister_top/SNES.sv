@@ -503,7 +503,10 @@ module MAIN_SNES (
       .DBG_LOAD_EN_CNT    (dbg_load_en_cnt),
       .DBG_LOAD_VECT_CNT  (dbg_load_vect_cnt),
       .DBG_LOAD_BUSY_CNT  (dbg_load_busy_cnt),
-      .DBG_LOAD_STALL_CNT (main_dbg_load_stall_cnt_unused),
+      // v68: UN-HIJACKED — carry the firmware's real prefetch-stall counter
+      // (byte-boundary underruns) to the overlay to test the DMA-vs-prefetch
+      // race hypothesis.
+      .DBG_LOAD_STALL_CNT (ss_fw_stall_cnt),
 
       .TURBO(cpu_turbo_enabled & turbo_allow),
       .TURBO_ALLOW(turbo_allow),
@@ -679,17 +682,17 @@ module MAIN_SNES (
       ss_loading_mem  ? 1'b1 :
                         ROM_WORD;
 
-  wire [15:0] sdram_dbg_real_writes;
-  wire [15:0] sdram_dbg_w2_info;
-  wire [15:0] main_dbg_load_stall_cnt_unused;
+  wire [15:0] sdram_dbg_real_writes;   // v60 datapath probe — now unused
+  wire [15:0] sdram_dbg_w2_info;       // v60 datapath probe — now unused
+  wire [15:0] ss_fw_stall_cnt;         // v68: real firmware prefetch-stall count
   wire  [7:0] main_dbg_load_byte0_unused;
   wire  [7:0] main_dbg_load_byte1_unused;
-  // v60 hijacks: dbg_load_stall_cnt carries first_w2_data ($532D expected);
-  // dbg_load_byte0 = cnt_wr_hi[17:10] ($80 expected); dbg_load_byte1 =
-  // first_w2_addr[7:0] ($04 expected).
-  assign dbg_load_stall_cnt = sdram_dbg_real_writes;
-  assign dbg_load_byte0     = sdram_dbg_w2_info[15:8];
-  assign dbg_load_byte1     = sdram_dbg_w2_info[7:0];
+  // v68: route the firmware's real prefetch-stall counter to the overlay
+  // (the datapath probes that hijacked these ports through v67 are retired —
+  // the datapath is no longer suspect; see investigation log).
+  assign dbg_load_stall_cnt = ss_fw_stall_cnt;
+  assign dbg_load_byte0     = 8'h00;
+  assign dbg_load_byte1     = 8'h00;
 
   sdram sdram (
       .init(0),  //~clock_locked),
