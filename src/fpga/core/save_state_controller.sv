@@ -413,6 +413,8 @@ module save_state_controller (
   reg [1:0]  stage_word_idx;       // which of the 4 SDRAM words within the chunk
   reg        stage_half = 1'b0;    // v61: which 32-bit half of the chunk the
                                    // next FIFO pop fills (0=lower, 1=upper)
+  reg [15:0] dbg_w2_src      = 16'h0000;  // v62: stage_buffer[47:32] @ word2 WR_REQ
+  reg        dbg_w2_src_seen = 1'b0;
   reg [3:0]  wr_gap_cnt = 4'd0;    // v58: cooldown after each word write
   reg [63:0] stage_buffer;
   reg [24:0] stage_addr;
@@ -628,19 +630,14 @@ module save_state_controller (
   assign debug_first_wr_data_b1 = cnt_serve_rd_entries;
   assign debug_first_wr_addr_lo = cnt_serve_ack_entries;
   assign debug_first_wr_addr_hi = cnt_ss_load_pulses;
-  // v59: byte-lane OR map of every 64-bit FIFO dout ever latched.  Bit N
-  // set = byte lane N of fifo_load_dout carried nonzero data at least once.
-  // Expect $FF for a dense file.  $0F = upper 32 bits (the second bridge
-  // word of each chunk — exactly the words that read back zero from SDRAM)
-  // NEVER carried data out of the dcfifo_mixed_widths → FIFO upper lane is
-  // dead in silicon.  $FF = FIFO fine, bug is downstream of stage_buffer.
-  assign debug_first_save_byte0 = {
-      |fifo_or_checksum[63:56], |fifo_or_checksum[55:48],
-      |fifo_or_checksum[47:40], |fifo_or_checksum[39:32],
-      |fifo_or_checksum[31:24], |fifo_or_checksum[23:16],
-      |fifo_or_checksum[15:8],  |fifo_or_checksum[7:0]
-  };
-  assign debug_first_save_byte1 = sample_chunk40;  // chunk 8 byte 0
+  // v62: controller-side capture of the data fed to ss_sdram_wr_data for
+  // chunk-0 word 2 (stage_buffer[47:32]), latched at WR_REQ in clk_sys.
+  // Compared on the overlay against first_w2_data captured at the chip:
+  //   src ($532D) but chip ($0000) → CDC/arbiter loses words 2/3
+  //   src ($0000)                  → stage_buffer upper half / WR_REQ mux
+  //                                   never carries it in silicon
+  assign debug_first_save_byte0 = dbg_w2_src[7:0];   // want $2D '-'
+  assign debug_first_save_byte1 = dbg_w2_src[15:8];  // want $53 'S'
   // v49: 16-bit true count of sdram_wr_done events (see comment at the
   // original site above).
   assign debug_first_pf_addr_lo = cnt_stage_wr_done_wide[7:0];
@@ -989,6 +986,12 @@ module save_state_controller (
             first_stage_word <= stage_buffer[15:0];
             first_stage_addr <= stage_addr;
             first_stage_seen <= 1;
+          end
+          // v62: capture the upper-half slice we feed for word 2, in
+          // clk_sys, BEFORE any CDC.  Bisects controller-source vs CDC.
+          if (stage_word_idx == 2'd2 && !dbg_w2_src_seen) begin
+            dbg_w2_src      <= stage_buffer[47:32];
+            dbg_w2_src_seen <= 1'b1;
           end
           sys_state <= SYS_STAGE_WR_WAIT;
         end

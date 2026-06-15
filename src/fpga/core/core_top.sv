@@ -1746,23 +1746,22 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v60 — chip-boundary capture of the first word-2/3
-      // staging write.  v59 found: FIFO upper lane fine ($FF), but the
-      // 17-bit class counters wrapped to exactly $00 at 131072 writes —
-      // ambiguous.  v60 uses an 18-bit counter and captures data+addr of
-      // the first class-2 write at the sdram.sv input:
-      //   RED   : cnt_wr_hi[17:10] (dbg_load_byte0).  Want $80 = all
-      //           131072 word-2/3 writes committed.  $00 = none did.
-      //   GREEN : first_w2_data[7:0]  (dbg_load_stall_cnt[7:0]).  Data low
-      //           byte at the chip for chunk0 word2.  Want $2D '-'.
-      //   YELLOW: first_w2_data[15:8] (dbg_load_stall_cnt[15:8]).  High
-      //           byte.  Want $53 'S'.  $0000 = data lane dead at chip.
-      //   CYAN  : first_w2_addr[7:0]  (dbg_load_byte1).  Byte-addr low
-      //           bits of that write.  Want $04 (= BASE+4).
-      2'd0: begin row_value = dbg_load_byte0_video;           row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_stall_cnt_video[7:0];  row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_load_stall_cnt_video[15:8]; row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_load_byte1_video;           row_marker_rgb = 24'h00FFFF; end
+      // Phase C overlay v62 — source-vs-destination bisect for chunk-0
+      // word 2.  v60/v61 proved the write commits at the right address
+      // ($04) with data $0000 at the chip, even after the FIFO rebuild.
+      // So compare what the CONTROLLER feeds (clk_sys, pre-CDC) against
+      // what arrives AT THE CHIP (clk_mem):
+      //   RED   : dbg_w2_src[7:0]  (controller stage_buffer[39:32]).  $2D '-'
+      //   GREEN : dbg_w2_src[15:8] (controller stage_buffer[47:40]).  $53 'S'
+      //   YELLOW: first_w2_data[7:0]  at chip (dbg_load_stall_cnt[7:0]). $2D
+      //   CYAN  : first_w2_data[15:8] at chip (dbg_load_stall_cnt[15:8]).$53
+      // Verdict:
+      //   RED/GREEN good + YELLOW/CYAN $00 → CDC/arbiter loses words 2/3
+      //   RED/GREEN $00                    → stage_buffer upper half / mux
+      2'd0: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_save_b1_video;        row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_load_stall_cnt_video[7:0];  row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_load_stall_cnt_video[15:8]; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
