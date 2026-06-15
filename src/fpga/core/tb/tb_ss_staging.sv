@@ -366,18 +366,14 @@ module tb_ss_staging #(
   // -------------------------------------------------------------------
   int errors = 0;
 
-  // APF holds bridge_wr HIGH for two clk_74a cycles per 32-bit word, with
-  // bridge_wr_data valid only on the first (rising-edge) cycle and the bus
-  // cleared to 0 on the second.  This is why the MiSTer data_loader.sv
-  // edge-detects bridge_wr.  Model it faithfully so the TB reproduces the
-  // hardware "every second word is zero" bug.
+  // v66 hardware proved bridge_wr is a clean 1-cycle pulse per 32-bit word
+  // (addresses captured as +0,+4,+8,+C, no repeats).  The earlier 2-cycle
+  // model was a wrong guess; drive a faithful single-cycle strobe.
   task automatic bridge_write(input [31:0] addr, input [31:0] data);
     @(posedge clk_74a);
     bridge_addr    <= addr;
     bridge_wr_data <= data;
     bridge_wr      <= 1'b1;
-    @(posedge clk_74a);
-    bridge_wr_data <= 32'h0;   // APF drops data but holds strobe a 2nd cycle
     @(posedge clk_74a);
     bridge_wr      <= 1'b0;
   endtask
@@ -458,10 +454,19 @@ module tb_ss_staging #(
     $display("[tb] v64 dbg_wr1/wr2 (push)  : %h %h (expect %h %h)",
              ssc.dbg_wr1, ssc.dbg_wr2, bswap(vpat(0)) & 32'hFFFF,
              bswap(vpat(1)) & 32'hFFFF);
-    // v66 raw addr capture.  TB models a 2-cycle strobe at addr 0x4..00,04:
-    // expect $00,$00,$04,$04 (each word's addr captured on both strobe cycles).
-    $display("[tb] v66 raw addr a1..a4     : %h %h %h %h (expect 00 00 04 04)",
+    // v66 raw addr capture.  TB now drives a clean 1-cycle strobe at
+    // addr 0x4..00,04,08,0C: expect $00,$04,$08,$0C (distinct, no repeats).
+    $display("[tb] v66 raw addr a1..a4     : %h %h %h %h (expect 00 04 08 0C)",
              ssc.dbg_a1, ssc.dbg_a2, ssc.dbg_a3, ssc.dbg_a4);
+    // v67 bridge faithfulness for words 2,3 (the "odd word" drop test).
+    $display("[tb] v67 dbg_wr3/wr4 (push)  : %h %h (expect %h %h)",
+             ssc.dbg_wr3, ssc.dbg_wr4, bswap(vpat(2)) & 32'hFFFF,
+             bswap(vpat(3)) & 32'hFFFF);
+    if (ssc.dbg_wr4 !== (bswap(vpat(3)) & 32'hFFFF)) begin
+      errors++;
+      $display("ERROR: dbg_wr4 = %h, expected %h",
+               ssc.dbg_wr4, bswap(vpat(3)) & 32'hFFFF);
+    end
 
     // v64 write-side: 2nd word pushed into FIFO == bridge word 1's swapped lo.
     if (ssc.dbg_wr2 !== (bswap(vpat(1)) & 32'hFFFF)) begin

@@ -1746,21 +1746,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v66 — measure the ACTUAL APF write pattern.  v65's
-      // edge-detect fix did NOT change the symptom (dbg_wr2 still $00), so
-      // the 2-cycle-strobe model was wrong.  Capture the low byte of
-      // bridge_addr for the first FOUR raw (level) write-cycles to the
-      // 0x4xxxxxxx region:
-      //   RED   : 1st write addr[7:0]
-      //   GREEN : 2nd write addr[7:0]
-      //   YELLOW: 3rd write addr[7:0]
-      //   CYAN  : 4th write addr[7:0]
-      // Interpretation:
-      //   $00,$00,$04,$04 → multi-cycle strobe, stride 4 (edge-detect right;
-      //                     if so, the v65 fix didn't reach this build)
-      //   $00,$04,$08,$0C → 1-cycle pulses, contiguous → odd words really
-      //                     arrive as $0000 (endianness / data-slot bug)
-      //   $00,$08,$10,$18 → APF strides by 8 (every-other slot unwritten)
+      // Phase C overlay v67 — is the load DROPPING odd words, or was the
+      // data faithful all along?  Hex-dump of the .sta file showed it is
+      // dense/correct, and the payload's word 1 is genuinely $00000000 in
+      // the file — so dbg_wr2=$00 was FAITHFUL, not a bug.  Test a file
+      // position that is NONZERO at an odd word: payload words 2,3
+      // (0x0d1feb00, 0x0000d1e2) = the 3rd/4th words pushed into the FIFO.
+      //   RED   : dbg_wr3[7:0]  (payload w2 lo)  want $00
+      //   GREEN : dbg_wr3[15:8] (payload w2 hi)  want $EB
+      //   YELLOW: dbg_wr4[7:0]  (payload w3 lo)  want $E2
+      //   CYAN  : dbg_wr4[15:8] (payload w3 hi)  want $D1
+      // Verdict:
+      //   $00,$EB,$E2,$D1 → bridge delivers odd words faithfully → NO drop
+      //                     bug; the load datapath is fine and the failure
+      //                     is in applying state / the file's payload magic
+      //   $00,$00,$00,$00 → odd words really are dropped → real load bug
       2'd0: begin row_value = dbg_first_save_addr_lo_video;   row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video;   row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFFFF00; end

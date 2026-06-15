@@ -483,10 +483,15 @@ module save_state_controller (
   reg [31:0] first_wr_data = 32'h00000000;
   reg [31:0] first_wr_addr = 32'h00000000;
   reg        first_wr_seen = 0;
-  // v64: swapped [15:0] of the first two words pushed into the load FIFO.
+  // v64/v67: swapped [15:0] of the first FOUR words pushed into the load
+  // FIFO.  v67 uses wr3/wr4 to test the "drops odd words" hypothesis at a
+  // file position that is genuinely NONZERO (payload words 2,3), since
+  // wr2 was zero in the file itself and so couldn't disprove a drop.
   reg [15:0] dbg_wr1 = 16'h0000;
   reg [15:0] dbg_wr2 = 16'h0000;
-  reg [1:0]  dbg_wr_cap = 2'd0;
+  reg [15:0] dbg_wr3 = 16'h0000;
+  reg [15:0] dbg_wr4 = 16'h0000;
+  reg [2:0]  dbg_wr_cap = 3'd0;
   // v66: RAW (level, every clk_74a cycle) capture of bridge_addr[7:0] for
   // the first four cycles where bridge_wr is high to the 0x4xxxxxxx region.
   // Reveals the true APF write pattern that all the downstream symptoms
@@ -528,10 +533,11 @@ module save_state_controller (
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
   // v57: probe all 4 words of chunk 0 with settle=1 (reverted from 7).
-  // v66: raw first-4 write-cycle addresses (low byte).  a1/a2 here, a3/a4
-  // on the byte0/byte1 taps below.
-  assign debug_first_save_addr_lo = dbg_a1;   // 1st raw write addr[7:0]
-  assign debug_first_save_addr_hi = dbg_a2;   // 2nd raw write addr[7:0]
+  // v67: swapped [15:0] of the 3rd word pushed into the FIFO (payload
+  // word 2 = 0x0d1feb00, NONZERO in the file).  Tests whether the bridge
+  // delivers later words faithfully.  Want $00 / $EB.
+  assign debug_first_save_addr_lo = dbg_wr3[7:0];
+  assign debug_first_save_addr_hi = dbg_wr3[15:8];
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -662,9 +668,12 @@ module save_state_controller (
   assign debug_first_wr_data_b1 = cnt_serve_rd_entries;
   assign debug_first_wr_addr_lo = cnt_serve_ack_entries;
   assign debug_first_wr_addr_hi = cnt_ss_load_pulses;
-  // v66: raw first-4 write-cycle addresses (low byte), a3/a4.
-  assign debug_first_save_byte0 = dbg_a3;   // 3rd raw write addr[7:0]
-  assign debug_first_save_byte1 = dbg_a4;   // 4th raw write addr[7:0]
+  // v67: swapped [15:0] of the 4th word pushed into the FIFO (payload
+  // word 3 = 0x0000d1e2, NONZERO in the file).  This is a "word 2/3 of a
+  // chunk" position — if the bridge dropped odd words it would read $0000.
+  // Want $E2 / $D1.
+  assign debug_first_save_byte0 = dbg_wr4[7:0];
+  assign debug_first_save_byte1 = dbg_wr4[15:8];
   // v49: 16-bit true count of sdram_wr_done events (see comment at the
   // original site above).
   assign debug_first_pf_addr_lo = cnt_stage_wr_done_wide[7:0];
@@ -811,14 +820,14 @@ module save_state_controller (
       // If dbg_wr2 is $532D here but dbg_pop2 (read side) is $00, the FIFO
       // dropped/zeroed the second word on read.  If dbg_wr2 is $00, APF/
       // bridge never delivered the chunk's second word to us.
-      if (dbg_wr_cap != 2'd2) begin
-        if (dbg_wr_cap == 2'd0) begin
-          dbg_wr1    <= bridge_wr_swapped[15:0];
-          dbg_wr_cap <= 2'd1;
-        end else begin
-          dbg_wr2    <= bridge_wr_swapped[15:0];
-          dbg_wr_cap <= 2'd2;
-        end
+      if (dbg_wr_cap != 3'd4) begin
+        case (dbg_wr_cap)
+          3'd0: dbg_wr1 <= bridge_wr_swapped[15:0];
+          3'd1: dbg_wr2 <= bridge_wr_swapped[15:0];
+          3'd2: dbg_wr3 <= bridge_wr_swapped[15:0];
+          3'd3: dbg_wr4 <= bridge_wr_swapped[15:0];
+        endcase
+        dbg_wr_cap <= dbg_wr_cap + 3'd1;
       end
     end
     if (bridge_rd && ~prev_bridge_rd_save && bridge_addr[31:28] == 4'h4) begin
