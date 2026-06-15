@@ -366,11 +366,18 @@ module tb_ss_staging #(
   // -------------------------------------------------------------------
   int errors = 0;
 
+  // APF holds bridge_wr HIGH for two clk_74a cycles per 32-bit word, with
+  // bridge_wr_data valid only on the first (rising-edge) cycle and the bus
+  // cleared to 0 on the second.  This is why the MiSTer data_loader.sv
+  // edge-detects bridge_wr.  Model it faithfully so the TB reproduces the
+  // hardware "every second word is zero" bug.
   task automatic bridge_write(input [31:0] addr, input [31:0] data);
     @(posedge clk_74a);
     bridge_addr    <= addr;
     bridge_wr_data <= data;
     bridge_wr      <= 1'b1;
+    @(posedge clk_74a);
+    bridge_wr_data <= 32'h0;   // APF drops data but holds strobe a 2nd cycle
     @(posedge clk_74a);
     bridge_wr      <= 1'b0;
   endtask

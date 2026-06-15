@@ -264,9 +264,20 @@ module save_state_controller (
   wire  [8:0] fifo_load_rdusedw;  // read-side used count (0..511 words)
   wire [31:0] fifo_load_dout;
 
-  // bridge_wr at 4xxxxxxx is a 1-cycle pulse on clk_74a — feed it directly
-  // as wrreq.  The FIFO ignores wrreq when full (overflow_checking=ON).
-  wire fifo_load_write = bridge_wr && (bridge_addr[31:28] == 4'h4);
+  // v65 FIX (the actual root cause): APF holds bridge_wr HIGH for ~2
+  // clk_74a cycles per 32-bit word, with bridge_wr_data valid only on the
+  // first (rising-edge) cycle and the bus cleared to 0 on the rest.  The
+  // old LEVEL-sensitive trigger below pushed each word TWICE — once with
+  // real data, once with $0000 — so the load FIFO filled as
+  // word0,0,word1,0,... and every staged chunk got correct lower 32 bits
+  // and zero upper 32 bits (= "words 2/3 of every chunk are $0000").  The
+  // MiSTer data_loader.sv avoids this by EDGE-detecting bridge_wr (see its
+  // `~prev_bridge_wr && bridge_wr`); the ROM path worked for exactly that
+  // reason.  Match it: push on the rising edge only.
+  reg prev_bridge_wr_fifo = 1'b0;
+  always @(posedge clk_74a) prev_bridge_wr_fifo <= bridge_wr;
+  wire fifo_load_write =
+      ~prev_bridge_wr_fifo && bridge_wr && (bridge_addr[31:28] == 4'h4);
 
   // Overflow detector (clk_74a): if a bridge_wr arrives while the FIFO is
   // full, that write is DROPPED -> staged data has a hole.  Latch a sticky

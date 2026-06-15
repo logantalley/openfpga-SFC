@@ -1746,18 +1746,18 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v64 — FIFO WRITE-side capture.  v63 showed the raw
-      // FIFO read output (dbg_pop2) for chunk-0's second word is $0000, so
-      // the data is gone at/before the FIFO read.  Now look at what was
-      // PUSHED IN: the swapped [15:0] of the first two FIFO writes, captured
-      // on clk_74a before the FIFO.
-      //   RED   : dbg_wr2[7:0]  2nd FIFO write low  ($2D '-')  <- suspect
+      // Phase C overlay v65 — ROOT CAUSE FIXED.  v64 showed dbg_wr2 (the
+      // 2nd word pushed into the load FIFO) = $0000 while dbg_wr1 = $4E53:
+      // our LEVEL-sensitive fifo_load_write fired twice per APF word (APF
+      // holds bridge_wr high ~2 cycles, data valid only on the rising
+      // edge), pushing word,0,word,0...  Fixed by edge-detecting bridge_wr
+      // (matches MiSTer data_loader.sv).  These rows now confirm the fix
+      // took -- all four should read nonzero:
+      //   RED   : dbg_wr2[7:0]  2nd FIFO write low  ($2D '-')
       //   GREEN : dbg_wr2[15:8] 2nd FIFO write high ($53 'S')
-      //   YELLOW: dbg_wr1[7:0]  1st FIFO write low  ($53 'S')  <- sanity
+      //   YELLOW: dbg_wr1[7:0]  1st FIFO write low  ($53 'S')
       //   CYAN  : dbg_wr1[15:8] 1st FIFO write high ($4E 'N')
-      // Verdict (read side dbg_pop2 already known $00):
-      //   RED/GREEN good → 2nd word entered FIFO fine → FIFO READ drops it
-      //   RED/GREEN $00  → APF/bridge never delivered the 2nd word to us
+      // The real success criterion is the load actually restoring state.
       2'd0: begin row_value = dbg_first_save_addr_lo_video;   row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video;   row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFFFF00; end
