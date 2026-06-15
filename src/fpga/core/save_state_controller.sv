@@ -472,6 +472,10 @@ module save_state_controller (
   reg [31:0] first_wr_data = 32'h00000000;
   reg [31:0] first_wr_addr = 32'h00000000;
   reg        first_wr_seen = 0;
+  // v64: swapped [15:0] of the first two words pushed into the load FIFO.
+  reg [15:0] dbg_wr1 = 16'h0000;
+  reg [15:0] dbg_wr2 = 16'h0000;
+  reg [1:0]  dbg_wr_cap = 2'd0;
   // Repurposed for Phase C: expose serve-FSM action counters.
   //   data_b0 → cnt_serve_wait_entries  (# entries to SERVE_WAIT_REQ)
   //   data_b1 → cnt_serve_rd_entries    (# entries to SERVE_RD_REQ)
@@ -500,10 +504,10 @@ module save_state_controller (
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
   // v57: probe all 4 words of chunk 0 with settle=1 (reverted from 7).
-  // v63: raw FIFO second-pop data for chunk 0 (vs dbg_w2_src register
-  // readback on the byte0/byte1 taps).  Want $2D / $53.
-  assign debug_first_save_addr_lo = dbg_pop2[7:0];   // 2nd-pop low  ($2D '-')
-  assign debug_first_save_addr_hi = dbg_pop2[15:8];  // 2nd-pop high ($53 'S')
+  // v64: write-side capture of the 2nd word pushed into the FIFO
+  // (bridge/clk_74a, before the FIFO).  Want $2D / $53.
+  assign debug_first_save_addr_lo = dbg_wr2[7:0];   // 2nd FIFO-write low  ($2D '-')
+  assign debug_first_save_addr_hi = dbg_wr2[15:8];  // 2nd FIFO-write high ($53 'S')
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -634,14 +638,10 @@ module save_state_controller (
   assign debug_first_wr_data_b1 = cnt_serve_rd_entries;
   assign debug_first_wr_addr_lo = cnt_serve_ack_entries;
   assign debug_first_wr_addr_hi = cnt_ss_load_pulses;
-  // v62: controller-side capture of the data fed to ss_sdram_wr_data for
-  // chunk-0 word 2 (stage_buffer[47:32]), latched at WR_REQ in clk_sys.
-  // Compared on the overlay against first_w2_data captured at the chip:
-  //   src ($532D) but chip ($0000) → CDC/arbiter loses words 2/3
-  //   src ($0000)                  → stage_buffer upper half / WR_REQ mux
-  //                                   never carries it in silicon
-  assign debug_first_save_byte0 = dbg_w2_src[7:0];   // want $2D '-'
-  assign debug_first_save_byte1 = dbg_w2_src[15:8];  // want $53 'S'
+  // v64: write-side capture of the 1st word pushed into the FIFO (sanity
+  // / ordering check).  Want $53 / $4E ("SN" swapped).
+  assign debug_first_save_byte0 = dbg_wr1[7:0];   // 1st FIFO-write low  ($53 'S')
+  assign debug_first_save_byte1 = dbg_wr1[15:8];  // 1st FIFO-write high ($4E 'N')
   // v49: 16-bit true count of sdram_wr_done events (see comment at the
   // original site above).
   assign debug_first_pf_addr_lo = cnt_stage_wr_done_wide[7:0];
@@ -767,6 +767,23 @@ module save_state_controller (
         first_wr_data <= bridge_wr_data;
         first_wr_addr <= bridge_addr;
         first_wr_seen <= 1;
+      end
+      // v64: capture the swapped [15:0] of the FIRST and SECOND words
+      // pushed into the load FIFO (clk_74a, write side, BEFORE the FIFO).
+      // chunk 0 = bytes 0-7 = "SNES" + "-SS\0":
+      //   1st FIFO entry [15:0] = $4E53 ("SN")
+      //   2nd FIFO entry [15:0] = $532D ("-S")  <- the word that reads $00
+      // If dbg_wr2 is $532D here but dbg_pop2 (read side) is $00, the FIFO
+      // dropped/zeroed the second word on read.  If dbg_wr2 is $00, APF/
+      // bridge never delivered the chunk's second word to us.
+      if (dbg_wr_cap != 2'd2) begin
+        if (dbg_wr_cap == 2'd0) begin
+          dbg_wr1    <= bridge_wr_swapped[15:0];
+          dbg_wr_cap <= 2'd1;
+        end else begin
+          dbg_wr2    <= bridge_wr_swapped[15:0];
+          dbg_wr_cap <= 2'd2;
+        end
       end
     end
     if (bridge_rd && ~prev_bridge_rd_save && bridge_addr[31:28] == 4'h4) begin

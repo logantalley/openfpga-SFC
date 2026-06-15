@@ -448,6 +448,16 @@ module tb_ss_staging #(
              ssc.dbg_w2_src, expected_word(2));
     $display("[tb] v63 dbg_pop2 (raw FIFO) : %h (expect %h)",
              ssc.dbg_pop2, expected_word(2));
+    $display("[tb] v64 dbg_wr1/wr2 (push)  : %h %h (expect %h %h)",
+             ssc.dbg_wr1, ssc.dbg_wr2, bswap(vpat(0)) & 32'hFFFF,
+             bswap(vpat(1)) & 32'hFFFF);
+
+    // v64 write-side: 2nd word pushed into FIFO == bridge word 1's swapped lo.
+    if (ssc.dbg_wr2 !== (bswap(vpat(1)) & 32'hFFFF)) begin
+      errors++;
+      $display("ERROR: dbg_wr2 = %h, expected %h",
+               ssc.dbg_wr2, bswap(vpat(1)) & 32'hFFFF);
+    end
 
     // v62 controller-side capture of stage_buffer[47:32] at word-2 WR_REQ.
     if (ssc.dbg_w2_src !== expected_word(2)) begin

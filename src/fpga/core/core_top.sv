@@ -1746,20 +1746,18 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v63 — FIFO-output vs register-readback bisect for
-      // chunk-0 word 2.  v62 showed the CONTROLLER reads $0000 from
-      // stage_buffer[47:32] (dbg_w2_src) — the data is gone before the CDC.
-      // Same symptom held across v58 (1×64b load) and v61 (2×32b pops), so
-      // the suspect is stage_buffer's upper half OR the data feeding it.
-      // Compare the RAW FIFO output that fills the upper half against the
-      // register readback:
-      //   RED   : dbg_pop2[7:0]   raw FIFO 2nd-pop low  ($2D '-')
-      //   GREEN : dbg_pop2[15:8]  raw FIFO 2nd-pop high ($53 'S')
-      //   YELLOW: dbg_w2_src[7:0]  stage_buffer[47:32] readback low  ($2D)
-      //   CYAN  : dbg_w2_src[15:8] stage_buffer[47:32] readback high ($53)
-      // Verdict:
-      //   RED/GREEN good + YELLOW/CYAN $00 → stage_buffer upper-half reg bug
-      //   RED/GREEN $00                    → FIFO delivered zero (read/fill)
+      // Phase C overlay v64 — FIFO WRITE-side capture.  v63 showed the raw
+      // FIFO read output (dbg_pop2) for chunk-0's second word is $0000, so
+      // the data is gone at/before the FIFO read.  Now look at what was
+      // PUSHED IN: the swapped [15:0] of the first two FIFO writes, captured
+      // on clk_74a before the FIFO.
+      //   RED   : dbg_wr2[7:0]  2nd FIFO write low  ($2D '-')  <- suspect
+      //   GREEN : dbg_wr2[15:8] 2nd FIFO write high ($53 'S')
+      //   YELLOW: dbg_wr1[7:0]  1st FIFO write low  ($53 'S')  <- sanity
+      //   CYAN  : dbg_wr1[15:8] 1st FIFO write high ($4E 'N')
+      // Verdict (read side dbg_pop2 already known $00):
+      //   RED/GREEN good → 2nd word entered FIFO fine → FIFO READ drops it
+      //   RED/GREEN $00  → APF/bridge never delivered the 2nd word to us
       2'd0: begin row_value = dbg_first_save_addr_lo_video;   row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video;   row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFFFF00; end
