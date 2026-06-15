@@ -487,6 +487,19 @@ module save_state_controller (
   reg [15:0] dbg_wr1 = 16'h0000;
   reg [15:0] dbg_wr2 = 16'h0000;
   reg [1:0]  dbg_wr_cap = 2'd0;
+  // v66: RAW (level, every clk_74a cycle) capture of bridge_addr[7:0] for
+  // the first four cycles where bridge_wr is high to the 0x4xxxxxxx region.
+  // Reveals the true APF write pattern that all the downstream symptoms
+  // derive from:
+  //   $00,$00,$04,$04  → bridge_wr is a MULTI-cycle strobe, stride 4
+  //                      (edge-detect is the right fix; if v65 didn't help,
+  //                       the fix didn't reach the build)
+  //   $00,$04,$08,$0C  → 1-cycle pulses, contiguous 32-bit — then odd words
+  //                      genuinely carry $0000 (endianness / data-slot issue)
+  //   $00,$08,$10,$18  → APF strides by 8, only writing every other 32-bit
+  //                      slot (we must reconstruct the skipped words)
+  reg [7:0] dbg_a1 = 8'h00, dbg_a2 = 8'h00, dbg_a3 = 8'h00, dbg_a4 = 8'h00;
+  reg [2:0] dbg_a_cap = 3'd0;
   // Repurposed for Phase C: expose serve-FSM action counters.
   //   data_b0 → cnt_serve_wait_entries  (# entries to SERVE_WAIT_REQ)
   //   data_b1 → cnt_serve_rd_entries    (# entries to SERVE_RD_REQ)
@@ -515,10 +528,10 @@ module save_state_controller (
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
   // v57: probe all 4 words of chunk 0 with settle=1 (reverted from 7).
-  // v64: write-side capture of the 2nd word pushed into the FIFO
-  // (bridge/clk_74a, before the FIFO).  Want $2D / $53.
-  assign debug_first_save_addr_lo = dbg_wr2[7:0];   // 2nd FIFO-write low  ($2D '-')
-  assign debug_first_save_addr_hi = dbg_wr2[15:8];  // 2nd FIFO-write high ($53 'S')
+  // v66: raw first-4 write-cycle addresses (low byte).  a1/a2 here, a3/a4
+  // on the byte0/byte1 taps below.
+  assign debug_first_save_addr_lo = dbg_a1;   // 1st raw write addr[7:0]
+  assign debug_first_save_addr_hi = dbg_a2;   // 2nd raw write addr[7:0]
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -649,10 +662,9 @@ module save_state_controller (
   assign debug_first_wr_data_b1 = cnt_serve_rd_entries;
   assign debug_first_wr_addr_lo = cnt_serve_ack_entries;
   assign debug_first_wr_addr_hi = cnt_ss_load_pulses;
-  // v64: write-side capture of the 1st word pushed into the FIFO (sanity
-  // / ordering check).  Want $53 / $4E ("SN" swapped).
-  assign debug_first_save_byte0 = dbg_wr1[7:0];   // 1st FIFO-write low  ($53 'S')
-  assign debug_first_save_byte1 = dbg_wr1[15:8];  // 1st FIFO-write high ($4E 'N')
+  // v66: raw first-4 write-cycle addresses (low byte), a3/a4.
+  assign debug_first_save_byte0 = dbg_a3;   // 3rd raw write addr[7:0]
+  assign debug_first_save_byte1 = dbg_a4;   // 4th raw write addr[7:0]
   // v49: 16-bit true count of sdram_wr_done events (see comment at the
   // original site above).
   assign debug_first_pf_addr_lo = cnt_stage_wr_done_wide[7:0];
@@ -737,6 +749,18 @@ module save_state_controller (
 
   // ----- bridge-wr counters (clk_74a) -----
   always @(posedge clk_74a) begin
+    // v66: RAW level capture of the first four 0x4xxxxxxx write-cycle
+    // addresses (low byte).  Uses bridge_wr directly (NOT the edge-detected
+    // fifo_load_write) so a multi-cycle strobe shows up as repeated values.
+    if (bridge_wr && bridge_addr[31:28] == 4'h4 && dbg_a_cap != 3'd4) begin
+      case (dbg_a_cap)
+        3'd0: dbg_a1 <= bridge_addr[7:0];
+        3'd1: dbg_a2 <= bridge_addr[7:0];
+        3'd2: dbg_a3 <= bridge_addr[7:0];
+        3'd3: dbg_a4 <= bridge_addr[7:0];
+      endcase
+      dbg_a_cap <= dbg_a_cap + 3'd1;
+    end
     // v52 broad-net counters: count ALL bridge_wr regardless of address.
     if (bridge_wr) begin
       if (bridge_wr_data != 32'h0 && bridge_wr_any_nonzero != 16'hFFFF) begin

@@ -1746,18 +1746,21 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v65 — ROOT CAUSE FIXED.  v64 showed dbg_wr2 (the
-      // 2nd word pushed into the load FIFO) = $0000 while dbg_wr1 = $4E53:
-      // our LEVEL-sensitive fifo_load_write fired twice per APF word (APF
-      // holds bridge_wr high ~2 cycles, data valid only on the rising
-      // edge), pushing word,0,word,0...  Fixed by edge-detecting bridge_wr
-      // (matches MiSTer data_loader.sv).  These rows now confirm the fix
-      // took -- all four should read nonzero:
-      //   RED   : dbg_wr2[7:0]  2nd FIFO write low  ($2D '-')
-      //   GREEN : dbg_wr2[15:8] 2nd FIFO write high ($53 'S')
-      //   YELLOW: dbg_wr1[7:0]  1st FIFO write low  ($53 'S')
-      //   CYAN  : dbg_wr1[15:8] 1st FIFO write high ($4E 'N')
-      // The real success criterion is the load actually restoring state.
+      // Phase C overlay v66 — measure the ACTUAL APF write pattern.  v65's
+      // edge-detect fix did NOT change the symptom (dbg_wr2 still $00), so
+      // the 2-cycle-strobe model was wrong.  Capture the low byte of
+      // bridge_addr for the first FOUR raw (level) write-cycles to the
+      // 0x4xxxxxxx region:
+      //   RED   : 1st write addr[7:0]
+      //   GREEN : 2nd write addr[7:0]
+      //   YELLOW: 3rd write addr[7:0]
+      //   CYAN  : 4th write addr[7:0]
+      // Interpretation:
+      //   $00,$00,$04,$04 → multi-cycle strobe, stride 4 (edge-detect right;
+      //                     if so, the v65 fix didn't reach this build)
+      //   $00,$04,$08,$0C → 1-cycle pulses, contiguous → odd words really
+      //                     arrive as $0000 (endianness / data-slot bug)
+      //   $00,$08,$10,$18 → APF strides by 8 (every-other slot unwritten)
       2'd0: begin row_value = dbg_first_save_addr_lo_video;   row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_first_save_addr_hi_video;   row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFFFF00; end

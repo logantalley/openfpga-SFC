@@ -458,6 +458,10 @@ module tb_ss_staging #(
     $display("[tb] v64 dbg_wr1/wr2 (push)  : %h %h (expect %h %h)",
              ssc.dbg_wr1, ssc.dbg_wr2, bswap(vpat(0)) & 32'hFFFF,
              bswap(vpat(1)) & 32'hFFFF);
+    // v66 raw addr capture.  TB models a 2-cycle strobe at addr 0x4..00,04:
+    // expect $00,$00,$04,$04 (each word's addr captured on both strobe cycles).
+    $display("[tb] v66 raw addr a1..a4     : %h %h %h %h (expect 00 00 04 04)",
+             ssc.dbg_a1, ssc.dbg_a2, ssc.dbg_a3, ssc.dbg_a4);
 
     // v64 write-side: 2nd word pushed into FIFO == bridge word 1's swapped lo.
     if (ssc.dbg_wr2 !== (bswap(vpat(1)) & 32'hFFFF)) begin
