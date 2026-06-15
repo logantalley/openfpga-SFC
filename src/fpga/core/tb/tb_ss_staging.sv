@@ -446,12 +446,20 @@ module tb_ss_staging #(
     $display("[tb] v60 first_w2_addr_lo    : %h (expect 04)", dbg_w2_info[7:0]);
     $display("[tb] v62 dbg_w2_src (ctrl)   : %h (expect %h)",
              ssc.dbg_w2_src, expected_word(2));
+    $display("[tb] v63 dbg_pop2 (raw FIFO) : %h (expect %h)",
+             ssc.dbg_pop2, expected_word(2));
 
     // v62 controller-side capture of stage_buffer[47:32] at word-2 WR_REQ.
     if (ssc.dbg_w2_src !== expected_word(2)) begin
       errors++;
       $display("ERROR: dbg_w2_src = %h, expected %h",
                ssc.dbg_w2_src, expected_word(2));
+    end
+    // v63 raw FIFO second-pop data feeding stage_buffer[63:32].
+    if (ssc.dbg_pop2 !== expected_word(2)) begin
+      errors++;
+      $display("ERROR: dbg_pop2 = %h, expected %h",
+               ssc.dbg_pop2, expected_word(2));
     end
 
     // v60 chip-boundary capture must match chunk0 word2.

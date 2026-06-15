@@ -415,6 +415,8 @@ module save_state_controller (
                                    // next FIFO pop fills (0=lower, 1=upper)
   reg [15:0] dbg_w2_src      = 16'h0000;  // v62: stage_buffer[47:32] @ word2 WR_REQ
   reg        dbg_w2_src_seen = 1'b0;
+  reg [15:0] dbg_pop2        = 16'h0000;  // v63: raw FIFO 2nd-pop[15:0], chunk0
+  reg        dbg_pop2_seen   = 1'b0;
   reg [3:0]  wr_gap_cnt = 4'd0;    // v58: cooldown after each word write
   reg [63:0] stage_buffer;
   reg [24:0] stage_addr;
@@ -498,8 +500,10 @@ module save_state_controller (
   //   addr_hi → {7'b0, ss_rnw_at_first_wait_req} (direction of first edge)
   // Repurposed v33: chunk-1 and chunk-40 first-byte samples.
   // v57: probe all 4 words of chunk 0 with settle=1 (reverted from 7).
-  assign debug_first_save_addr_lo = probe_result_0[7:0];  // word 0 low ($53)
-  assign debug_first_save_addr_hi = probe_result_1[7:0];  // word 1 low ($45)
+  // v63: raw FIFO second-pop data for chunk 0 (vs dbg_w2_src register
+  // readback on the byte0/byte1 taps).  Want $2D / $53.
+  assign debug_first_save_addr_lo = dbg_pop2[7:0];   // 2nd-pop low  ($2D '-')
+  assign debug_first_save_addr_hi = dbg_pop2[15:8];  // 2nd-pop high ($53 'S')
 
   // Stage-write debug: first SDRAM word written + its address
   reg [15:0] first_stage_word = 16'h0000;
@@ -943,6 +947,17 @@ module save_state_controller (
           stage_word_idx      <= 2'd0;
           sys_state           <= SYS_STAGE_WR_REQ;
           fifo_or_checksum[63:32] <= fifo_or_checksum[63:32] | fifo_load_dout;
+          // v63: capture the RAW FIFO output feeding the upper half of the
+          // FIRST chunk, in clk_sys, BEFORE it is stored into stage_buffer.
+          // Compared on the overlay against dbg_w2_src (the readback of
+          // stage_buffer[47:32]).  If this is good ($532D) but dbg_w2_src
+          // is $0000, the stage_buffer register's upper half is the bug;
+          // if this is also $0000, the FIFO delivered zero for the second
+          // pop (FIFO-read / bridge-fill problem).
+          if (!dbg_pop2_seen) begin
+            dbg_pop2      <= fifo_load_dout[15:0];
+            dbg_pop2_seen <= 1'b1;
+          end
           // Per-chunk debug counters/captures (once per assembled chunk).
           if (cnt_stage_fifo_latch != 8'hFF) cnt_stage_fifo_latch <= cnt_stage_fifo_latch + 8'd1;
           if (fifo_drain_count != 16'hFFFF) fifo_drain_count <= fifo_drain_count + 16'd1;

@@ -1746,22 +1746,24 @@ module core_top (
       //           $00 = firmware never asked for a chunk.
       //   CYAN  : cnt_serve_ack_entries (= dbg_first_wr_addr_lo).
       //           # of full 4-word reads completed.  Should equal yellow.
-      // Phase C overlay v62 — source-vs-destination bisect for chunk-0
-      // word 2.  v60/v61 proved the write commits at the right address
-      // ($04) with data $0000 at the chip, even after the FIFO rebuild.
-      // So compare what the CONTROLLER feeds (clk_sys, pre-CDC) against
-      // what arrives AT THE CHIP (clk_mem):
-      //   RED   : dbg_w2_src[7:0]  (controller stage_buffer[39:32]).  $2D '-'
-      //   GREEN : dbg_w2_src[15:8] (controller stage_buffer[47:40]).  $53 'S'
-      //   YELLOW: first_w2_data[7:0]  at chip (dbg_load_stall_cnt[7:0]). $2D
-      //   CYAN  : first_w2_data[15:8] at chip (dbg_load_stall_cnt[15:8]).$53
+      // Phase C overlay v63 — FIFO-output vs register-readback bisect for
+      // chunk-0 word 2.  v62 showed the CONTROLLER reads $0000 from
+      // stage_buffer[47:32] (dbg_w2_src) — the data is gone before the CDC.
+      // Same symptom held across v58 (1×64b load) and v61 (2×32b pops), so
+      // the suspect is stage_buffer's upper half OR the data feeding it.
+      // Compare the RAW FIFO output that fills the upper half against the
+      // register readback:
+      //   RED   : dbg_pop2[7:0]   raw FIFO 2nd-pop low  ($2D '-')
+      //   GREEN : dbg_pop2[15:8]  raw FIFO 2nd-pop high ($53 'S')
+      //   YELLOW: dbg_w2_src[7:0]  stage_buffer[47:32] readback low  ($2D)
+      //   CYAN  : dbg_w2_src[15:8] stage_buffer[47:32] readback high ($53)
       // Verdict:
-      //   RED/GREEN good + YELLOW/CYAN $00 → CDC/arbiter loses words 2/3
-      //   RED/GREEN $00                    → stage_buffer upper half / mux
-      2'd0: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_save_b1_video;        row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_load_stall_cnt_video[7:0];  row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_load_stall_cnt_video[15:8]; row_marker_rgb = 24'h00FFFF; end
+      //   RED/GREEN good + YELLOW/CYAN $00 → stage_buffer upper-half reg bug
+      //   RED/GREEN $00                    → FIFO delivered zero (read/fill)
+      2'd0: begin row_value = dbg_first_save_addr_lo_video;   row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_save_addr_hi_video;   row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_save_b0_video;        row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_save_b1_video;        row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
