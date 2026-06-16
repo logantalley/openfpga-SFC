@@ -142,7 +142,9 @@ module tb_ss_staging #(
                                                 // (~808 ns/word — keeps the
                                                 // 512-entry FIFO from filling,
                                                 // matching APF's real pacing)
-    parameter int CLKMEM_PHASE_PS  = 3777       // clk_mem initial phase offset
+    parameter int CLKMEM_PHASE_PS  = 3777,      // clk_mem initial phase offset
+    parameter int RUN_SAVE         = 0,         // 1 = run the SAVE-path test instead of LOAD
+    parameter int SAVE_CHUNKS      = 8          // # 64-bit chunks the firmware "saves"
 );
   localparam [24:0] STAGING_BASE  = 25'h800000; // byte address (matches DUT)
 
@@ -167,9 +169,21 @@ module tb_ss_staging #(
   // Bridge / APF stimulus signals
   // -------------------------------------------------------------------
   reg         bridge_wr      = 0;
+  reg         bridge_rd      = 0;
   reg  [31:0] bridge_addr    = 32'h0;
   reg  [31:0] bridge_wr_data = 32'h0;
   reg         savestate_load = 0;
+  wire [31:0] save_state_bridge_read_data;
+
+  // Firmware-side SAVE drivers (model savestates.sv producing the state).
+  // Safe defaults reproduce the old tie-offs so the LOAD test is unaffected.
+  reg         fw_savestate_start = 0;
+  reg  [63:0] fw_ss_din          = 64'h0;
+  reg  [16:0] fw_ss_addr         = 17'h0;
+  reg         fw_ss_rnw          = 1'b1;
+  reg         fw_ss_req          = 1'b0;
+  reg         fw_ss_busy         = 1'b0;
+  wire        ss_ack_w;
 
   // Bridge data pattern for word n: both 16-bit halves nonzero & unique.
   function automatic [31:0] vpat(input int n);
@@ -208,11 +222,11 @@ module tb_ss_staging #(
       .clk_sys(clk_sys),
 
       .bridge_wr(bridge_wr),
-      .bridge_rd(1'b0),
+      .bridge_rd(bridge_rd),
       .bridge_endian_little(1'b0),
       .bridge_addr(bridge_addr),
       .bridge_wr_data(bridge_wr_data),
-      .save_state_bridge_read_data(),
+      .save_state_bridge_read_data(save_state_bridge_read_data),
 
       .savestate_load(savestate_load),
       .savestate_load_ack_s(),
@@ -220,7 +234,7 @@ module tb_ss_staging #(
       .savestate_load_ok_s(),
       .savestate_load_err_s(),
 
-      .savestate_start(1'b0),
+      .savestate_start(fw_savestate_start),
       .savestate_start_ack_s(),
       .savestate_start_busy_s(),
       .savestate_start_ok_s(),
@@ -229,14 +243,14 @@ module tb_ss_staging #(
       .ss_save(),
       .ss_load(),
 
-      .ss_din(64'h0),
+      .ss_din(fw_ss_din),
       .ss_dout(),
-      .ss_addr(17'h0),
-      .ss_rnw(1'b1),
-      .ss_req(1'b0),
+      .ss_addr(fw_ss_addr),
+      .ss_rnw(fw_ss_rnw),
+      .ss_req(fw_ss_req),
       .ss_be(8'hFF),
-      .ss_ack(),
-      .ss_busy(1'b0),
+      .ss_ack(ss_ack_w),
+      .ss_busy(fw_ss_busy),
 
       .ss_sdram_wr_req (ss_sdram_wr_req),
       .ss_sdram_wr_addr(ss_sdram_wr_addr),
@@ -378,10 +392,126 @@ module tb_ss_staging #(
     bridge_wr      <= 1'b0;
   endtask
 
+  // ---- SAVE-path helpers ----
+  // 64-bit chunk pattern: 4 distinct, nonzero, idx-dependent 16-bit words so
+  // the staging word order and "varied (not fill)" serve can both be checked.
+  function automatic [63:0] save_pat(input int idx);
+    save_pat = { 16'hD000 | idx[11:0], 16'hC000 | idx[11:0],
+                 16'hB000 | idx[11:0], 16'hA000 | idx[11:0] };
+  endfunction
+
+  // Model the firmware producing one save chunk: present data/addr, toggle
+  // ss_req, wait for the controller's ss_ack toggle (after it commits the 4
+  // SDRAM words).  Mirrors the real ddr_req/ddr_ack backpressure.
+  task automatic fw_save_chunk(input [16:0] idx, input [63:0] data);
+    logic ack_prev;
+    @(posedge clk_sys);
+    ack_prev   = ss_ack_w;
+    fw_ss_din  <= data;
+    fw_ss_addr <= idx;
+    fw_ss_rnw  <= 1'b0;
+    fw_ss_req  <= ~fw_ss_req;
+    @(posedge clk_sys);
+    while (ss_ack_w === ack_prev) @(posedge clk_sys);
+  endtask
+
+  // APF reads one 32-bit word from the slot (showahead=ON: q is the head;
+  // the rising-edge pop advances afterward).  Waits for data to be available
+  // first — real APF reads (~75 cyc/word) are slower than the serve produces,
+  // so gating on non-empty models a sustainable read pace and isolates the
+  // serve *logic* from the TB-only over-read (the real throughput margin is
+  // validated on hardware).
+  task automatic bridge_read32(input [31:0] addr, output [31:0] data);
+    while (ssc.fifo_save_rd_empty) @(posedge clk_74a);
+    @(posedge clk_74a);
+    bridge_addr <= addr;
+    bridge_rd   <= 1'b1;
+    @(posedge clk_74a);          // handler detects rising edge → pop; q=head
+    #1 data = save_state_bridge_read_data;
+    bridge_rd <= 1'b0;
+    repeat (4) @(posedge clk_74a);  // gap so the pop settles before next read
+  endtask
+
   initial begin : main
     int n, k;
     int unsigned lin;
     logic [15:0] got, exp;
+
+    // =====================================================================
+    // SAVE-path test (RUN_SAVE=1): stage SAVE_CHUNKS firmware chunks into
+    // SDRAM, verify the SDRAM contents (staging exact), then read the slot
+    // back via bridge_rd and confirm the serve delivers VARIED data (not the
+    // constant fill the old streaming-FIFO save produced).
+    // =====================================================================
+    if (RUN_SAVE) begin : save_test
+      int i, w, errs, nz;
+      int unsigned slin;
+      logic [15:0] mw, ew;
+      logic [31:0] rdw;
+      errs = 0; nz = 0;
+      $display("=== SAVE test: %0d chunks ===", SAVE_CHUNKS);
+      // Watchdog so a missed handshake reports state instead of hanging.
+      fork : save_wd
+        begin
+          repeat (500) #1_000_000;  // 500 us
+          $display("WATCHDOG: save hung. sys_state=%0d start_busy=%b ok=%b ss_ack=%b ss_loading=%b ss_req=%b sdram_wr_ack=%b sdram_rd_ack=%b",
+                   ssc.sys_state, ssc.savestate_start_busy, ssc.savestate_start_ok,
+                   ss_ack_w, ssc.ss_loading, fw_ss_req, ss_sdram_wr_ack, ss_sdram_rd_ack);
+          $finish;
+        end
+      join_none
+
+      #5_000_000;  // sdram init
+
+      // Hold savestate_start wide (~270 ns) so the slower clk_sys synch_3
+      // reliably catches the rising edge.
+      @(posedge clk_74a); fw_savestate_start <= 1'b1;
+      repeat (20) @(posedge clk_74a); fw_savestate_start <= 1'b0;
+      fw_ss_busy <= 1'b1;
+      wait (ssc.savestate_start_busy == 1'b1);
+      $display("[tb] save started: start_busy=1, sys_state=%0d, t=%0t", ssc.sys_state, $time);
+
+      for (i = 0; i < SAVE_CHUNKS; i++) begin
+        $display("[tb] producing chunk %0d (sys_state=%0d)...", i, ssc.sys_state);
+        fw_save_chunk(i[16:0], save_pat(i));
+        $display("[tb]   chunk %0d acked, t=%0t", i, $time);
+      end
+      $display("[tb] all chunks produced; dropping ss_busy");
+
+      @(posedge clk_sys); fw_ss_busy <= 1'b0;
+      wait (ssc.savestate_start_ok == 1'b1);
+      $display("[tb] save staged, ok asserted, t=%0t", $time);
+
+      // Staging check: SDRAM word-index = STAGING_BASE>>1 + idx*4 + w.
+      for (i = 0; i < SAVE_CHUNKS; i++)
+        for (w = 0; w < 4; w++) begin
+          slin = (STAGING_BASE >> 1) + i*4 + w;
+          mw = chip.mem.exists(slin) ? chip.mem[slin] : 16'hDEAD;
+          ew = save_pat(i) >> (w*16);
+          if (mw !== ew) begin
+            errs++;
+            if (errs <= 8)
+              $display("ERROR stage chunk %0d w%0d (lin=%h): got %h exp %h",
+                       i, w, slin, mw, ew);
+          end
+        end
+      $display("[tb] staging check: %0d word errors (of %0d)", errs, SAVE_CHUNKS*4);
+
+      // Serve check: read back, confirm varied/nonzero (anti-fill).
+      for (i = 0; i < SAVE_CHUNKS*2; i++) begin
+        bridge_read32(32'h4000_0000 + i*4, rdw);
+        if (rdw !== 32'h0) nz++;
+        if (i < 4) $display("[tb] serve read %0d = %h", i, rdw);
+      end
+      $display("[tb] serve read-back: %0d/%0d nonzero", nz, SAVE_CHUNKS*2);
+
+      if (errs == 0 && nz == SAVE_CHUNKS*2)
+        $display("*** SAVE PASS — staging exact, serve delivers varied data ***");
+      else
+        $display("*** SAVE FAIL (stage errs=%0d, nonzero=%0d/%0d) ***",
+                 errs, nz, SAVE_CHUNKS*2);
+      $finish;
+    end
 
     $display("=== tb_ss_staging: %0d bridge words (%0d chunks) ===",
              NUM_BRIDGE_WORDS, NUM_BRIDGE_WORDS / 2);
