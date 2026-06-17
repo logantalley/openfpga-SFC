@@ -605,13 +605,18 @@ module core_top (
       .clk_74a(clk_74a),
       .clk_sys(clk_sys_21_48),
 
-      // APF Bridge — writes (load) and reads (save FIFO drain)
+      // APF Bridge — writes (load).  Save read-back is served by
+      // ss_data_unloader (below) via the ssrv_* read-service interface.
       .bridge_wr(bridge_wr),
       .bridge_rd(bridge_rd),
       .bridge_endian_little(bridge_endian_little),
       .bridge_addr(bridge_addr),
       .bridge_wr_data(bridge_wr_data),
-      .save_state_bridge_read_data(save_state_bridge_read_data),
+
+      // SAVE serve read-service (from ss_data_unloader)
+      .ssrv_rd_en(ssrv_rd_en),
+      .ssrv_rd_addr(ssrv_rd_addr),
+      .ssrv_rd_data(ssrv_rd_data),
 
       // APF Save State Handshake
       .savestate_load(savestate_load),
@@ -798,8 +803,35 @@ module core_top (
       .read_data(sd_buff_din)
   );
 
-  // (Phase A: save-state bridge READ path is now handled internally by
-  // save_state_controller via a save FIFO.  No data_unloader needed.)
+  // Save-state read-back (slot 0x4xxxxxxx): the proven MiSTer data_unloader
+  // pipeline (addr+data FIFOs, correct APF read protocol — no FIFO-race /
+  // first-or-last-word edge cases the old hand-rolled pop suffered).  It
+  // requests staged words from save_state_controller via the ssrv_* interface;
+  // the controller reads them from SDRAM (the staged buffer) via the arbiter.
+  // clk_memory = clk_sys so its read interface lives in the controller's
+  // domain.  READ_MEM_CLOCK_DELAY=15 comfortably covers the arbiter round-trip.
+  wire        ssrv_rd_en;
+  wire [19:0] ssrv_rd_addr;
+  wire [15:0] ssrv_rd_data;
+
+  data_unloader #(
+      .ADDRESS_MASK_UPPER_4(4'h4),
+      .ADDRESS_SIZE(20),
+      .READ_MEM_CLOCK_DELAY(15),
+      .INPUT_WORD_SIZE(2)
+  ) ss_data_unloader (
+      .clk_74a(clk_74a),
+      .clk_memory(clk_sys_21_48),
+
+      .bridge_rd(bridge_rd),
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr(bridge_addr),
+      .bridge_rd_data(save_state_bridge_read_data),
+
+      .read_en  (ssrv_rd_en),
+      .read_addr(ssrv_rd_addr),
+      .read_data(ssrv_rd_data)
+  );
 
   always @(posedge clk_74a or negedge pll_core_locked) begin
     if (~pll_core_locked) begin

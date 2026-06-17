@@ -173,7 +173,11 @@ module tb_ss_staging #(
   reg  [31:0] bridge_addr    = 32'h0;
   reg  [31:0] bridge_wr_data = 32'h0;
   reg         savestate_load = 0;
-  wire [31:0] save_state_bridge_read_data;
+
+  // SAVE serve read-service drivers (TB models data_unloader's mem interface).
+  reg         fw_ssrv_rd_en   = 1'b0;
+  reg  [19:0] fw_ssrv_rd_addr = 20'h0;
+  wire [15:0] ssrv_rd_data_w;
 
   // Firmware-side SAVE drivers (model savestates.sv producing the state).
   // Safe defaults reproduce the old tie-offs so the LOAD test is unaffected.
@@ -226,7 +230,11 @@ module tb_ss_staging #(
       .bridge_endian_little(1'b0),
       .bridge_addr(bridge_addr),
       .bridge_wr_data(bridge_wr_data),
-      .save_state_bridge_read_data(save_state_bridge_read_data),
+
+      // SAVE serve read-service (TB drives like data_unloader would)
+      .ssrv_rd_en(fw_ssrv_rd_en),
+      .ssrv_rd_addr(fw_ssrv_rd_addr),
+      .ssrv_rd_data(ssrv_rd_data_w),
 
       .savestate_load(savestate_load),
       .savestate_load_ack_s(),
@@ -415,23 +423,19 @@ module tb_ss_staging #(
     while (ss_ack_w === ack_prev) @(posedge clk_sys);
   endtask
 
-  // APF reads one 32-bit word from the slot (showahead=ON: q is the head;
-  // the rising-edge pop advances afterward).  Waits for data to be available
-  // first — real APF reads (~75 cyc/word) are slower than the serve produces,
-  // so gating on non-empty models a sustainable read pace and isolates the
-  // serve *logic* from the TB-only over-read (the real throughput margin is
-  // validated on hardware).
-  task automatic bridge_read32(input [31:0] addr, output [31:0] data);
-    while (ssc.fifo_save_rd_empty) @(posedge clk_74a);
-    @(posedge clk_74a);
-    bridge_addr <= addr;
-    bridge_rd   <= 1'b1;          // rising edge → handler issues rdreq
-    // showahead=OFF: q presents the popped word a couple rdclk cycles after
-    // rdreq, within APF's read latency.  Sample after it settles.
-    repeat (3) @(posedge clk_74a);
-    #1 data = save_state_bridge_read_data;
-    bridge_rd <= 1'b0;
-    repeat (4) @(posedge clk_74a);  // gap before next read
+  // Model data_unloader's memory read interface: assert read_en with a stable
+  // byte address, then sample read_data after the controller's read-service
+  // round-trips through the SDRAM arbiter (READ_MEM_CLOCK_DELAY=15 on hw).
+  // The controller edge-detects ssrv_rd_en, fetches one 16-bit word from the
+  // staging region (STAGING_BASE + addr), and holds it on ssrv_rd_data.
+  task automatic ssrv_read(input [19:0] baddr, output [15:0] data);
+    @(posedge clk_sys);
+    fw_ssrv_rd_addr <= baddr;
+    fw_ssrv_rd_en   <= 1'b1;          // rising edge → SERVE → SRV_RD
+    repeat (15) @(posedge clk_sys);   // > arbiter round-trip incl. CDC
+    data = ssrv_rd_data_w;
+    fw_ssrv_rd_en <= 1'b0;
+    repeat (3) @(posedge clk_sys);    // gap so next assert is a clean edge
   endtask
 
   initial begin : main
@@ -499,19 +503,48 @@ module tb_ss_staging #(
         end
       $display("[tb] staging check: %0d word errors (of %0d)", errs, SAVE_CHUNKS*4);
 
-      // Serve check: read back, confirm varied/nonzero (anti-fill).
-      for (i = 0; i < SAVE_CHUNKS*2; i++) begin
-        bridge_read32(32'h4000_0000 + i*4, rdw);
-        if (rdw !== 32'h0) nz++;
-        if (i < 4) $display("[tb] serve read %0d = %h", i, rdw);
-      end
-      $display("[tb] serve read-back: %0d/%0d nonzero", nz, SAVE_CHUNKS*2);
+      // Serve check: read back every 16-bit word through the read-service
+      // (mimicking data_unloader) and verify EXACT ordering against the staged
+      // pattern.  Byte addr = j*2 → chunk j/4, word j%4.
+      begin : serve_check
+        int j, serrs, snz, wd;
+        logic [15:0] sgot, sexp;
+        serrs = 0; snz = 0;
+        for (j = 0; j < SAVE_CHUNKS*4; j++) begin
+          ssrv_read(j*2, sgot);
+          sexp = save_pat(j/4) >> ((j%4)*16);
+          if (sgot !== 16'h0) snz++;
+          if (sgot !== sexp) begin
+            serrs++;
+            if (serrs <= 8)
+              $display("ERROR serve word %0d (byte %0d): got %h exp %h",
+                       j, j*2, sgot, sexp);
+          end
+          if (j < 4) $display("[tb] serve read %0d = %h (exp %h)", j, sgot, sexp);
+        end
+        $display("[tb] serve check: %0d word errors (of %0d), %0d nonzero",
+                 serrs, SAVE_CHUNKS*4, snz);
 
-      if (errs == 0 && nz == SAVE_CHUNKS*2)
-        $display("*** SAVE PASS — staging exact, serve delivers varied data ***");
-      else
-        $display("*** SAVE FAIL (stage errs=%0d, nonzero=%0d/%0d) ***",
-                 errs, nz, SAVE_CHUNKS*2);
+        // Idle-completion: stop reading; the SERVE idle-timeout must release
+        // ss_loading (no permanent freeze).  Bounded wait > SAVE_SERVE_IDLE_MAX.
+        fw_ssrv_rd_en <= 1'b0;
+        wd = 0;
+        while (ssc.ss_loading === 1'b1 && wd < 8000) begin
+          @(posedge clk_sys); wd++;
+        end
+        if (ssc.ss_loading === 1'b0)
+          $display("[tb] serve idle-completed after %0d clk_sys (sys_state=%0d)",
+                   wd, ssc.sys_state);
+        else
+          $display("ERROR serve never idle-completed (ss_loading stuck, sys_state=%0d)",
+                   ssc.sys_state);
+
+        if (errs == 0 && serrs == 0 && ssc.ss_loading === 1'b0)
+          $display("*** SAVE PASS — staging exact, serve ordered & idle-completes ***");
+        else
+          $display("*** SAVE FAIL (stage errs=%0d, serve errs=%0d, ss_loading=%b) ***",
+                   errs, serrs, ssc.ss_loading);
+      end
       $finish;
     end
 
