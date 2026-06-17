@@ -24,28 +24,24 @@
 //   The SRAM (on-board 256 KB) is no longer used at all; the pin
 //   outputs in this module's port list have been removed.
 
-module save_state_controller (
+module save_state_controller #(
+    // clk_sys cycles APF must be idle (not reading the slot) during the SAVE
+    // serve before we declare the read-back complete and release the core.
+    // Overridable so the testbench can exercise idle-completion quickly.
+    parameter [20:0] SAVE_SERVE_IDLE_MAX = 21'd300_000   // ~14 ms @ 21.48 MHz
+) (
     input wire clk_74a,
     input wire clk_sys,
 
     // APF Bridge
+    //   SAVE path: bridge_rd at 0x4xxxxxxx pops the save FIFO.
     //   LOAD path: bridge_wr at 0x4xxxxxxx pushes into the load FIFO.
-    //   SAVE read-back (0x4xxxxxxx) is now handled by an external
-    //   data_unloader in core_top, which requests staged data from us via the
-    //   ssrv_* read-service interface below (we serve it from SDRAM via the
-    //   arbiter).
     input wire bridge_wr,
     input wire bridge_rd,
     input wire bridge_endian_little,
     input wire [31:0] bridge_addr,
     input wire [31:0] bridge_wr_data,
-
-    // SAVE serve read-service (driven by core_top's ss_data_unloader,
-    // clk_sys domain): on ssrv_rd_en, return the staged 16-bit word at
-    // STAGING_BASE_WORD + ssrv_rd_addr on ssrv_rd_data.
-    input  wire        ssrv_rd_en,
-    input  wire [19:0] ssrv_rd_addr,
-    output reg  [15:0] ssrv_rd_data,
+    output wire [31:0] save_state_bridge_read_data,
 
     // APF Save State Handshake
     input  wire savestate_load,
@@ -185,20 +181,104 @@ module save_state_controller (
   );
 
   // ===================================================================
-  // SAVE path: stage firmware chunks into SDRAM, then serve the staged
-  // buffer back to APF via core_top's ss_data_unloader (which requests data
-  // through the ssrv_* read-service handled in the main FSM below).
+  // Save FIFO (Phase A): pure streaming, no SRAM buffer
   // ===================================================================
 
-  // SAVE-path book-keeping.
-  reg [63:0] save_buffer;        // 64-bit chunk latched from ss_din (staging)
+  reg         fifo_save_write_req = 0;
+  reg         fifo_save_read_req  = 0;
+  wire        fifo_save_rd_empty;
+  wire        fifo_save_wr_empty;
+  wire        fifo_save_wr_full;
+
+  // SAVE-path book-keeping (declared here, before fifo_save, because the
+  // serve FSM's assembled chunk feeds fifo_save.data).  Firmware chunk →
+  // SDRAM staging, then SDRAM → fifo_save → APF serve; mirrors the load
+  // staging/serve with firmware as producer and APF as consumer.
+  reg [63:0] save_buffer;        // 64-bit chunk latched from ss_din
   reg [1:0]  save_word_idx;      // which of 4 SDRAM words being written
   reg [24:0] save_addr;          // SDRAM byte addr base for this chunk
-  reg        prev_ssrv_rd_en;    // edge-detect the read-service request
-  reg [16:0] save_serve_idle;    // clk_sys idle counter → serve completion
-  // APF idle for this many clk_sys cycles (~190 us) ⇒ APF finished reading
-  // the slot; release the SDRAM hijack + CPU pause (no permanent freeze).
-  localparam [16:0] SAVE_SERVE_IDLE_MAX = 17'd4096;
+  reg [16:0] save_serve_idx;     // chunk index being served back to APF
+  reg [1:0]  save_serve_widx;    // which of 4 SDRAM words being read
+  reg [63:0] save_serve_buf;     // assembled 64-bit chunk to push to fifo_save
+  // Full declared slot = savestate_size (512KB) / 8 bytes = 65536 chunks.
+  localparam [16:0] SAVE_SERVE_LAST = 17'd65535;
+
+  // Serve completion watchdog + pre-fill gate — fix the old serve's two bugs:
+  //  (1) FREEZE — SRV_PUSH stalled on a full FIFO (or SRV_DONE waiting on
+  //      empty) could hang forever if APF stopped reading, leaving
+  //      ss_pause_cpu stuck.  An APF-read-activity watchdog forces completion
+  //      (ss_loading<=0 → IDLE) after a bounded idle, so the core can NEVER
+  //      permanently freeze on save regardless of how much APF read.
+  //  (2) MID-STREAM DROPS — pre-fill fifo_save to full BEFORE asserting
+  //      savestate_start_ok, so APF begins reading with a full buffer
+  //      head-start and is far less likely to out-pace the SDRAM refill.
+  reg [20:0] save_serve_idle = 21'd0;
+  reg        serve_prefilled = 1'b0;
+  // SAVE_SERVE_IDLE_MAX is a module parameter (see header) so the TB can
+  // shorten it; default ~14 ms @ 21.48 MHz.
+
+  // Save serve FIFO: written by the SDRAM-read serve FSM (save_serve_buf,
+  // clk_sys), drained by APF bridge_rd (clk_74a).  Deep (512 entries) to
+  // absorb APF read bursts while the serve refills from SDRAM.  showahead=OFF
+  // matches the ORIGINAL streaming-save read timing that delivered the
+  // header correctly: the rising-edge bridge_rd pop issues rdreq and q
+  // presents the popped word a couple cycles later (within APF's read
+  // latency).  showahead=ON dropped the first 32-bit word (the pop advanced
+  // q before APF latched the head), which corrupted the header AND left the
+  // FIFO one word short so SRV_DONE never saw it empty → save freeze.
+  dcfifo_mixed_widths fifo_save (
+      .data(save_serve_buf),
+      .rdclk(clk_74a),
+      .rdreq(fifo_save_read_req),
+      .wrclk(clk_sys),
+      .wrreq(fifo_save_write_req),
+      .q({
+          save_state_bridge_read_data[7:0],
+          save_state_bridge_read_data[15:8],
+          save_state_bridge_read_data[23:16],
+          save_state_bridge_read_data[31:24]
+      }),
+      .rdempty(fifo_save_rd_empty),
+      .wrempty(fifo_save_wr_empty),
+      .wrfull(fifo_save_wr_full),
+      .aclr(1'b0)
+  );
+  defparam fifo_save.intended_device_family = "Cyclone V",
+      fifo_save.lpm_numwords  = 1024,
+      fifo_save.lpm_showahead = "OFF",
+      fifo_save.lpm_type      = "dcfifo_mixed_widths",
+      fifo_save.lpm_width     = 64,
+      fifo_save.lpm_widthu    = 10,
+      fifo_save.lpm_widthu_r  = 11,
+      fifo_save.lpm_width_r   = 32,
+      fifo_save.overflow_checking  = "ON",
+      fifo_save.underflow_checking = "ON",
+      fifo_save.rdsync_delaypipe = 5,
+      fifo_save.wrsync_delaypipe = 5,
+      fifo_save.use_eab = "ON";
+
+  // Bridge-read handler (clk_74a): each rising edge of bridge_rd at
+  // 0x4xxxxxxx pops one 32-bit entry from the save FIFO.
+  reg prev_bridge_rd_save = 0;
+  reg [1:0] save_rd_state = 0;
+  localparam SAVE_RD_NONE = 2'd0;
+  localparam SAVE_RD_REQ  = 2'd1;
+
+  always @(posedge clk_74a) begin
+    prev_bridge_rd_save <= bridge_rd;
+    fifo_save_read_req  <= 0;
+
+    if (bridge_rd && ~prev_bridge_rd_save && bridge_addr[31:28] == 4'h4) begin
+      if (~fifo_save_rd_empty) begin
+        fifo_save_read_req <= 1;
+        save_rd_state      <= SAVE_RD_REQ;
+      end
+    end
+
+    case (save_rd_state)
+      SAVE_RD_REQ: save_rd_state <= SAVE_RD_NONE;
+    endcase
+  end
 
   // ===================================================================
   // Load FIFO (Phase C): 32→64 dcfifo.  Written on clk_74a by bridge_wr,
@@ -300,11 +380,12 @@ module save_state_controller (
   // SAVE staging: write firmware's 64-bit chunks into SDRAM (4×16-bit words)
   localparam SYS_SAVE_WR_REQ      = 5'd2;
   localparam SYS_SAVE_WR_WAIT     = 5'd3;
-  // SAVE serve: APF reads the staged buffer via core_top's ss_data_unloader,
-  // which requests 16-bit words through ssrv_*; we read SDRAM via the arbiter.
-  localparam SYS_SAVE_SERVE       = 5'd4;  // serve window: await read req / idle-complete
-  localparam SYS_SAVE_SRV_RD      = 5'd5;  // issue arbiter read for ssrv_rd_addr
-  localparam SYS_SAVE_SRV_RD_WAIT = 5'd6;  // capture ss_sdram_rd_data → ssrv_rd_data
+  // SAVE serve: read the staged SDRAM back out and feed fifo_save for APF
+  localparam SYS_SAVE_SRV_RD_REQ  = 5'd4;
+  localparam SYS_SAVE_SRV_RD_WAIT = 5'd5;
+  localparam SYS_SAVE_SRV_RD_NEXT = 5'd6;
+  localparam SYS_SAVE_SRV_PUSH    = 5'd7;
+  localparam SYS_SAVE_SRV_DONE    = 5'd8;
 
   // Staging: drain load FIFO into SDRAM
   localparam SYS_STAGE_FIFO_RD    = 5'd10;
@@ -359,9 +440,11 @@ module save_state_controller (
                         (sys_state == SYS_STAGE_WR_REQ)      ||
                         (sys_state == SYS_STAGE_WR_WAIT)     ||
                         (sys_state == SYS_STAGE_IDLE)        ||
-                        (sys_state == SYS_SAVE_SERVE)        ||
-                        (sys_state == SYS_SAVE_SRV_RD)       ||
-                        (sys_state == SYS_SAVE_SRV_RD_WAIT);
+                        (sys_state == SYS_SAVE_SRV_RD_REQ)   ||
+                        (sys_state == SYS_SAVE_SRV_RD_WAIT)  ||
+                        (sys_state == SYS_SAVE_SRV_RD_NEXT)  ||
+                        (sys_state == SYS_SAVE_SRV_PUSH)     ||
+                        (sys_state == SYS_SAVE_SRV_DONE);
 
   // Edge / handshake tracking
   reg prev_savestate_start = 0;
@@ -696,6 +779,15 @@ module save_state_controller (
   assign debug_first_rd_addr_lo   = first_rd_addr[7:0];
   assign debug_first_rd_addr_hi   = first_rd_addr[15:8];
 
+  // Sync bridge_rd_count[7:0] (clk_74a) to clk_sys so the serve watchdog can
+  // tell whether APF is still actively reading the slot.  A change between
+  // consecutive clk_sys cycles = APF popped at least one word recently.
+  wire [7:0] bridge_rd_lo_sys;
+  synch_3 #(.WIDTH(8)) sync_bridge_rd_lo (
+      .i(bridge_rd_count[7:0]), .o(bridge_rd_lo_sys), .clk(clk_sys));
+  reg [7:0] prev_bridge_rd_lo_sys = 8'd0;
+  wire apf_reading = (bridge_rd_lo_sys != prev_bridge_rd_lo_sys);
+
   // pf_at_first_rd debug — repurposed: stage-FSM action counters
   //   debug_pf_at_first_rd_lo → cnt_stage_fifo_latch (# FIFO entries drained)
   //   debug_pf_at_first_rd_hi → cnt_stage_wr_done    (# SDRAM writes completed)
@@ -739,9 +831,7 @@ module save_state_controller (
   end
 
   // ----- bridge-wr counters (clk_74a) -----
-  reg prev_bridge_rd_save = 0;   // edge-detect for the bridge_rd debug counter
   always @(posedge clk_74a) begin
-    prev_bridge_rd_save <= bridge_rd;
     // v66: RAW level capture of the first four 0x4xxxxxxx write-cycle
     // addresses (low byte).  Uses bridge_wr directly (NOT the edge-detected
     // fifo_load_write) so a multi-cycle strobe shows up as repeated values.
@@ -832,11 +922,11 @@ module save_state_controller (
     prev_ss_req          <= ss_req;
     prev_ss_sdram_wr_ack <= ss_sdram_wr_ack;
     prev_ss_sdram_rd_ack <= ss_sdram_rd_ack;
-    prev_ssrv_rd_en      <= ssrv_rd_en;
 
     // 1-cycle pulses
     ss_save             <= 0;
     ss_load             <= 0;
+    fifo_save_write_req <= 0;
     fifo_load_read_req  <= 0;
 
     if (wr_gap_cnt != 4'd0) wr_gap_cnt <= wr_gap_cnt - 4'd1;
@@ -869,6 +959,9 @@ module save_state_controller (
     end else if (stage_quiet_cnt != 20'hFFFFF) begin
       stage_quiet_cnt <= stage_quiet_cnt + 20'd1;
     end
+
+    // Serve watchdog clock-edge bookkeeping (see SAVE serve states below).
+    prev_bridge_rd_lo_sys <= bridge_rd_lo_sys;
     if (ss_req != prev_ss_req) begin
       ss_req_ever    <= 1;
       ss_req_toggles <= ss_req_toggles + 4'd1;
@@ -961,16 +1054,17 @@ module save_state_controller (
             first_save_seen  <= 1;
           end
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
-          // Firmware finished producing the state.  Staging is complete;
-          // announce OK so APF starts reading the slot.  Enter the serve
-          // window: keep ss_loading=1 (SDRAM mux → arbiter) and pause the
-          // CPU (it has RTI'd back to the running game) while ss_data_unloader
-          // requests staged words via ssrv_*.
-          ss_busy_seen         <= 0;
-          savestate_start_busy <= 0;
-          savestate_start_ok   <= 1;
-          save_serve_idle      <= 17'd0;
-          sys_state            <= SYS_SAVE_SERVE;
+          // Firmware finished producing the state.  Staging is complete; begin
+          // serving the staged SDRAM into fifo_save.  Do NOT announce OK yet —
+          // keep busy high and PRE-FILL the FIFO first (SRV_PUSH asserts OK
+          // once the FIFO is full), so APF starts reading with a full buffer
+          // head-start (mitigates mid-stream underrun drops).
+          ss_busy_seen    <= 0;
+          save_serve_idx  <= 17'd0;
+          save_serve_widx <= 2'd0;
+          serve_prefilled <= 1'b0;
+          save_serve_idle <= 21'd0;
+          sys_state       <= SYS_SAVE_SRV_RD_REQ;
         end
       end
 
@@ -1000,40 +1094,92 @@ module save_state_controller (
         end
       end
 
-      // ----- SAVE serve: service ss_data_unloader's read requests -----
-      // The unloader (core_top) drives ssrv_rd_en with ssrv_rd_addr (byte
-      // offset into the slot, stepping by 2) and samples ssrv_rd_data a fixed
-      // READ_MEM_CLOCK_DELAY later.  We read the staged SDRAM at
-      // STAGING_BASE_WORD + ssrv_rd_addr and hold the result.  When APF stops
-      // requesting (idle-timeout), the read-back is done → release.
-      SYS_SAVE_SERVE: begin
-        if (ssrv_rd_en && ~prev_ssrv_rd_en) begin
-          // New read request — fetch this word from SDRAM.
-          save_serve_idle <= 17'd0;
-          sys_state       <= SYS_SAVE_SRV_RD;
-        end else begin
-          if (save_serve_idle == SAVE_SERVE_IDLE_MAX) begin
-            // APF has stopped reading the slot → done.  Release the SDRAM
-            // hijack + CPU pause and return to idle (guarantees no permanent
-            // freeze regardless of how much APF read).
-            ss_loading <= 0;
-            sys_state  <= SYS_IDLE;
-          end else begin
-            save_serve_idle <= save_serve_idle + 17'd1;
-          end
-        end
-      end
-
-      SYS_SAVE_SRV_RD: begin
+      // ----- SAVE serve: read staged SDRAM (4 words/chunk) → fifo_save -----
+      SYS_SAVE_SRV_RD_REQ: begin
         ss_sdram_rd_req  <= ~ss_sdram_rd_req;
-        ss_sdram_rd_addr <= STAGING_BASE_WORD + {5'd0, ssrv_rd_addr};
-        sys_state        <= SYS_SAVE_SRV_RD_WAIT;
+        ss_sdram_rd_addr <= STAGING_BASE_WORD + {save_serve_idx, 3'b000}
+                                              + {save_serve_widx, 1'b0};
+        sys_state <= SYS_SAVE_SRV_RD_WAIT;
       end
 
       SYS_SAVE_SRV_RD_WAIT: begin
         if (sdram_rd_done) begin
-          ssrv_rd_data <= ss_sdram_rd_data;  // held until the next request
-          sys_state    <= SYS_SAVE_SERVE;
+          case (save_serve_widx)
+            2'd0: save_serve_buf[15:0]  <= ss_sdram_rd_data;
+            2'd1: save_serve_buf[31:16] <= ss_sdram_rd_data;
+            2'd2: save_serve_buf[47:32] <= ss_sdram_rd_data;
+            2'd3: save_serve_buf[63:48] <= ss_sdram_rd_data;
+          endcase
+          sys_state <= SYS_SAVE_SRV_RD_NEXT;
+        end
+      end
+
+      SYS_SAVE_SRV_RD_NEXT: begin
+        if (save_serve_widx == 2'd3) begin
+          sys_state <= SYS_SAVE_SRV_PUSH;
+        end else begin
+          save_serve_widx <= save_serve_widx + 2'd1;
+          sys_state       <= SYS_SAVE_SRV_RD_REQ;
+        end
+      end
+
+      SYS_SAVE_SRV_PUSH: begin
+        // Push the assembled 64-bit chunk into fifo_save when there's room,
+        // then fetch the next chunk.  When the FIFO is FULL we stop pushing:
+        //   * Pre-fill phase (~serve_prefilled): the FIFO is now full of
+        //     staged data → announce OK so APF begins draining with a full
+        //     head-start.  (Clear busy here, not at staging-done.)
+        //   * Serve phase (serve_prefilled): full = APF backpressure.  If APF
+        //     is still reading, keep the watchdog reset and wait for room.
+        //     If APF has STOPPED reading for SAVE_SERVE_IDLE_MAX, the read is
+        //     over → force completion so ss_pause_cpu can never stick.
+        if (~fifo_save_wr_full) begin
+          fifo_save_write_req <= 1;
+          save_serve_widx     <= 2'd0;
+          if (save_serve_idx == SAVE_SERVE_LAST) begin
+            sys_state <= SYS_SAVE_SRV_DONE;
+          end else begin
+            save_serve_idx <= save_serve_idx + 17'd1;
+            sys_state      <= SYS_SAVE_SRV_RD_REQ;
+          end
+        end else if (~serve_prefilled) begin
+          // FIFO full for the first time → pre-fill done → let APF read.
+          savestate_start_busy <= 0;
+          savestate_start_ok   <= 1;
+          serve_prefilled      <= 1'b1;
+          save_serve_idle      <= 21'd0;
+        end else if (apf_reading) begin
+          save_serve_idle <= 21'd0;            // APF still draining — wait.
+        end else if (save_serve_idle >= SAVE_SERVE_IDLE_MAX) begin
+          ss_loading <= 0;                     // APF stopped → done, no freeze.
+          sys_state  <= SYS_IDLE;
+        end else begin
+          save_serve_idle <= save_serve_idle + 21'd1;
+        end
+      end
+
+      SYS_SAVE_SRV_DONE: begin
+        // All chunks pushed; once APF has drained the FIFO the save read is
+        // complete.  Release the SDRAM mux and return to idle.  Guard with the
+        // same APF-read-activity watchdog: if APF stops before the FIFO
+        // reports empty, force completion rather than hang forever.
+        if (~serve_prefilled) begin
+          // Tiny state that filled in fewer chunks than the FIFO depth — APF
+          // was never released.  Announce OK now so it can drain.
+          savestate_start_busy <= 0;
+          savestate_start_ok   <= 1;
+          serve_prefilled      <= 1'b1;
+          save_serve_idle      <= 21'd0;
+        end else if (fifo_save_rd_empty) begin
+          ss_loading <= 0;
+          sys_state  <= SYS_IDLE;
+        end else if (apf_reading) begin
+          save_serve_idle <= 21'd0;
+        end else if (save_serve_idle >= SAVE_SERVE_IDLE_MAX) begin
+          ss_loading <= 0;
+          sys_state  <= SYS_IDLE;
+        end else begin
+          save_serve_idle <= save_serve_idle + 21'd1;
         end
       end
 

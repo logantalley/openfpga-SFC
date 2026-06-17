@@ -173,11 +173,7 @@ module tb_ss_staging #(
   reg  [31:0] bridge_addr    = 32'h0;
   reg  [31:0] bridge_wr_data = 32'h0;
   reg         savestate_load = 0;
-
-  // SAVE serve read-service drivers (TB models data_unloader's mem interface).
-  reg         fw_ssrv_rd_en   = 1'b0;
-  reg  [19:0] fw_ssrv_rd_addr = 20'h0;
-  wire [15:0] ssrv_rd_data_w;
+  wire [31:0] save_state_bridge_read_data;
 
   // Firmware-side SAVE drivers (model savestates.sv producing the state).
   // Safe defaults reproduce the old tie-offs so the LOAD test is unaffected.
@@ -192,6 +188,11 @@ module tb_ss_staging #(
   // Bridge data pattern for word n: both 16-bit halves nonzero & unique.
   function automatic [31:0] vpat(input int n);
     vpat = {16'hC000 | n[13:0], 16'h4000 | n[13:0]};
+  endfunction
+
+  // Byte-swap a 32-bit word (matches fifo_save.q → bridge_rd_data wiring).
+  function automatic [31:0] bswap32(input [31:0] d);
+    bswap32 = {d[7:0], d[15:8], d[23:16], d[31:24]};
   endfunction
 
   // Byte-reverse (replicates bridge_wr_swapped in save_state_controller).
@@ -221,7 +222,9 @@ module tb_ss_staging #(
   wire        ss_loading;
   wire        ss_pause_cpu;
 
-  save_state_controller ssc (
+  // Shorten the serve idle-completion watchdog so the SAVE test can verify
+  // the no-freeze release in a few hundred clk_sys instead of ~1M.
+  save_state_controller #(.SAVE_SERVE_IDLE_MAX(21'd2000)) ssc (
       .clk_74a(clk_74a),
       .clk_sys(clk_sys),
 
@@ -230,11 +233,7 @@ module tb_ss_staging #(
       .bridge_endian_little(1'b0),
       .bridge_addr(bridge_addr),
       .bridge_wr_data(bridge_wr_data),
-
-      // SAVE serve read-service (TB drives like data_unloader would)
-      .ssrv_rd_en(fw_ssrv_rd_en),
-      .ssrv_rd_addr(fw_ssrv_rd_addr),
-      .ssrv_rd_data(ssrv_rd_data_w),
+      .save_state_bridge_read_data(save_state_bridge_read_data),
 
       .savestate_load(savestate_load),
       .savestate_load_ack_s(),
@@ -423,19 +422,23 @@ module tb_ss_staging #(
     while (ss_ack_w === ack_prev) @(posedge clk_sys);
   endtask
 
-  // Model data_unloader's memory read interface: assert read_en with a stable
-  // byte address, then sample read_data after the controller's read-service
-  // round-trips through the SDRAM arbiter (READ_MEM_CLOCK_DELAY=15 on hw).
-  // The controller edge-detects ssrv_rd_en, fetches one 16-bit word from the
-  // staging region (STAGING_BASE + addr), and holds it on ssrv_rd_data.
-  task automatic ssrv_read(input [19:0] baddr, output [15:0] data);
-    @(posedge clk_sys);
-    fw_ssrv_rd_addr <= baddr;
-    fw_ssrv_rd_en   <= 1'b1;          // rising edge → SERVE → SRV_RD
-    repeat (15) @(posedge clk_sys);   // > arbiter round-trip incl. CDC
-    data = ssrv_rd_data_w;
-    fw_ssrv_rd_en <= 1'b0;
-    repeat (3) @(posedge clk_sys);    // gap so next assert is a clean edge
+  // APF reads one 32-bit word from the slot (showahead=ON: q is the head;
+  // the rising-edge pop advances afterward).  Waits for data to be available
+  // first — real APF reads (~75 cyc/word) are slower than the serve produces,
+  // so gating on non-empty models a sustainable read pace and isolates the
+  // serve *logic* from the TB-only over-read (the real throughput margin is
+  // validated on hardware).
+  task automatic bridge_read32(input [31:0] addr, output [31:0] data);
+    while (ssc.fifo_save_rd_empty) @(posedge clk_74a);
+    @(posedge clk_74a);
+    bridge_addr <= addr;
+    bridge_rd   <= 1'b1;          // rising edge → handler issues rdreq
+    // showahead=OFF: q presents the popped word a couple rdclk cycles after
+    // rdreq, within APF's read latency.  Sample after it settles.
+    repeat (3) @(posedge clk_74a);
+    #1 data = save_state_bridge_read_data;
+    bridge_rd <= 1'b0;
+    repeat (4) @(posedge clk_74a);  // gap before next read
   endtask
 
   initial begin : main
@@ -457,12 +460,15 @@ module tb_ss_staging #(
       errs = 0; nz = 0;
       $display("=== SAVE test: %0d chunks ===", SAVE_CHUNKS);
       // Watchdog so a missed handshake reports state instead of hanging.
+      // Generous (12 ms): the serve now PRE-FILLS the 1024-deep fifo_save
+      // (reading staged + padding chunks from SDRAM) before asserting OK.
       fork : save_wd
         begin
-          repeat (500) #1_000_000;  // 500 us
-          $display("WATCHDOG: save hung. sys_state=%0d start_busy=%b ok=%b ss_ack=%b ss_loading=%b ss_req=%b sdram_wr_ack=%b sdram_rd_ack=%b",
+          repeat (12000) #1_000_000;  // 12 ms
+          $display("WATCHDOG: save hung. sys_state=%0d start_busy=%b ok=%b ss_ack=%b ss_loading=%b ss_req=%b sdram_wr_ack=%b sdram_rd_ack=%b prefilled=%b idle=%0d",
                    ssc.sys_state, ssc.savestate_start_busy, ssc.savestate_start_ok,
-                   ss_ack_w, ssc.ss_loading, fw_ss_req, ss_sdram_wr_ack, ss_sdram_rd_ack);
+                   ss_ack_w, ssc.ss_loading, fw_ss_req, ss_sdram_wr_ack, ss_sdram_rd_ack,
+                   ssc.serve_prefilled, ssc.save_serve_idle);
           $finish;
         end
       join_none
@@ -485,8 +491,10 @@ module tb_ss_staging #(
       $display("[tb] all chunks produced; dropping ss_busy");
 
       @(posedge clk_sys); fw_ss_busy <= 1'b0;
+      // OK is now asserted only AFTER the serve pre-fills fifo_save to full.
       wait (ssc.savestate_start_ok == 1'b1);
-      $display("[tb] save staged, ok asserted, t=%0t", $time);
+      $display("[tb] save staged + serve pre-filled, ok asserted, t=%0t (prefilled=%b)",
+               $time, ssc.serve_prefilled);
 
       // Staging check: SDRAM word-index = STAGING_BASE>>1 + idx*4 + w.
       for (i = 0; i < SAVE_CHUNKS; i++)
@@ -503,48 +511,50 @@ module tb_ss_staging #(
         end
       $display("[tb] staging check: %0d word errors (of %0d)", errs, SAVE_CHUNKS*4);
 
-      // Serve check: read back every 16-bit word through the read-service
-      // (mimicking data_unloader) and verify EXACT ordering against the staged
-      // pattern.  Byte addr = j*2 → chunk j/4, word j%4.
+      // Serve check: read back the staged chunks (front of the pre-filled
+      // FIFO) and confirm EXACT ordering against the staged pattern.  Each
+      // 64-bit chunk = two 32-bit APF words: low word = save_pat[31:0],
+      // high word = save_pat[63:32].
       begin : serve_check
-        int j, serrs, snz, wd;
-        logic [15:0] sgot, sexp;
-        serrs = 0; snz = 0;
-        for (j = 0; j < SAVE_CHUNKS*4; j++) begin
-          ssrv_read(j*2, sgot);
-          sexp = save_pat(j/4) >> ((j%4)*16);
-          if (sgot !== 16'h0) snz++;
-          if (sgot !== sexp) begin
-            serrs++;
-            if (serrs <= 8)
-              $display("ERROR serve word %0d (byte %0d): got %h exp %h",
-                       j, j*2, sgot, sexp);
+        logic [31:0] elo, ehi;
+        // APF sees bridge_rd_data = byteswap32(fifo_q); the FIFO holds the
+        // staged 64-bit chunk (save_pat).  Expected per-word = byteswapped.
+        for (i = 0; i < SAVE_CHUNKS; i++) begin
+          bridge_read32(32'h4000_0000 + (i*2  )*4, rdw); elo = rdw;
+          bridge_read32(32'h4000_0000 + (i*2+1)*4, rdw); ehi = rdw;
+          if (elo !== 32'h0 && ehi !== 32'h0) nz += 2;
+          if (elo !== bswap32(save_pat(i)[31:0]) ||
+              ehi !== bswap32(save_pat(i)[63:32])) begin
+            errs++;
+            if (errs <= 8)
+              $display("ERROR serve chunk %0d: got %h_%h exp %h_%h",
+                       i, ehi, elo, bswap32(save_pat(i)[63:32]), bswap32(save_pat(i)[31:0]));
           end
-          if (j < 4) $display("[tb] serve read %0d = %h (exp %h)", j, sgot, sexp);
+          if (i < 4) $display("[tb] serve chunk %0d = %h_%h", i, ehi, elo);
         end
-        $display("[tb] serve check: %0d word errors (of %0d), %0d nonzero",
-                 serrs, SAVE_CHUNKS*4, snz);
+        $display("[tb] serve read-back: %0d/%0d nonzero, %0d order errors",
+                 nz, SAVE_CHUNKS*2, errs);
+      end
 
-        // Idle-completion: stop reading; the SERVE idle-timeout must release
-        // ss_loading (no permanent freeze).  Bounded wait > SAVE_SERVE_IDLE_MAX.
-        fw_ssrv_rd_en <= 1'b0;
-        wd = 0;
-        while (ssc.ss_loading === 1'b1 && wd < 8000) begin
+      // No-freeze check: stop reading.  The serve keeps pushing padding until
+      // fifo_save is full, then the idle watchdog (SAVE_SERVE_IDLE_MAX=2000)
+      // must release ss_loading and return to IDLE — never hang.
+      begin : idle_complete
+        int wd; wd = 0;
+        while (ssc.ss_loading === 1'b1 && wd < 200000) begin
           @(posedge clk_sys); wd++;
         end
         if (ssc.ss_loading === 1'b0)
-          $display("[tb] serve idle-completed after %0d clk_sys (sys_state=%0d)",
+          $display("[tb] serve idle-completed: ss_loading cleared after %0d clk_sys, sys_state=%0d",
                    wd, ssc.sys_state);
         else
-          $display("ERROR serve never idle-completed (ss_loading stuck, sys_state=%0d)",
-                   ssc.sys_state);
-
-        if (errs == 0 && serrs == 0 && ssc.ss_loading === 1'b0)
-          $display("*** SAVE PASS — staging exact, serve ordered & idle-completes ***");
-        else
-          $display("*** SAVE FAIL (stage errs=%0d, serve errs=%0d, ss_loading=%b) ***",
-                   errs, serrs, ssc.ss_loading);
+          $display("ERROR serve never released ss_loading (FREEZE), sys_state=%0d", ssc.sys_state);
       end
+
+      if (errs == 0 && ssc.ss_loading === 1'b0)
+        $display("*** SAVE PASS — staging exact, serve ordered, idle-completes (no freeze) ***");
+      else
+        $display("*** SAVE FAIL (errs=%0d, ss_loading=%b) ***", errs, ssc.ss_loading);
       $finish;
     end
 
