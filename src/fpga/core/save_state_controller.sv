@@ -200,10 +200,13 @@ module save_state_controller (
 
   // Save serve FIFO: written by the SDRAM-read serve FSM (save_serve_buf,
   // clk_sys), drained by APF bridge_rd (clk_74a).  Deep (512 entries) to
-  // absorb APF read bursts while the serve refills from SDRAM.  showahead=ON
-  // so q always presents the head word: APF reads save_state_bridge_read_data
-  // combinationally on its read, and the rising-edge bridge_rd pop advances
-  // to the next word afterward.
+  // absorb APF read bursts while the serve refills from SDRAM.  showahead=OFF
+  // matches the ORIGINAL streaming-save read timing that delivered the
+  // header correctly: the rising-edge bridge_rd pop issues rdreq and q
+  // presents the popped word a couple cycles later (within APF's read
+  // latency).  showahead=ON dropped the first 32-bit word (the pop advanced
+  // q before APF latched the head), which corrupted the header AND left the
+  // FIFO one word short so SRV_DONE never saw it empty → save freeze.
   dcfifo_mixed_widths fifo_save (
       .data(save_serve_buf),
       .rdclk(clk_74a),
@@ -223,7 +226,7 @@ module save_state_controller (
   );
   defparam fifo_save.intended_device_family = "Cyclone V",
       fifo_save.lpm_numwords  = 512,
-      fifo_save.lpm_showahead = "ON",
+      fifo_save.lpm_showahead = "OFF",
       fifo_save.lpm_type      = "dcfifo_mixed_widths",
       fifo_save.lpm_width     = 64,
       fifo_save.lpm_widthu    = 9,
@@ -403,12 +406,26 @@ module save_state_controller (
   // Staging states are SYS_STAGE_* (5'd10..5'd15) and the brief STAGING
   // start in SYS_IDLE.  Simplest robust definition: pause whenever the
   // FSM is in any staging-related state.
-  assign ss_pause_cpu = (sys_state == SYS_STAGE_FIFO_RD)    ||
-                        (sys_state == SYS_STAGE_FIFO_WAIT)  ||
-                        (sys_state == SYS_STAGE_FIFO_LATCH) ||
-                        (sys_state == SYS_STAGE_WR_REQ)     ||
-                        (sys_state == SYS_STAGE_WR_WAIT)    ||
-                        (sys_state == SYS_STAGE_IDLE);
+  // Pause the SNES CPU during LOAD staging (game would otherwise corrupt the
+  // hijacked SDRAM) AND during the SAVE serve.  The save firmware has RTI'd
+  // back to the running game by the time APF reads the slot, but the serve
+  // reads the staged state from SDRAM with ss_loading hijacking the cart-ROM
+  // path — so the game must be frozen for the serve window or it reads
+  // garbage cart-ROM (the observed save freeze).  Audio (SMP on ACLK) keeps
+  // running; this is a brief hitch that resumes when the serve completes.
+  // NOT paused during SAVE staging (SYS_SAVE_ACTIVE / SYS_SAVE_WR_*): the CPU
+  // must run there to execute the save firmware producing the chunks.
+  assign ss_pause_cpu = (sys_state == SYS_STAGE_FIFO_RD)     ||
+                        (sys_state == SYS_STAGE_FIFO_WAIT)   ||
+                        (sys_state == SYS_STAGE_FIFO_LATCH)  ||
+                        (sys_state == SYS_STAGE_WR_REQ)      ||
+                        (sys_state == SYS_STAGE_WR_WAIT)     ||
+                        (sys_state == SYS_STAGE_IDLE)        ||
+                        (sys_state == SYS_SAVE_SRV_RD_REQ)   ||
+                        (sys_state == SYS_SAVE_SRV_RD_WAIT)  ||
+                        (sys_state == SYS_SAVE_SRV_RD_NEXT)  ||
+                        (sys_state == SYS_SAVE_SRV_PUSH)     ||
+                        (sys_state == SYS_SAVE_SRV_DONE);
 
   // Edge / handshake tracking
   reg prev_savestate_start = 0;

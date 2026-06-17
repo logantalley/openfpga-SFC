@@ -425,11 +425,13 @@ module tb_ss_staging #(
     while (ssc.fifo_save_rd_empty) @(posedge clk_74a);
     @(posedge clk_74a);
     bridge_addr <= addr;
-    bridge_rd   <= 1'b1;
-    @(posedge clk_74a);          // handler detects rising edge → pop; q=head
+    bridge_rd   <= 1'b1;          // rising edge → handler issues rdreq
+    // showahead=OFF: q presents the popped word a couple rdclk cycles after
+    // rdreq, within APF's read latency.  Sample after it settles.
+    repeat (3) @(posedge clk_74a);
     #1 data = save_state_bridge_read_data;
     bridge_rd <= 1'b0;
-    repeat (4) @(posedge clk_74a);  // gap so the pop settles before next read
+    repeat (4) @(posedge clk_74a);  // gap before next read
   endtask
 
   initial begin : main
