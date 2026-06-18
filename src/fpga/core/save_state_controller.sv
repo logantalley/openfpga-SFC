@@ -1054,17 +1054,21 @@ module save_state_controller #(
             first_save_seen  <= 1;
           end
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
-          // Firmware finished producing the state.  Staging is complete; begin
-          // serving the staged SDRAM into fifo_save.  Do NOT announce OK yet —
-          // keep busy high and PRE-FILL the FIFO first (SRV_PUSH asserts OK
-          // once the FIFO is full), so APF starts reading with a full buffer
-          // head-start (mitigates mid-stream underrun drops).
-          ss_busy_seen    <= 0;
-          save_serve_idx  <= 17'd0;
-          save_serve_widx <= 2'd0;
-          serve_prefilled <= 1'b0;
-          save_serve_idle <= 21'd0;
-          sys_state       <= SYS_SAVE_SRV_RD_REQ;
+          // === SERVE-SKIP BISECT (diagnostic) ===
+          // Staging is complete.  Instead of serving the staged SDRAM back to
+          // APF, assert OK and return to IDLE immediately — dropping ss_loading
+          // so there is NO serve-phase SDRAM hijack and NO serve-phase CPU
+          // pause.  The .sta file will be garbage, but this isolates the cause
+          // of the post-save game corruption:
+          //   * Game SURVIVES  ⇒ corruption is the serve hijack/pause.
+          //   * Game STILL bad ⇒ corruption is staging / firmware / RTI-gap.
+          // (Restore the serve by changing sys_state back to SYS_SAVE_SRV_RD_REQ
+          //  and removing the ss_loading<=0 here.)
+          ss_busy_seen         <= 0;
+          savestate_start_busy <= 0;
+          savestate_start_ok   <= 1;
+          ss_loading           <= 0;
+          sys_state            <= SYS_IDLE;
         end
       end
 
@@ -1125,14 +1129,11 @@ module save_state_controller #(
 
       SYS_SAVE_SRV_PUSH: begin
         // Push the assembled 64-bit chunk into fifo_save when there's room,
-        // then fetch the next chunk.  When the FIFO is FULL we stop pushing:
-        //   * Pre-fill phase (~serve_prefilled): the FIFO is now full of
-        //     staged data → announce OK so APF begins draining with a full
-        //     head-start.  (Clear busy here, not at staging-done.)
-        //   * Serve phase (serve_prefilled): full = APF backpressure.  If APF
-        //     is still reading, keep the watchdog reset and wait for room.
-        //     If APF has STOPPED reading for SAVE_SERVE_IDLE_MAX, the read is
-        //     over → force completion so ss_pause_cpu can never stick.
+        // then fetch the next chunk.  When the FIFO is FULL = APF backpressure:
+        // if APF is still reading, hold (reset the watchdog) and wait for room;
+        // if APF has STOPPED reading for SAVE_SERVE_IDLE_MAX, the read-back is
+        // over → force completion so ss_loading/pause can never stick (the old
+        // serve hung here forever on a full FIFO when APF stopped early).
         if (~fifo_save_wr_full) begin
           fifo_save_write_req <= 1;
           save_serve_widx     <= 2'd0;
@@ -1142,12 +1143,6 @@ module save_state_controller #(
             save_serve_idx <= save_serve_idx + 17'd1;
             sys_state      <= SYS_SAVE_SRV_RD_REQ;
           end
-        end else if (~serve_prefilled) begin
-          // FIFO full for the first time → pre-fill done → let APF read.
-          savestate_start_busy <= 0;
-          savestate_start_ok   <= 1;
-          serve_prefilled      <= 1'b1;
-          save_serve_idle      <= 21'd0;
         end else if (apf_reading) begin
           save_serve_idle <= 21'd0;            // APF still draining — wait.
         end else if (save_serve_idle >= SAVE_SERVE_IDLE_MAX) begin
@@ -1160,17 +1155,10 @@ module save_state_controller #(
 
       SYS_SAVE_SRV_DONE: begin
         // All chunks pushed; once APF has drained the FIFO the save read is
-        // complete.  Release the SDRAM mux and return to idle.  Guard with the
+        // complete → release the SDRAM mux and return to idle.  Guard with the
         // same APF-read-activity watchdog: if APF stops before the FIFO
         // reports empty, force completion rather than hang forever.
-        if (~serve_prefilled) begin
-          // Tiny state that filled in fewer chunks than the FIFO depth — APF
-          // was never released.  Announce OK now so it can drain.
-          savestate_start_busy <= 0;
-          savestate_start_ok   <= 1;
-          serve_prefilled      <= 1'b1;
-          save_serve_idle      <= 21'd0;
-        end else if (fifo_save_rd_empty) begin
+        if (fifo_save_rd_empty) begin
           ss_loading <= 0;
           sys_state  <= SYS_IDLE;
         end else if (apf_reading) begin
