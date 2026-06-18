@@ -1054,21 +1054,17 @@ module save_state_controller #(
             first_save_seen  <= 1;
           end
         end else if (ss_busy_seen && prev_ss_busy && ~ss_busy) begin
-          // === SERVE-SKIP BISECT (diagnostic) ===
-          // Staging is complete.  Instead of serving the staged SDRAM back to
-          // APF, assert OK and return to IDLE immediately — dropping ss_loading
-          // so there is NO serve-phase SDRAM hijack and NO serve-phase CPU
-          // pause.  The .sta file will be garbage, but this isolates the cause
-          // of the post-save game corruption:
-          //   * Game SURVIVES  ⇒ corruption is the serve hijack/pause.
-          //   * Game STILL bad ⇒ corruption is staging / firmware / RTI-gap.
-          // (Restore the serve by changing sys_state back to SYS_SAVE_SRV_RD_REQ
-          //  and removing the ss_loading<=0 here.)
+          // Firmware finished producing the state.  Staging complete; announce
+          // OK immediately so APF starts reading, and serve the staged SDRAM
+          // through fifo_save concurrently.
           ss_busy_seen         <= 0;
           savestate_start_busy <= 0;
           savestate_start_ok   <= 1;
-          ss_loading           <= 0;
-          sys_state            <= SYS_IDLE;
+          save_serve_idx       <= 17'd0;
+          save_serve_widx      <= 2'd0;
+          serve_prefilled      <= 1'b1;
+          save_serve_idle      <= 21'd0;
+          sys_state            <= SYS_SAVE_SRV_RD_REQ;
         end
       end
 
