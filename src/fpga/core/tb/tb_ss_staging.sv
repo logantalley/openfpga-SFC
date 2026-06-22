@@ -222,6 +222,17 @@ module tb_ss_staging #(
   wire        ss_loading;
   wire        ss_pause_cpu;
 
+  // 2026-06-22: PSRAM staging interface (controller drives, ss_psram_arbiter
+  // CDCs into clk_mem, psram_arbiter Port B drives the psram core and chip).
+  wire        ss_psram_wr_req;
+  wire [18:0] ss_psram_wr_addr;
+  wire [15:0] ss_psram_wr_data;
+  wire        ss_psram_wr_ack;
+  wire        ss_psram_rd_req;
+  wire [18:0] ss_psram_rd_addr;
+  wire [15:0] ss_psram_rd_data;
+  wire        ss_psram_rd_ack;
+
   // Shorten the serve idle-completion watchdog so the SAVE test can verify
   // the no-freeze release in a few hundred clk_sys instead of ~1M.
   save_state_controller #(.SAVE_SERVE_IDLE_MAX(21'd2000)) ssc (
@@ -268,7 +279,17 @@ module tb_ss_staging #(
       .ss_sdram_rd_data(ss_sdram_rd_data),
       .ss_sdram_rd_ack (ss_sdram_rd_ack),
       .ss_loading      (ss_loading),
-      .ss_pause_cpu    (ss_pause_cpu)
+      .ss_pause_cpu    (ss_pause_cpu),
+
+      // PSRAM staging interface — drives the new bank-1 path under test.
+      .ss_psram_wr_req (ss_psram_wr_req),
+      .ss_psram_wr_addr(ss_psram_wr_addr),
+      .ss_psram_wr_data(ss_psram_wr_data),
+      .ss_psram_wr_ack (ss_psram_wr_ack),
+      .ss_psram_rd_req (ss_psram_rd_req),
+      .ss_psram_rd_addr(ss_psram_rd_addr),
+      .ss_psram_rd_data(ss_psram_rd_data),
+      .ss_psram_rd_ack (ss_psram_rd_ack)
   );
 
   // -------------------------------------------------------------------
@@ -354,6 +375,130 @@ module tb_ss_staging #(
       .nras(dram_nras),
       .ncas(dram_ncas),
       .nwe (dram_nwe)
+  );
+
+  // -------------------------------------------------------------------
+  // DUT 4: ss_psram_arbiter + psram_arbiter + psram core + chip model.
+  // The new SAVE path under test.  Port A (ARAM) is tied to idle so
+  // contention testing happens in a later TB pass; this run validates
+  // only Port B (savestate) end-to-end.
+  // -------------------------------------------------------------------
+  wire        ss_psram_b_write_en;
+  wire        ss_psram_b_read_en;
+  wire [21:0] ss_psram_b_addr;
+  wire [15:0] ss_psram_b_data_in;
+  wire        ss_psram_b_write_high_byte;
+  wire        ss_psram_b_write_low_byte;
+  wire        ss_psram_b_bank_sel;
+  wire [15:0] ss_psram_b_data_out;
+  wire        ss_psram_b_read_avail;
+  wire        ss_psram_b_busy;
+
+  ss_psram_arbiter ss_psram_arb (
+      .clk_sys(clk_sys),
+      .clk_mem(clk_mem),
+
+      .ss_psram_wr_req (ss_psram_wr_req),
+      .ss_psram_wr_addr(ss_psram_wr_addr),
+      .ss_psram_wr_data(ss_psram_wr_data),
+      .ss_psram_wr_ack (ss_psram_wr_ack),
+      .ss_psram_rd_req (ss_psram_rd_req),
+      .ss_psram_rd_addr(ss_psram_rd_addr),
+      .ss_psram_rd_data(ss_psram_rd_data),
+      .ss_psram_rd_ack (ss_psram_rd_ack),
+
+      .b_write_en       (ss_psram_b_write_en),
+      .b_read_en        (ss_psram_b_read_en),
+      .b_addr           (ss_psram_b_addr),
+      .b_data_in        (ss_psram_b_data_in),
+      .b_write_high_byte(ss_psram_b_write_high_byte),
+      .b_write_low_byte (ss_psram_b_write_low_byte),
+      .b_bank_sel       (ss_psram_b_bank_sel),
+      .b_data_out       (ss_psram_b_data_out),
+      .b_read_avail     (ss_psram_b_read_avail),
+      .b_busy           (ss_psram_b_busy)
+  );
+
+  // CRAM1 pin bus (single chip model).
+  wire [21:16] cram1_a;
+  wire [15:0]  cram1_dq;
+  wire         cram1_wait;
+  wire         cram1_clk, cram1_adv_n, cram1_cre;
+  wire         cram1_ce0_n, cram1_ce1_n, cram1_oe_n, cram1_we_n;
+  wire         cram1_ub_n, cram1_lb_n;
+
+  // Port A activity model: replicate SPC700/ARAM hitting the bus.  Real
+  // ARAM accesses pulse CE_N low for one SMP cycle (~84 clk_mem cycles)
+  // every couple SMP cycles, with CE_N high in between.  We model that
+  // as an edge-shaped a_read_en: high for one clk_mem cycle every 84
+  // (matches a 1.024 MHz fetch rate; the arbiter only needs the *edge*
+  // to grant Port A so a single-cycle pulse is sufficient).
+  reg [6:0] a_traffic_cnt = 7'd0;
+  reg       a_traffic_active = 1'b0;
+  always @(posedge clk_mem) begin
+    if (a_traffic_cnt == 7'd83) a_traffic_cnt <= 7'd0;
+    else                        a_traffic_cnt <= a_traffic_cnt + 7'd1;
+  end
+  // One-cycle pulse every 84 clk_mem cycles when active.
+  wire a_pulse_read = a_traffic_active & (a_traffic_cnt == 7'd0);
+
+  psram_arbiter #(
+      .CLOCK_SPEED(85.9)
+  ) cram1_arb (
+      .clk(clk_mem),
+
+      // Port A — driven by the traffic model above when a_traffic_active=1.
+      .a_bank_sel(1'b0),
+      .a_addr({14'b0, a_traffic_cnt}),
+      .a_write_en(1'b0),
+      .a_data_in(16'd0),
+      .a_write_high_byte(1'b0),
+      .a_write_low_byte(1'b0),
+      .a_read_en(a_pulse_read),
+      .a_read_avail(),
+      .a_data_out(),
+      .a_busy(),
+
+      // Port B — driven by ss_psram_arbiter.
+      .b_bank_sel(ss_psram_b_bank_sel),
+      .b_addr(ss_psram_b_addr),
+      .b_write_en(ss_psram_b_write_en),
+      .b_data_in(ss_psram_b_data_in),
+      .b_write_high_byte(ss_psram_b_write_high_byte),
+      .b_write_low_byte(ss_psram_b_write_low_byte),
+      .b_read_en(ss_psram_b_read_en),
+      .b_read_avail(ss_psram_b_read_avail),
+      .b_data_out(ss_psram_b_data_out),
+      .b_busy(ss_psram_b_busy),
+
+      .cram_a(cram1_a),
+      .cram_dq(cram1_dq),
+      .cram_wait(cram1_wait),
+      .cram_clk(cram1_clk),
+      .cram_adv_n(cram1_adv_n),
+      .cram_cre(cram1_cre),
+      .cram_ce0_n(cram1_ce0_n),
+      .cram_ce1_n(cram1_ce1_n),
+      .cram_oe_n(cram1_oe_n),
+      .cram_we_n(cram1_we_n),
+      .cram_ub_n(cram1_ub_n),
+      .cram_lb_n(cram1_lb_n)
+  );
+
+  psram_chip_model psram_chip (
+      .clk(clk_mem),
+      .cram_a(cram1_a),
+      .cram_dq(cram1_dq),
+      .cram_wait(cram1_wait),
+      .cram_clk(cram1_clk),
+      .cram_adv_n(cram1_adv_n),
+      .cram_cre(cram1_cre),
+      .cram_ce0_n(cram1_ce0_n),
+      .cram_ce1_n(cram1_ce1_n),
+      .cram_oe_n(cram1_oe_n),
+      .cram_we_n(cram1_we_n),
+      .cram_ub_n(cram1_ub_n),
+      .cram_lb_n(cram1_lb_n)
   );
 
   // -------------------------------------------------------------------
@@ -475,6 +620,13 @@ module tb_ss_staging #(
 
       #5_000_000;  // sdram init
 
+      // Enable Port A traffic on the PSRAM arbiter — simulates SPC700/ARAM
+      // hitting CRAM1 bank 0 in parallel with savestate's bank-1 writes.
+      // The hardware failure mode this exposes: if Port B is starved by
+      // Port A's ~a_req gate, bank-1 writes drop and the served data ends
+      // up as the stale PSRAM contents (or wrong addresses).
+      a_traffic_active = 1'b1;
+
       // Hold savestate_start wide (~270 ns) so the slower clk_sys synch_3
       // reliably catches the rising edge.
       @(posedge clk_74a); fw_savestate_start <= 1'b1;
@@ -496,20 +648,25 @@ module tb_ss_staging #(
       $display("[tb] save staged + serve pre-filled, ok asserted, t=%0t (prefilled=%b)",
                $time, ssc.serve_prefilled);
 
-      // Staging check: SDRAM word-index = STAGING_BASE>>1 + idx*4 + w.
+      // Staging check: PSRAM bank-1 word-index = idx*4 + w (base 0, stride 1).
+      // 2026-06-22 pivot: SAVE staging now lives in CRAM1 bank 1, not SDRAM.
       for (i = 0; i < SAVE_CHUNKS; i++)
         for (w = 0; w < 4; w++) begin
-          slin = (STAGING_BASE >> 1) + i*4 + w;
-          mw = chip.mem.exists(slin) ? chip.mem[slin] : 16'hDEAD;
+          logic [21:0] paddr;
+          paddr = i*4 + w;
+          mw = psram_chip.peek(1'b1, paddr);
           ew = save_pat(i) >> (w*16);
           if (mw !== ew) begin
             errs++;
             if (errs <= 8)
-              $display("ERROR stage chunk %0d w%0d (lin=%h): got %h exp %h",
-                       i, w, slin, mw, ew);
+              $display("ERROR stage chunk %0d w%0d (paddr=%h): got %h exp %h",
+                       i, w, paddr, mw, ew);
           end
         end
-      $display("[tb] staging check: %0d word errors (of %0d)", errs, SAVE_CHUNKS*4);
+      $display("[tb] PSRAM staging check: %0d word errors (of %0d)", errs, SAVE_CHUNKS*4);
+      $display("[tb] PSRAM chip: bank1 writes=%0d bank0 writes=%0d  bank1 reads=%0d bank0 reads=%0d",
+               psram_chip.total_writes_bank1, psram_chip.total_writes_bank0,
+               psram_chip.total_reads_bank1, psram_chip.total_reads_bank0);
 
       // Serve check: read back the staged chunks (front of the pre-filled
       // FIFO) and confirm EXACT ordering against the staged pattern.  Each

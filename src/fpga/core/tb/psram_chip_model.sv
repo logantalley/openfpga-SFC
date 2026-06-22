@@ -84,6 +84,21 @@ module psram_chip_model (
   int total_reads_bank1  = 0;
   int log_remaining = 16;
 
+  // Shadow registers: previous-cycle values of multi-bit lines that may
+  // be changing on the same clock edge as the control-line transitions
+  // we care about.  In real silicon the chip latches on the rising edge
+  // of we_n using the setup-time value of dq — i.e., dq from before the
+  // edge.  In Verilog NBA semantics, both we_n's rise and data_out_en's
+  // fall happen atomically at the same posedge, so we must sample the
+  // _prior_ cycle's dq to get the same answer hardware would see.
+  reg [15:0]  prev_cram_dq = 16'h0000;
+  reg [21:16] prev_cram_a  = 6'h0;
+  reg         prev_ub_n    = 1'b1;
+  reg         prev_lb_n    = 1'b1;
+  reg         prev_ce0_n_for_bank = 1'b1;
+  reg         prev_ce1_n_for_bank = 1'b1;
+  reg         prev_cram_oe_n_for_read = 1'b1;
+
   // -------------------------------------------------------------------
   // Behavior: react to control-line edges.  We poll on the controller's
   // clock since psram.sv's FSM ticks per-clk.  Capture at the rising
@@ -93,34 +108,47 @@ module psram_chip_model (
     longint unsigned key;
 
     // Address latch: rising edge of adv_n while a bank is selected.
-    if (cram_adv_n & ~prev_adv_n & bank_active) begin
-      bank_latched <= bank_sel_now;
-      addr_latched <= {cram_a, cram_dq};
+    // Sample the _prior_ cycle's bus values (same NBA reasoning as below).
+    if (cram_adv_n & ~prev_adv_n & (~prev_ce0_n_for_bank | ~prev_ce1_n_for_bank)) begin
+      bank_latched <= ~prev_ce1_n_for_bank;
+      addr_latched <= {prev_cram_a, prev_cram_dq};
       addr_valid   <= 1'b1;
     end
 
     // Write commit: rising edge of we_n while addr is latched.  ub_n/lb_n
-    // pick which byte(s) actually update.  Note: psram.sv asserts we_n
-    // low BEFORE the data is on dq (it drives addr-on-dq during adv), so
-    // we cannot sample data on we_n's falling edge — we sample on rising.
+    // pick which byte(s) actually update.  Sample the prior cycle's bus
+    // values so we capture the chip's setup-time window correctly under
+    // Verilog NBA semantics (psram.sv drops data_out_en the same edge it
+    // raises we_n — without prior-cycle shadowing, dq reads as 'z here).
     if (cram_we_n & ~prev_we_n & addr_valid) begin
       key = {1'b0, bank_latched, addr_latched};
       if (!mem.exists(key)) mem[key] = 16'h0000;
-      if (~cram_ub_n) mem[key][15:8] = cram_dq[15:8];
-      if (~cram_lb_n) mem[key][7:0]  = cram_dq[7:0];
+      if (~prev_ub_n) mem[key][15:8] = prev_cram_dq[15:8];
+      if (~prev_lb_n) mem[key][7:0]  = prev_cram_dq[7:0];
       if (bank_latched) total_writes_bank1++;
       else              total_writes_bank0++;
       if (log_remaining > 0) begin
         $display("[psram_chip] WR bank=%0d addr=%h data=%h (ub=%b lb=%b) t=%0t",
-                 bank_latched, addr_latched, cram_dq, ~cram_ub_n, ~cram_lb_n, $time);
+                 bank_latched, addr_latched, prev_cram_dq, ~prev_ub_n, ~prev_lb_n, $time);
         log_remaining--;
       end
     end
 
+    prev_cram_dq             <= cram_dq;
+    prev_cram_a              <= cram_a;
+    prev_ub_n                <= cram_ub_n;
+    prev_lb_n                <= cram_lb_n;
+    prev_ce0_n_for_bank      <= cram_ce0_n;
+    prev_ce1_n_for_bank      <= cram_ce1_n;
+    prev_cram_oe_n_for_read  <= cram_oe_n;
+
     // Read accounting: count one read per access (deasserting ce).
-    // Detected when both ce lines rise — chip is being released.
+    // Detected when ce returns high after an oe-low transaction.  We use
+    // the prior cycle's oe_n because the same posedge may bring both ce
+    // and oe back high (psram.sv:368-376) and Verilog NBA semantics make
+    // the read of cram_oe_n unreliable inline (see prev_cram_dq comment).
     if ((cram_ce0_n & ~prev_ce0_n) | (cram_ce1_n & ~prev_ce1_n)) begin
-      if (addr_valid & ~cram_oe_n) begin
+      if (addr_valid & ~prev_cram_oe_n_for_read) begin
         if (bank_latched) total_reads_bank1++;
         else              total_reads_bank0++;
       end

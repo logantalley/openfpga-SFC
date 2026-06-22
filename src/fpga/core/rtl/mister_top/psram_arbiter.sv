@@ -79,13 +79,29 @@ module psram_arbiter #(
   // clk after a transaction starts and falls when state returns to NONE.
   wire core_busy;
 
+  // Edge-detect A's request so a continuously-asserted ARAM CE/OE pair
+  // (which on hardware can stay high across many clk_mem cycles for a
+  // single SMP access) doesn't starve Port B.  Treat A as wanting service
+  // only on the transition from idle to request — that's exactly one
+  // transaction per ARAM access, which matches psram.sv semantics
+  // (psram only acts on the first edge after STATE_NONE).
+  reg  prev_a_req = 1'b0;
+  wire a_req_edge = a_req & ~prev_a_req;
+  always @(posedge clk) prev_a_req <= a_req;
+
+  // Track whether A is currently being serviced (grant_valid & grant_is_a)
+  // OR has a fresh edge this cycle.  Either way, A "wins" priority and
+  // B must wait.
+  wire a_active = (grant_valid & grant_is_a) | a_req_edge;
+
   // ----- Decide whether to start a new transaction this cycle -----
   // Only when no grant is currently in flight AND the psram core is idle.
-  // A wins ties.  This is purely combinational so the gated request signals
-  // flow into psram on the same cycle the core's STATE_NONE handler runs.
+  // A wins on edge; B wins whenever the core is free and A has no fresh
+  // edge.  This guarantees A is never delayed (its edge starts immediately)
+  // and B fills every otherwise-idle slot.
   wire can_start  = ~grant_valid & ~core_busy;
-  wire start_a    = can_start &  a_req;
-  wire start_b    = can_start & ~a_req & b_req;
+  wire start_a    = can_start &  a_req_edge;
+  wire start_b    = can_start & ~a_req_edge & b_req;
 
   // Selected master's inputs to the core.
   wire        sel_bank_sel        = start_a ? a_bank_sel        : b_bank_sel;
@@ -143,19 +159,19 @@ module psram_arbiter #(
   assign b_data_out   = core_data_out;
 
   // ----- Per-port busy -----
-  // A port reports busy from the moment it has a request pending through
-  // the end of its transaction.  This lets a master poll busy the same way
-  // it would against the bare psram core.
-  // - If we're currently holding a grant for this port, busy = 1.
-  // - If we're about to start a transaction for this port this cycle, busy = 1.
-  // - If the core is busy serving the other port, busy on this port is 1
-  //   only if this port has a request pending (else the master doesn't care).
-  assign a_busy =  (grant_valid &  grant_is_a)
-                 | start_a
-                 | (a_req & (grant_valid | core_busy));
-  assign b_busy =  (grant_valid & ~grant_is_a)
-                 | start_b
-                 | (b_req & (grant_valid | core_busy));
+  // A port reports busy from the moment its transaction is granted through
+  // the end of that transaction.  Callers use this the same way they would
+  // poll the bare psram core's busy: low = "core is free, you can request",
+  // high = "transaction in progress for you, wait".
+  //
+  // Note: we do NOT report busy on a port simply because the OTHER port is
+  // in flight — that would cause ss_psram_arbiter (which polls b_busy in
+  // SS_WR_ISSUE/SS_RD_ISSUE) to think its own request was accepted while
+  // really Port A was being serviced, dropping the write.  The grant-based
+  // formulation guarantees b_busy goes high only when our request is the
+  // one in flight.
+  assign a_busy = (grant_valid &  grant_is_a) | start_a;
+  assign b_busy = (grant_valid & ~grant_is_a) | start_b;
 
   // ----- Underlying psram core -----
   psram #(

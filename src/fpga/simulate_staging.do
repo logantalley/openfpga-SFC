@@ -50,6 +50,10 @@ set VLOG  [list -sv -work work -suppress 2244]
 vlog_file $VLOGP apf/common.v
 vlog_file $VLOG  core/rtl/sdram.sv
 vlog_file $VLOG  core/rtl/mister_top/ss_sdram_arbiter.sv
+vlog_file $VLOG  core/rtl/mister_top/psram.sv
+vlog_file $VLOG  core/rtl/mister_top/psram_arbiter.sv
+vlog_file $VLOG  core/rtl/mister_top/ss_psram_arbiter.sv
+vlog_file $VLOG  core/tb/psram_chip_model.sv
 vlog_file $VLOG  core/save_state_controller.sv
 vlog_file $VLOG  core/tb/tb_ss_staging.sv
 
