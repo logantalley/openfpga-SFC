@@ -264,22 +264,12 @@ module MAIN_SNES (
   // only toggles while clk_sys is low.  Only pauses in SYS_STAGE_* states
   // — NOT in SERVE_KICK_WAIT/KICK/SERVE_* (load firmware needs MCLK).
   //
-  // SAVE-FREEZE FIX (race close): the controller's ss_pause_cpu is derived
-  // from sys_state in clk_sys and lags the firmware by the ss_busy CDC.  On
-  // a SAVE, the firmware drops ss_busy and RTIs back to the running game; in
-  // the lag window the game's CPU executes from cart-ROM SDRAM that is still
-  // hijacked by ss_loading → it runs garbage and hangs (the persistent save
-  // freeze — staging completes + rti_arms=1, yet the core is frozen).
-  // Add a FAST, MCLK-domain pause term: while a save is in progress and the
-  // firmware has dropped ss_busy_out (serve phase), pause immediately — before
-  // the RTI can let the game touch the hijacked bus.  Scoped to SAVE via
-  // save_in_progress so the verified LOAD path is unchanged.
-  reg save_in_progress = 1'b0;
-  always @(posedge clk_sys) begin
-    if (ss_save)        save_in_progress <= 1'b1;   // savestate_start pulse
-    else if (~ss_loading) save_in_progress <= 1'b0; // whole save finished
-  end
-  wire ss_pause_any = ss_pause_cpu | (save_in_progress & ss_loading & ~ss_busy_out);
+  // 2026-06-22: SAVE no longer needs an extra fast-pause term — SAVE now
+  // stages and serves through CRAM1 bank 1 (PSRAM), a different physical
+  // chip from cart-ROM SDRAM, so the running game's instruction fetch is
+  // undisturbed throughout SAVE.  The earlier `save_in_progress` race-close
+  // (when SAVE shared the cart-ROM SDRAM bus) is therefore unnecessary.
+  wire ss_pause_any = ss_pause_cpu;
 
   reg clk_sys_en = 1'b1;
   always @(negedge clk_sys) begin

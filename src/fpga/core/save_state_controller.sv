@@ -447,17 +447,16 @@ module save_state_controller #(
   // running; this is a brief hitch that resumes when the serve completes.
   // NOT paused during SAVE staging (SYS_SAVE_ACTIVE / SYS_SAVE_WR_*): the CPU
   // must run there to execute the save firmware producing the chunks.
+  // SAVE no longer pauses the CPU (2026-06-22): stage and serve are on
+  // CRAM1 bank 1 (PSRAM), which is a different physical chip from cart-ROM
+  // SDRAM, so the running game's instruction fetch is undisturbed.  Only
+  // LOAD staging (SDRAM staging hijack) still needs MCLK paused.
   assign ss_pause_cpu = (sys_state == SYS_STAGE_FIFO_RD)     ||
                         (sys_state == SYS_STAGE_FIFO_WAIT)   ||
                         (sys_state == SYS_STAGE_FIFO_LATCH)  ||
                         (sys_state == SYS_STAGE_WR_REQ)      ||
                         (sys_state == SYS_STAGE_WR_WAIT)     ||
-                        (sys_state == SYS_STAGE_IDLE)        ||
-                        (sys_state == SYS_SAVE_SRV_RD_REQ)   ||
-                        (sys_state == SYS_SAVE_SRV_RD_WAIT)  ||
-                        (sys_state == SYS_SAVE_SRV_RD_NEXT)  ||
-                        (sys_state == SYS_SAVE_SRV_PUSH)     ||
-                        (sys_state == SYS_SAVE_SRV_DONE);
+                        (sys_state == SYS_STAGE_IDLE);
 
   // Edge / handshake tracking
   reg prev_savestate_start = 0;
@@ -466,10 +465,14 @@ module save_state_controller #(
   reg prev_ss_req          = 0;
   reg prev_ss_sdram_wr_ack = 0;
   reg prev_ss_sdram_rd_ack = 0;
+  reg prev_ss_psram_wr_ack = 0;
+  reg prev_ss_psram_rd_ack = 0;
 
   wire new_ddr_req      = (ss_req != prev_ss_req);
   wire sdram_wr_done    = (ss_sdram_wr_ack != prev_ss_sdram_wr_ack);
   wire sdram_rd_done    = (ss_sdram_rd_ack != prev_ss_sdram_rd_ack);
+  wire psram_wr_done    = (ss_psram_wr_ack != prev_ss_psram_wr_ack);
+  wire psram_rd_done    = (ss_psram_rd_ack != prev_ss_psram_rd_ack);
 
   // ss_busy_seen — same anti-glitch pattern as Phase A: only act on a
   // falling edge of ss_busy if we've already observed it rise during the
@@ -935,6 +938,8 @@ module save_state_controller #(
     prev_ss_req          <= ss_req;
     prev_ss_sdram_wr_ack <= ss_sdram_wr_ack;
     prev_ss_sdram_rd_ack <= ss_sdram_rd_ack;
+    prev_ss_psram_wr_ack <= ss_psram_wr_ack;
+    prev_ss_psram_rd_ack <= ss_psram_rd_ack;
 
     // 1-cycle pulses
     ss_save             <= 0;
@@ -994,13 +999,10 @@ module save_state_controller #(
       ss_save              <= 1;
       ss_save_ever         <= 1;
       ss_save_count        <= ss_save_count + 4'd1;
-      // Route the SDRAM mux to the savestate arbiter for the whole save
-      // (staging firmware→SDRAM, then serving SDRAM→APF).  The save firmware
-      // runs from BRAM bank $FF and the DMA reads on-chip WRAM/VRAM/ARAM, so
-      // hijacking cart-ROM SDRAM during the save is safe.  ss_pause_cpu is
-      // NOT asserted for SAVE states, so MCLK keeps running (the CPU must
-      // execute the save firmware).
-      ss_loading           <= 1;
+      // 2026-06-22: SAVE no longer hijacks cart-ROM SDRAM.  Stage + serve
+      // both target CRAM1 bank 1 (PSRAM) — a separate physical chip — so
+      // the running game's cart-ROM bus is untouched throughout the save.
+      // ss_loading therefore stays low for SAVE; only LOAD raises it.
     end
 
     // APF load command — note the data is already streaming into the
@@ -1054,11 +1056,16 @@ module save_state_controller #(
 
         if (new_ddr_req && ~ss_rnw) begin
           // Firmware wrote a 64-bit chunk for byte-chunk index ss_addr.
-          // Latch it and write it to SDRAM as 4×16-bit words.  Do NOT ack
+          // Latch it and write it to PSRAM as 4×16-bit words.  Do NOT ack
           // yet — the firmware's ddr_req==ddr_ack backpressure holds it
           // until the chunk has fully committed (ack toggles in WR_WAIT).
+          //
+          // 2026-06-22: SAVE moved off cart-ROM SDRAM onto CRAM1 bank 1.
+          // PSRAM has no skip-stale quirk; addresses step by 1 word, not 2.
+          // Bank 1 is private to savestate, so base = 0.  save_addr keeps
+          // its 25-bit width but only the low 19 bits are meaningful here.
           save_buffer    <= ss_din;
-          save_addr      <= STAGING_BASE_WORD + {ss_addr, 3'b000};
+          save_addr      <= {6'b0, ss_addr[16:0], 2'b00};
           save_word_idx  <= 2'd0;
           sys_state      <= SYS_SAVE_WR_REQ;
           if (!first_save_seen) begin
@@ -1081,21 +1088,23 @@ module save_state_controller #(
         end
       end
 
-      // ----- SAVE staging: write the latched chunk's 4 words to SDRAM -----
+      // ----- SAVE staging: write the latched chunk's 4 words to PSRAM -----
+      // CRAM1 bank 1 (private to savestate), word-addressed; step by 1 per
+      // word (no stride-by-2 like the SDRAM controller required).
       SYS_SAVE_WR_REQ: begin
-        ss_sdram_wr_req  <= ~ss_sdram_wr_req;  // toggle to request a write
-        ss_sdram_wr_addr <= save_addr + {save_word_idx, 1'b0};  // +0/+2/+4/+6
+        ss_psram_wr_req  <= ~ss_psram_wr_req;  // toggle to request a write
+        ss_psram_wr_addr <= save_addr[18:0] + {17'b0, save_word_idx};
         case (save_word_idx)
-          2'd0: ss_sdram_wr_data <= save_buffer[15:0];
-          2'd1: ss_sdram_wr_data <= save_buffer[31:16];
-          2'd2: ss_sdram_wr_data <= save_buffer[47:32];
-          2'd3: ss_sdram_wr_data <= save_buffer[63:48];
+          2'd0: ss_psram_wr_data <= save_buffer[15:0];
+          2'd1: ss_psram_wr_data <= save_buffer[31:16];
+          2'd2: ss_psram_wr_data <= save_buffer[47:32];
+          2'd3: ss_psram_wr_data <= save_buffer[63:48];
         endcase
         sys_state <= SYS_SAVE_WR_WAIT;
       end
 
       SYS_SAVE_WR_WAIT: begin
-        if (sdram_wr_done) begin
+        if (psram_wr_done) begin
           if (save_word_idx == 2'd3) begin
             // Chunk fully committed → release the firmware for the next one.
             ss_ack    <= ~ss_ack;
@@ -1107,21 +1116,22 @@ module save_state_controller #(
         end
       end
 
-      // ----- SAVE serve: read staged SDRAM (4 words/chunk) → fifo_save -----
+      // ----- SAVE serve: read staged PSRAM (4 words/chunk) → fifo_save -----
+      // 2026-06-22: SAVE serve moved off cart-ROM SDRAM onto CRAM1 bank 1.
+      // Address = chunk_idx*4 + word_idx (PSRAM word-stride is 1, not 2).
       SYS_SAVE_SRV_RD_REQ: begin
-        ss_sdram_rd_req  <= ~ss_sdram_rd_req;
-        ss_sdram_rd_addr <= STAGING_BASE_WORD + {save_serve_idx, 3'b000}
-                                              + {save_serve_widx, 1'b0};
+        ss_psram_rd_req  <= ~ss_psram_rd_req;
+        ss_psram_rd_addr <= {save_serve_idx[16:0], 2'b00} + {17'b0, save_serve_widx};
         sys_state <= SYS_SAVE_SRV_RD_WAIT;
       end
 
       SYS_SAVE_SRV_RD_WAIT: begin
-        if (sdram_rd_done) begin
+        if (psram_rd_done) begin
           case (save_serve_widx)
-            2'd0: save_serve_buf[15:0]  <= ss_sdram_rd_data;
-            2'd1: save_serve_buf[31:16] <= ss_sdram_rd_data;
-            2'd2: save_serve_buf[47:32] <= ss_sdram_rd_data;
-            2'd3: save_serve_buf[63:48] <= ss_sdram_rd_data;
+            2'd0: save_serve_buf[15:0]  <= ss_psram_rd_data;
+            2'd1: save_serve_buf[31:16] <= ss_psram_rd_data;
+            2'd2: save_serve_buf[47:32] <= ss_psram_rd_data;
+            2'd3: save_serve_buf[63:48] <= ss_psram_rd_data;
           endcase
           sys_state <= SYS_SAVE_SRV_RD_NEXT;
         end
