@@ -535,6 +535,56 @@ module core_top (
   wire        ss_loading;
   wire        ss_pause_cpu;
 
+  // PSRAM staging interface — controller (clk_sys) → ss_psram_arbiter → SNES
+  // psram_arbiter Port B (clk_mem, CRAM1 bank 1).  In the Step-4 baseline
+  // build these stay idle (controller doesn't toggle), so Port B never
+  // requests and ARAM (Port A) gets the full bandwidth as before.
+  wire        ss_psram_wr_req;
+  wire [18:0] ss_psram_wr_addr;
+  wire [15:0] ss_psram_wr_data;
+  wire        ss_psram_wr_ack;
+  wire        ss_psram_rd_req;
+  wire [18:0] ss_psram_rd_addr;
+  wire [15:0] ss_psram_rd_data;
+  wire        ss_psram_rd_ack;
+
+  // clk_mem-side: ss_psram_arbiter drives Port B of psram_arbiter inside SNES.
+  wire        ss_psram_b_write_en;
+  wire        ss_psram_b_read_en;
+  wire [21:0] ss_psram_b_addr;
+  wire [15:0] ss_psram_b_data_in;
+  wire        ss_psram_b_write_high_byte;
+  wire        ss_psram_b_write_low_byte;
+  wire        ss_psram_b_bank_sel;
+  wire [15:0] ss_psram_b_data_out;
+  wire        ss_psram_b_read_avail;
+  wire        ss_psram_b_busy;
+
+  ss_psram_arbiter ss_psram_arb (
+      .clk_sys(clk_sys_21_48),
+      .clk_mem(clk_mem_85_9),
+
+      .ss_psram_wr_req (ss_psram_wr_req),
+      .ss_psram_wr_addr(ss_psram_wr_addr),
+      .ss_psram_wr_data(ss_psram_wr_data),
+      .ss_psram_wr_ack (ss_psram_wr_ack),
+      .ss_psram_rd_req (ss_psram_rd_req),
+      .ss_psram_rd_addr(ss_psram_rd_addr),
+      .ss_psram_rd_data(ss_psram_rd_data),
+      .ss_psram_rd_ack (ss_psram_rd_ack),
+
+      .b_write_en       (ss_psram_b_write_en),
+      .b_read_en        (ss_psram_b_read_en),
+      .b_addr           (ss_psram_b_addr),
+      .b_data_in        (ss_psram_b_data_in),
+      .b_write_high_byte(ss_psram_b_write_high_byte),
+      .b_write_low_byte (ss_psram_b_write_low_byte),
+      .b_bank_sel       (ss_psram_b_bank_sel),
+      .b_data_out       (ss_psram_b_data_out),
+      .b_read_avail     (ss_psram_b_read_avail),
+      .b_busy           (ss_psram_b_busy)
+  );
+
   // bridge_rd_data for the savestate region (0x4xxxxxxx) is produced by
   // a data_unloader instance (see below), wired directly to bridge_rd_data
   // via the existing mux in the always_comb block at the top of this file.
@@ -693,7 +743,17 @@ module core_top (
       .ss_sdram_rd_data(ss_sdram_rd_data),
       .ss_sdram_rd_ack (ss_sdram_rd_ack),
       .ss_loading      (ss_loading),
-      .ss_pause_cpu    (ss_pause_cpu)
+      .ss_pause_cpu    (ss_pause_cpu),
+
+      // PSRAM (CRAM1 bank 1) staging interface — idle in Step-4 baseline.
+      .ss_psram_wr_req (ss_psram_wr_req),
+      .ss_psram_wr_addr(ss_psram_wr_addr),
+      .ss_psram_wr_data(ss_psram_wr_data),
+      .ss_psram_wr_ack (ss_psram_wr_ack),
+      .ss_psram_rd_req (ss_psram_rd_req),
+      .ss_psram_rd_addr(ss_psram_rd_addr),
+      .ss_psram_rd_data(ss_psram_rd_data),
+      .ss_psram_rd_ack (ss_psram_rd_ack)
   );
 
   reg ioctl_download = 0;
@@ -1005,6 +1065,19 @@ module core_top (
       .ss_sdram_rd_ack (ss_sdram_rd_ack),
       .ss_loading      (ss_loading),
       .ss_pause_cpu    (ss_pause_cpu),
+
+      // PSRAM Port B passthrough — ss_psram_arbiter drives these into
+      // SNES, which feeds them straight to psram_arbiter Port B.
+      .ss_psram_b_write_en       (ss_psram_b_write_en),
+      .ss_psram_b_read_en        (ss_psram_b_read_en),
+      .ss_psram_b_addr           (ss_psram_b_addr),
+      .ss_psram_b_data_in        (ss_psram_b_data_in),
+      .ss_psram_b_write_high_byte(ss_psram_b_write_high_byte),
+      .ss_psram_b_write_low_byte (ss_psram_b_write_low_byte),
+      .ss_psram_b_bank_sel       (ss_psram_b_bank_sel),
+      .ss_psram_b_data_out       (ss_psram_b_data_out),
+      .ss_psram_b_read_avail     (ss_psram_b_read_avail),
+      .ss_psram_b_busy           (ss_psram_b_busy),
 
       .dbg_rti_arms       (dbg_rti_arms),
       .dbg_vect_reentry   (dbg_vect_reentry),

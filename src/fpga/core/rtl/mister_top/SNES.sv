@@ -35,6 +35,21 @@ module MAIN_SNES (
     input  wire        ss_loading,
     input  wire        ss_pause_cpu,   // high during staging only — gates MCLK
 
+    // PSRAM CRAM1 Port B (savestate access, bank 1, clk_mem domain).  These
+    // are driven by ss_psram_arbiter inside core_top; SNES just passes them
+    // through to its psram_arbiter instance below.  Bank-1 is private to
+    // savestate; ARAM uses bank 0 of the same physical chip via Port A.
+    input  wire        ss_psram_b_write_en,
+    input  wire        ss_psram_b_read_en,
+    input  wire [21:0] ss_psram_b_addr,
+    input  wire [15:0] ss_psram_b_data_in,
+    input  wire        ss_psram_b_write_high_byte,
+    input  wire        ss_psram_b_write_low_byte,
+    input  wire        ss_psram_b_bank_sel,
+    output wire [15:0] ss_psram_b_data_out,
+    output wire        ss_psram_b_read_avail,
+    output wire        ss_psram_b_busy,
+
     output wire [3:0]  dbg_rti_arms,
     output wire [3:0]  dbg_vect_reentry,
     output wire [3:0]  dbg_ddr_writes,
@@ -862,22 +877,41 @@ module MAIN_SNES (
   wire [ 7:0] aram_data = clearing_ram ? aram_fill_data : ARAM_D;
   wire [15:0] aram_16_data = psram_aram_addr[0] ? {aram_data, 8'h0} : {8'h0, aram_data};
 
-  psram #(
+  // CRAM1 is shared between ARAM (Port A, bank 0, the original consumer)
+  // and the savestate path (Port B, bank 1, brand new in 2026-06).
+  // psram_arbiter wraps one psram core and serializes the two masters with
+  // strict A-priority.  SMP hits ARAM at ~1.024 MHz so Port A is never
+  // delayed enough to miss; savestate fills the idle slots on Port B.
+  wire        aram_port_busy_unused;
+  wire        aram_port_read_avail_unused;
+  psram_arbiter #(
       .CLOCK_SPEED(85.9)
-  ) aram (
+  ) cram1_arb (
       .clk(clk_mem_85_9),
 
-      .bank_sel(0),
-      // Remove bottom most bit, since this is a 8bit address and the RAM wants a 16bit address
-      .addr(psram_aram_addr[15:1]),
+      // Port A — ARAM (priority).  Replicates the old standalone aram instance.
+      .a_bank_sel(1'b0),
+      .a_addr({7'b0, psram_aram_addr[15:1]}),
+      .a_write_en(clearing_ram ? 1'b1 : ~ARAM_CE_N & ~ARAM_WE_N),
+      .a_data_in(aram_16_data),
+      .a_write_high_byte(psram_aram_addr[0]),
+      .a_write_low_byte(~psram_aram_addr[0]),
+      .a_read_en(~ARAM_CE_N & ~ARAM_OE_N),
+      .a_read_avail(aram_port_read_avail_unused),
+      .a_data_out(aram_16_out),
+      .a_busy(aram_port_busy_unused),
 
-      .write_en(clearing_ram ? 1'b1 : ~ARAM_CE_N & ~ARAM_WE_N),
-      .data_in(aram_16_data),
-      .write_high_byte(psram_aram_addr[0]),
-      .write_low_byte(~psram_aram_addr[0]),
-
-      .read_en (~ARAM_CE_N & ~ARAM_OE_N),
-      .data_out(aram_16_out),
+      // Port B — savestate (driven by ss_psram_arbiter at top level).
+      .b_bank_sel(ss_psram_b_bank_sel),
+      .b_addr(ss_psram_b_addr),
+      .b_write_en(ss_psram_b_write_en),
+      .b_data_in(ss_psram_b_data_in),
+      .b_write_high_byte(ss_psram_b_write_high_byte),
+      .b_write_low_byte(ss_psram_b_write_low_byte),
+      .b_read_en(ss_psram_b_read_en),
+      .b_read_avail(ss_psram_b_read_avail),
+      .b_data_out(ss_psram_b_data_out),
+      .b_busy(ss_psram_b_busy),
 
       // Actual PSRAM interface
       .cram_a(cram1_a),

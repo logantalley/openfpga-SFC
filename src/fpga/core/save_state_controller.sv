@@ -128,7 +128,20 @@ module save_state_controller #(
     input  wire [15:0] ss_sdram_rd_data,
     input  wire        ss_sdram_rd_ack,
     output reg         ss_loading = 0,
-    output wire        ss_pause_cpu    // high during STAGING only — gates SNES MCLK
+    output wire        ss_pause_cpu,   // high during STAGING only — gates SNES MCLK
+
+    // PSRAM staging interface (CRAM1 bank 1) — CDC'd into clk_mem by
+    // ss_psram_arbiter (instantiated in core_top).  Drives Port B of
+    // psram_arbiter.  In this Step-4 baseline build the toggles never
+    // fire (SAVE still goes through SDRAM), so Port B stays idle.
+    output reg         ss_psram_wr_req  = 0,
+    output reg  [18:0] ss_psram_wr_addr = 19'h0,
+    output reg  [15:0] ss_psram_wr_data = 16'h0,
+    input  wire        ss_psram_wr_ack,
+    output reg         ss_psram_rd_req  = 0,
+    output reg  [18:0] ss_psram_rd_addr = 19'h0,
+    input  wire [15:0] ss_psram_rd_data,
+    input  wire        ss_psram_rd_ack
 );
 
   // (The ss_pause_cpu assign moved below the sys_state declaration so
