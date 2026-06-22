@@ -242,8 +242,8 @@ module MAIN_SNES (
   // garbage to MMIO (notably NMITIMEN), so the post-staging vblank NMI
   // hijack never fires.  Symptom: SAVE->LOAD never serves any read req
   // (dbg_load_vect_cnt=$00) even though save_en/load_en handshake works.
-  // ACLK is now gated together with MCLK (see the .ACLK connection below):
-  // leaving it free-running during the ~120 ms save serve desynced CPU↔APU.
+  // ACLK is left free-running (see .ACLK below): gating it during the serve
+  // broke the Pocket's continuous-audio stream and made the save FAIL.
   //
   // Glitch-free gate: register the enable on negedge clk_sys so the AND
   // only toggles while clk_sys is low.  Only pauses in SYS_STAGE_* states
@@ -407,12 +407,9 @@ module MAIN_SNES (
       .RESET_N(RESET_N),
 
       .MCLK(mclk_gated),  // 21.47727 / 21.28137 — gated to pause CPU during staging
-      // ACLK now gated IN LOCKSTEP with MCLK (was free-running).  During the
-      // ~120 ms SAVE serve the CPU (MCLK) was paused while the APU (ACLK) kept
-      // running → the CPU↔APU IO-port handshake desynced → on resume the game
-      // hung with the APU still autonomously playing SFX.  Pausing both
-      // together keeps them in sync (audio briefly stutters during the serve).
-      .ACLK(mclk_gated),
+      .ACLK(clk_sys),     // audio clock free-running (gating it for the ~120 ms
+                          // serve broke the Pocket's continuous-audio stream →
+                          // "save failed"; must stay free)
 
       // .GSU_ACTIVE(GSU_ACTIVE),
       .GSU_TURBO(gsu_turbo_enabled),
