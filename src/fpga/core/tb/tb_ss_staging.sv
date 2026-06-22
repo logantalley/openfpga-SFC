@@ -427,20 +427,42 @@ module tb_ss_staging #(
   wire         cram1_ce0_n, cram1_ce1_n, cram1_oe_n, cram1_we_n;
   wire         cram1_ub_n, cram1_lb_n;
 
-  // Port A activity model: replicate SPC700/ARAM hitting the bus.  Real
-  // ARAM accesses pulse CE_N low for one SMP cycle (~84 clk_mem cycles)
-  // every couple SMP cycles, with CE_N high in between.  We model that
-  // as an edge-shaped a_read_en: high for one clk_mem cycle every 84
-  // (matches a 1.024 MHz fetch rate; the arbiter only needs the *edge*
-  // to grant Port A so a single-cycle pulse is sufficient).
-  reg [6:0] a_traffic_cnt = 7'd0;
-  reg       a_traffic_active = 1'b0;
+  // Port A activity model — replicate the SPC700/ARAM access pattern that
+  // the silicon SAVE-on-PSRAM build exposed:
+  //
+  //   - Each access asserts a_read_en for ONE clk_mem cycle only.
+  //   - On the very next cycle a_read_en drops AND a_addr changes (the
+  //     consumer has "moved on" to its next access setup or back to idle).
+  //
+  // This is the realistic model: the arbiter MUST capture the address at
+  // the request edge, not at grant time, or it will service A's deferred
+  // requests with the wrong address.
+  reg [6:0]  a_traffic_cnt = 7'd0;
+  reg        a_traffic_active = 1'b0;
+  reg [15:0] a_seq = 16'h1000;       // monotonically incrementing test addr
+  reg        a_pulse_read_r = 1'b0;
+  reg [15:0] a_addr_at_edge = 16'h0;
   always @(posedge clk_mem) begin
     if (a_traffic_cnt == 7'd83) a_traffic_cnt <= 7'd0;
     else                        a_traffic_cnt <= a_traffic_cnt + 7'd1;
+    if (a_traffic_active & (a_traffic_cnt == 7'd0)) begin
+      a_pulse_read_r <= 1'b1;
+      a_addr_at_edge <= a_seq;
+      a_seq          <= a_seq + 16'd1;
+    end else begin
+      a_pulse_read_r <= 1'b0;
+    end
   end
-  // One-cycle pulse every 84 clk_mem cycles when active.
-  wire a_pulse_read = a_traffic_active & (a_traffic_cnt == 7'd0);
+  // The consumer's address is only "valid" during the single pulse cycle.
+  // Outside the pulse, we deliberately drive a_addr to a CHANGED value to
+  // expose any arbiter logic that samples a_addr after the edge.
+  wire [21:0] a_addr_wire = a_pulse_read_r ? {6'b0, a_addr_at_edge}
+                                           : 22'h3F_FFFF;
+
+  // Track every Port A access for later verification: what addr did the
+  // chip actually see (vs. what we asked for at the edge)?
+  int a_serviced_count = 0;
+  int a_addr_mismatch  = 0;
 
   psram_arbiter #(
       .CLOCK_SPEED(85.9)
@@ -449,12 +471,12 @@ module tb_ss_staging #(
 
       // Port A — driven by the traffic model above when a_traffic_active=1.
       .a_bank_sel(1'b0),
-      .a_addr({14'b0, a_traffic_cnt}),
+      .a_addr(a_addr_wire),
       .a_write_en(1'b0),
       .a_data_in(16'd0),
       .a_write_high_byte(1'b0),
       .a_write_low_byte(1'b0),
-      .a_read_en(a_pulse_read),
+      .a_read_en(a_pulse_read_r),
       .a_read_avail(),
       .a_data_out(),
       .a_busy(),
@@ -667,6 +689,32 @@ module tb_ss_staging #(
       $display("[tb] PSRAM chip: bank1 writes=%0d bank0 writes=%0d  bank1 reads=%0d bank0 reads=%0d",
                psram_chip.total_writes_bank1, psram_chip.total_writes_bank0,
                psram_chip.total_reads_bank1, psram_chip.total_reads_bank0);
+
+      // Port A parameter-stability check: every bank-0 read the chip saw
+      // must address one of the values we asked for at the edge.  The
+      // edges fire as a_seq = 0x1000, 0x1001, 0x1002, ...  The chip's
+      // log records the addr it actually latched for each access.  Any
+      // mismatch == arbiter sampled a_addr AFTER the consumer changed it.
+      begin : port_a_check
+        int  k;
+        logic [21:0] got;
+        $display("[tb] Port A bank-0 reads serviced: %0d", psram_chip.bank0_read_log_count);
+        for (k = 0; k < psram_chip.bank0_read_log_count; k++) begin
+          got = psram_chip.bank0_read_addr_log[k];
+          // The Nth bank-0 read should have addr = 0x1000 + N
+          if (got !== 22'(16'h1000 + k)) begin
+            errs++;
+            a_addr_mismatch++;
+            if (a_addr_mismatch <= 8)
+              $display("ERROR Port A read %0d: chip saw addr=%h, consumer asked %h",
+                       k, got, 22'(16'h1000 + k));
+          end else begin
+            a_serviced_count++;
+          end
+        end
+        $display("[tb] Port A: %0d reads with correct addr, %0d address mismatches",
+                 a_serviced_count, a_addr_mismatch);
+      end
 
       // Serve check: read back the staged chunks (front of the pre-filled
       // FIFO) and confirm EXACT ordering against the staged pattern.  Each

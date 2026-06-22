@@ -84,6 +84,11 @@ module psram_chip_model (
   int total_reads_bank1  = 0;
   int log_remaining = 16;
 
+  // For bank-0 read verification: log every address the chip saw.  The TB
+  // compares this list against the addresses the consumer wanted.
+  int          bank0_read_log_count = 0;
+  logic [21:0] bank0_read_addr_log [0:511];
+
   // Shadow registers: previous-cycle values of multi-bit lines that may
   // be changing on the same clock edge as the control-line transitions
   // we care about.  In real silicon the chip latches on the rising edge
@@ -150,7 +155,13 @@ module psram_chip_model (
     if ((cram_ce0_n & ~prev_ce0_n) | (cram_ce1_n & ~prev_ce1_n)) begin
       if (addr_valid & ~prev_cram_oe_n_for_read) begin
         if (bank_latched) total_reads_bank1++;
-        else              total_reads_bank0++;
+        else begin
+          total_reads_bank0++;
+          if (bank0_read_log_count < 512) begin
+            bank0_read_addr_log[bank0_read_log_count] = addr_latched;
+            bank0_read_log_count++;
+          end
+        end
       end
     end
 

@@ -11,13 +11,31 @@
 //
 // Priority: when both ports have a pending request and the core is idle,
 // Port A wins.  One psram transaction is ~70 ns; SMP cycle is ~977 ns, so
-// Port A is never delayed enough to miss.  bank_sel is sampled by the psram
-// core only on transaction start, and this arbiter only commits a new
-// transaction when busy=0, so cross-bank switching is always safe.
+// Port A is never delayed enough to miss.
 //
-// The arbiter is combinational on the inputs to the psram core (gated by
-// `granted_port`) and registers the in-flight grant + a read-routing
-// pointer so data_out / read_avail go back to the master that asked.
+// ## Why edge-capture, not live-level forwarding
+//
+// The original (broken) design routed each port's live signals into the
+// psram core when the arbiter granted it.  That worked when only one port
+// was present (psram's old solo instance) because the consumer (e.g.,
+// ARAM) holds CE/OE active across the entire access.  With two masters
+// sharing one controller, an arbiter may DEFER a master's request by a
+// few clk_mem cycles (waiting for the other master's transaction to
+// finish).  If the deferred master has already dropped its level signal
+// by then, the core sees no live request — the transaction is lost.
+//
+// On hardware this manifested as: audio broken (every other ARAM access
+// dropped because the SPC700 pulses CE_N briefly, not continuously, and
+// the arbiter was occasionally busy on Port B during the pulse).
+//
+// Fix: on each port's rising-edge, latch its parameters (addr, data_in,
+// byte enables, bank, direction) into capture registers.  When the
+// arbiter grants the port, drive psram from the captured registers — not
+// from the live signals.  The consumer is then free to drop its level
+// signal the very next cycle; the captured parameters survive until
+// service.  Both ports get edge-capture for symmetry (Port B's
+// ss_psram_arbiter already holds its lines stable but capturing costs
+// nothing and removes a dependency).
 
 module psram_arbiter #(
     parameter CLOCK_SPEED = 85.9  // MHz — passed through to psram core
@@ -63,94 +81,117 @@ module psram_arbiter #(
     output wire         cram_lb_n
 );
 
-  // ----- Grant register -----
-  // grant_valid=0 → no transaction in flight, ready to pick.
-  // grant_valid=1 → a transaction is in flight; grant_port records who owns
-  // the upcoming data_out / read_avail (1 = A, 0 = B).
-  reg grant_valid = 1'b0;
-  reg grant_is_a  = 1'b0;
-  reg grant_was_read = 1'b0;
+  // ----- Edge detection on each port's request line -----
+  wire a_req_raw = a_write_en | a_read_en;
+  wire b_req_raw = b_write_en | b_read_en;
+  reg  prev_a_req_raw = 1'b0;
+  reg  prev_b_req_raw = 1'b0;
+  wire a_edge = a_req_raw & ~prev_a_req_raw;
+  wire b_edge = b_req_raw & ~prev_b_req_raw;
 
-  // Aggregate request flags from each port.
-  wire a_req = a_write_en | a_read_en;
-  wire b_req = b_write_en | b_read_en;
+  // ----- Per-port pending bits + parameter capture registers -----
+  // The capture registers hold the consumer's request parameters from the
+  // edge cycle so the arbiter can faithfully replay them when the port is
+  // eventually granted, even if the consumer has already moved on.
+  reg        a_pending      = 1'b0;
+  reg        a_cap_bank_sel = 1'b0;
+  reg [21:0] a_cap_addr     = 22'd0;
+  reg        a_cap_write_en = 1'b0;
+  reg        a_cap_read_en  = 1'b0;
+  reg [15:0] a_cap_data_in  = 16'h0000;
+  reg        a_cap_ub       = 1'b0;
+  reg        a_cap_lb       = 1'b0;
 
-  // Underlying psram core's busy signal — see psram.sv: busy goes high one
-  // clk after a transaction starts and falls when state returns to NONE.
+  reg        b_pending      = 1'b0;
+  reg        b_cap_bank_sel = 1'b0;
+  reg [21:0] b_cap_addr     = 22'd0;
+  reg        b_cap_write_en = 1'b0;
+  reg        b_cap_read_en  = 1'b0;
+  reg [15:0] b_cap_data_in  = 16'h0000;
+  reg        b_cap_ub       = 1'b0;
+  reg        b_cap_lb       = 1'b0;
+
+  // psram core's busy signal.
   wire core_busy;
 
-  // Edge-detect A's request so a continuously-asserted ARAM CE/OE pair
-  // (which on hardware can stay high across many clk_mem cycles for a
-  // single SMP access) doesn't starve Port B.  Treat A as wanting service
-  // only on the transition from idle to request — that's exactly one
-  // transaction per ARAM access, which matches psram.sv semantics
-  // (psram only acts on the first edge after STATE_NONE).
-  reg  prev_a_req = 1'b0;
-  wire a_req_edge = a_req & ~prev_a_req;
-  always @(posedge clk) prev_a_req <= a_req;
+  // ----- Grant tracking (declarations hoisted above first use) -----
+  reg grant_valid    = 1'b0;
+  reg grant_is_a     = 1'b0;
+  reg grant_was_read = 1'b0;
+  reg saw_busy       = 1'b0;
 
-  // Track whether A is currently being serviced (grant_valid & grant_is_a)
-  // OR has a fresh edge this cycle.  Either way, A "wins" priority and
-  // B must wait.
-  wire a_active = (grant_valid & grant_is_a) | a_req_edge;
+  // Arbitration: only start a new transaction when no grant is in flight
+  // and the core is idle.  A wins ties.
+  wire can_start = ~grant_valid & ~core_busy;
+  wire start_a   = can_start &  a_pending;
+  wire start_b   = can_start & ~a_pending & b_pending;
 
-  // ----- Decide whether to start a new transaction this cycle -----
-  // Only when no grant is currently in flight AND the psram core is idle.
-  // A wins on edge; B wins whenever the core is free and A has no fresh
-  // edge.  This guarantees A is never delayed (its edge starts immediately)
-  // and B fills every otherwise-idle slot.
-  wire can_start  = ~grant_valid & ~core_busy;
-  wire start_a    = can_start &  a_req_edge;
-  wire start_b    = can_start & ~a_req_edge & b_req;
+  // Drive psram core from the captured registers of whichever port we're
+  // starting this cycle.  When neither starts, write_en/read_en are 0 so
+  // the core stays idle.
+  wire        sel_bank_sel = start_a ? a_cap_bank_sel : b_cap_bank_sel;
+  wire [21:0] sel_addr     = start_a ? a_cap_addr     : b_cap_addr;
+  wire [15:0] sel_data_in  = start_a ? a_cap_data_in  : b_cap_data_in;
+  wire        sel_ub       = start_a ? a_cap_ub       : b_cap_ub;
+  wire        sel_lb       = start_a ? a_cap_lb       : b_cap_lb;
+  wire        core_write_en = (start_a & a_cap_write_en) | (start_b & b_cap_write_en);
+  wire        core_read_en  = (start_a & a_cap_read_en)  | (start_b & b_cap_read_en);
 
-  // Selected master's inputs to the core.
-  wire        sel_bank_sel        = start_a ? a_bank_sel        : b_bank_sel;
-  wire [21:0] sel_addr            = start_a ? a_addr            : b_addr;
-  wire        sel_write_en        = start_a ? a_write_en        : (start_b & b_write_en);
-  wire        sel_read_en         = start_a ? a_read_en         : (start_b & b_read_en);
-  wire [15:0] sel_data_in         = start_a ? a_data_in         : b_data_in;
-  wire        sel_write_high_byte = start_a ? a_write_high_byte : b_write_high_byte;
-  wire        sel_write_low_byte  = start_a ? a_write_low_byte  : b_write_low_byte;
-
-  // Final gated drives to the core.  When can_start is false (or no port
-  // requested), write_en / read_en are held low so the core stays idle.
-  wire core_write_en        = (start_a & a_write_en) | (start_b & b_write_en);
-  wire core_read_en         = (start_a & a_read_en)  | (start_b & b_read_en);
-
-  // ----- Grant tracking -----
-  // Latch ownership on the cycle we kick a new transaction.  The core's
-  // busy will rise on the next cycle (per psram.sv:294/313 it actually rises
-  // the same cycle, but we depend on the latched grant for routing anyway).
-  // Clear when the core returns to idle AND we've seen busy go high for
-  // this transaction — guards against the immediate-NONE-after-start case
-  // where busy might briefly flicker.
-  reg saw_busy = 1'b0;
+  // ----- Edge / pending / capture / grant clocked block -----
   always @(posedge clk) begin
+    prev_a_req_raw <= a_req_raw;
+    prev_b_req_raw <= b_req_raw;
+
+    // Capture A's parameters at the rising edge of its request.  We do
+    // NOT capture continuously while pending — that would change the
+    // captured value if the consumer is still driving live signals.  A
+    // single capture at the edge is exactly the consumer's intent.
+    if (a_edge) begin
+      a_pending      <= 1'b1;
+      a_cap_bank_sel <= a_bank_sel;
+      a_cap_addr     <= a_addr;
+      a_cap_write_en <= a_write_en;
+      a_cap_read_en  <= a_read_en;
+      a_cap_data_in  <= a_data_in;
+      a_cap_ub       <= a_write_high_byte;
+      a_cap_lb       <= a_write_low_byte;
+    end
+    if (start_a) a_pending <= 1'b0;
+
+    if (b_edge) begin
+      b_pending      <= 1'b1;
+      b_cap_bank_sel <= b_bank_sel;
+      b_cap_addr     <= b_addr;
+      b_cap_write_en <= b_write_en;
+      b_cap_read_en  <= b_read_en;
+      b_cap_data_in  <= b_data_in;
+      b_cap_ub       <= b_write_high_byte;
+      b_cap_lb       <= b_write_low_byte;
+    end
+    if (start_b) b_pending <= 1'b0;
+
+    // Latch grant on the cycle we kick a new transaction.
     if (start_a) begin
       grant_valid    <= 1'b1;
       grant_is_a     <= 1'b1;
-      grant_was_read <= a_read_en;
+      grant_was_read <= a_cap_read_en;
       saw_busy       <= 1'b0;
     end else if (start_b) begin
       grant_valid    <= 1'b1;
       grant_is_a     <= 1'b0;
-      grant_was_read <= b_read_en;
+      grant_was_read <= b_cap_read_en;
       saw_busy       <= 1'b0;
     end else if (grant_valid) begin
       if (core_busy) saw_busy <= 1'b1;
       // Release the grant the cycle after busy falls.  read_avail (pulsed
-      // by psram.sv at STATE_READ_DATA_RECEIVED) coincides with busy falling
-      // on the read path, so we keep the grant flag valid that cycle to
+      // by psram.sv at STATE_READ_DATA_RECEIVED) coincides with busy
+      // falling on reads, so we keep the grant flag valid that cycle to
       // route data_out / read_avail correctly, then drop it next cycle.
-      if (saw_busy & ~core_busy) begin
-        grant_valid <= 1'b0;
-      end
+      if (saw_busy & ~core_busy) grant_valid <= 1'b0;
     end
   end
 
   // ----- Per-port read responses -----
-  // The psram core drives data_out + read_avail on the cycle the transaction
-  // completes.  We hand it to whichever port currently holds the grant.
   wire        core_read_avail;
   wire [15:0] core_data_out;
   assign a_read_avail = grant_valid &  grant_is_a & grant_was_read & core_read_avail;
@@ -159,19 +200,11 @@ module psram_arbiter #(
   assign b_data_out   = core_data_out;
 
   // ----- Per-port busy -----
-  // A port reports busy from the moment its transaction is granted through
-  // the end of that transaction.  Callers use this the same way they would
-  // poll the bare psram core's busy: low = "core is free, you can request",
-  // high = "transaction in progress for you, wait".
-  //
-  // Note: we do NOT report busy on a port simply because the OTHER port is
-  // in flight — that would cause ss_psram_arbiter (which polls b_busy in
-  // SS_WR_ISSUE/SS_RD_ISSUE) to think its own request was accepted while
-  // really Port A was being serviced, dropping the write.  The grant-based
-  // formulation guarantees b_busy goes high only when our request is the
-  // one in flight.
-  assign a_busy = (grant_valid &  grant_is_a) | start_a;
-  assign b_busy = (grant_valid & ~grant_is_a) | start_b;
+  // Busy reflects only THIS port's transaction state, not the other's.
+  // - If the port has a pending request OR is currently being serviced, busy=1.
+  // - Otherwise busy=0 (consumer can poll and expect "free" to mean free).
+  assign a_busy = a_pending | (grant_valid &  grant_is_a);
+  assign b_busy = b_pending | (grant_valid & ~grant_is_a);
 
   // ----- Underlying psram core -----
   psram #(
@@ -184,8 +217,8 @@ module psram_arbiter #(
 
       .write_en(core_write_en),
       .data_in(sel_data_in),
-      .write_high_byte(sel_write_high_byte),
-      .write_low_byte(sel_write_low_byte),
+      .write_high_byte(sel_ub),
+      .write_low_byte(sel_lb),
 
       .read_en(core_read_en),
       .read_avail(core_read_avail),
