@@ -97,21 +97,36 @@ module psram_arbiter #(
   reg saw_busy       = 1'b0;
 
   // ----- Arbitration -----
-  // Start a new transaction whenever the core is idle.  A wins ties.  If
-  // A's request arrives while the core is busy, A is silently dropped —
-  // matching the original psram's behavior (the DSP/ARAM consumer
-  // tolerates this; data_out is a latched register that retains the
-  // previous read value).
+  // Two asymmetric contracts:
+  //   Port A (DSP/ARAM): drop-on-busy.  If the core is busy when A's
+  //     request fires, A is silently dropped — matching the original
+  //     psram's behavior.  DSP tolerates this; data_out is a latched
+  //     register that retains the previous read value.
+  //   Port B (savestate): NEVER dropped.  Savestate cannot lose writes
+  //     or reads — every byte matters.
   //
-  // We gate ONLY on ~core_busy, not on grant_valid.  That matches the
-  // original psram's accept-on-STATE_NONE behavior exactly: the same
-  // cycle the previous transaction completes, the next one can begin
-  // (no dead cycle).  The grant register is used only for routing
-  // read responses back to the requesting port; it does not gate
-  // arbitration.
+  // To honor both, we use round-robin-ish fairness: when the core is
+  // idle and BOTH ports want service, alternate between them via a
+  // last_served flag.  When only one wants service, it gets it.
+  //
+  // The OLD logic was "A wins ties + drop A on busy" which permanently
+  // starved B whenever A's level signal stayed asserted across many
+  // clk_mem cycles (the DSP holds RAM_CE_N low across all states),
+  // causing the APF "Save Failed" timeout when ss_psram_arbiter could
+  // never get a transaction through.
+  reg last_served_a = 1'b0;  // 1 = A was last serviced; prefer B next
   wire can_start = ~core_busy;
-  wire start_a   = can_start &  a_req;
-  wire start_b   = can_start & ~a_req & b_req;
+  // If both ports want service, alternate based on who went last.
+  // If only one wants service, give it to that one.
+  wire prefer_a = a_req & (~b_req | last_served_a == 1'b0);
+  wire prefer_b = b_req & (~a_req | last_served_a == 1'b1);
+  wire start_a  = can_start &  prefer_a;
+  wire start_b  = can_start & ~prefer_a & prefer_b;
+
+  always @(posedge clk) begin
+    if (start_a) last_served_a <= 1'b1;
+    else if (start_b) last_served_a <= 1'b0;
+  end
 
   // ----- Drive psram core directly from live port signals -----
   // The selected port's signals flow straight into the core — same
