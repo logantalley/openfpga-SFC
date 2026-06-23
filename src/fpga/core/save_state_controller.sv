@@ -745,6 +745,11 @@ module save_state_controller #(
   reg [7:0] cnt_stage_fifo_latch = 8'h00;  // entered STAGE_FIFO_LATCH
   reg [7:0] cnt_stage_wr_done    = 8'h00;  // sdram_wr_done fired in WR_WAIT
   reg [15:0] cnt_stage_wr_done_wide = 16'h0000;  // 16-bit version (true count up to 65535)
+  // 2026-06-23 DIAGNOSTIC: count SAVE-side PSRAM chunk bursts actually
+  // committed (one psram_wr_done per chunk).  If ss_addr_max ≈ 0x81CF but
+  // this stalls at ~0x0402, staging is dropping chunks; if this also
+  // reaches ~0x81CF, the bug is in the serve/readback, not staging.
+  reg [15:0] cnt_save_chunks = 16'h0000;
 
   // ----- Deferred debug assigns (moved here so every referenced reg is
   // declared above; Quartus tolerated the forward references, ModelSim's
@@ -781,8 +786,10 @@ module save_state_controller #(
   // reset at SERVE_COMPLETE so we can read it via overlay after a load.
   // Reveals how many chunks APF actually streamed.
   reg [16:0] stage_max_count = 17'h00000;
-  assign debug_save_wr_count_lo = stage_max_count[7:0];
-  assign debug_save_wr_count_hi = stage_max_count[15:8];
+  // 2026-06-23 DIAGNOSTIC: repurposed to expose cnt_save_chunks (SAVE-side
+  // PSRAM commits) on YELLOW+CYAN, to compare against ss_addr_max on RED+GREEN.
+  assign debug_save_wr_count_lo = cnt_save_chunks[7:0];
+  assign debug_save_wr_count_hi = cnt_save_chunks[15:8];
 
   // ss_addr max (load AND save side) — the highest chunk index the firmware
   // ever emitted via ss_req.  DIAGNOSTIC (2026-06-23): for a full SMW save
@@ -1111,6 +1118,7 @@ module save_state_controller #(
       SYS_SAVE_WR_WAIT: begin
         if (psram_wr_done) begin
           // Whole chunk committed → release the firmware for the next one.
+          if (cnt_save_chunks != 16'hFFFF) cnt_save_chunks <= cnt_save_chunks + 16'd1;
           ss_ack    <= ~ss_ack;
           sys_state <= SYS_SAVE_ACTIVE;
         end
