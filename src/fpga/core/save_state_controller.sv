@@ -219,6 +219,7 @@ module save_state_controller #(
   reg [1:0]  save_word_idx;      // which of 4 SDRAM words being written
   reg [24:0] save_addr;          // SDRAM byte addr base for this chunk
   reg [16:0] save_serve_idx;     // chunk index being served back to APF
+  reg [16:0] save_serve_idx_max = 17'd0;  // DIAGNOSTIC: max serve idx reached
   reg [1:0]  save_serve_widx;    // which of 4 SDRAM words being read
   reg [63:0] save_serve_buf;     // assembled 64-bit chunk to push to fifo_save
   // Full declared slot = savestate_size (512KB) / 8 bytes = 65536 chunks.
@@ -797,10 +798,16 @@ module save_state_controller #(
   // If the SAVE dies ~8KB in, this will read ~0x0402.  Routed to the overlay
   // RED (low byte) + GREEN (high byte) rows in core_top.
   reg [16:0] ss_addr_max = 17'd0;
-  assign debug_max_sram_base_lo = ss_addr_max[7:0];        // RED   = ss_addr_max[7:0]
-  assign debug_max_sram_base_hi = ss_addr_max[15:8];       // GREEN = ss_addr_max[15:8]
+  // 2026-06-23 DIAGNOSTIC ROUND 2: RED+GREEN now show save_serve_idx_max —
+  // how far the SAVE serve loop progressed (chunks read from PSRAM and pushed
+  // toward APF).  ss_addr_max already proven 0x81CF (firmware) and
+  // cnt_save_chunks 0x81D0 (staged).  If serve_idx_max ≈ 0x81CF → serve ran
+  // fully and APF/readback truncated; if ≈ 0x0402 → the serve loop aborted
+  // early (watchdog) after delivering ~one FIFO's worth.
+  assign debug_max_sram_base_lo = save_serve_idx_max[7:0];   // RED
+  assign debug_max_sram_base_hi = save_serve_idx_max[15:8];  // GREEN
   assign debug_ss_addr_overflow = 8'h00;
-  assign debug_ss_addr_max_hi   = {7'b0, ss_addr_max[16]}; // (bit16 if ever needed)
+  assign debug_ss_addr_max_hi   = {7'b0, ss_addr_max[16]};
 
   // Bridge_rd count for save side
   reg [15:0] bridge_rd_count = 16'h0000;
@@ -1154,8 +1161,9 @@ module save_state_controller #(
           if (save_serve_idx == SAVE_SERVE_LAST) begin
             sys_state <= SYS_SAVE_SRV_DONE;
           end else begin
-            save_serve_idx <= save_serve_idx + 17'd1;
-            sys_state      <= SYS_SAVE_SRV_RD_REQ;
+            save_serve_idx     <= save_serve_idx + 17'd1;
+            save_serve_idx_max <= save_serve_idx + 17'd1;  // DIAGNOSTIC
+            sys_state          <= SYS_SAVE_SRV_RD_REQ;
           end
         end else if (apf_reading) begin
           save_serve_idle <= 21'd0;            // APF still draining — wait.
