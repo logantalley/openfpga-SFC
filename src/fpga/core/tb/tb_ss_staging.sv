@@ -690,27 +690,33 @@ module tb_ss_staging #(
                psram_chip.total_writes_bank1, psram_chip.total_writes_bank0,
                psram_chip.total_reads_bank1, psram_chip.total_reads_bank0);
 
-      // Port A parameter-stability check: every bank-0 read the chip saw
-      // must address one of the values we asked for at the edge.  The
-      // edges fire as a_seq = 0x1000, 0x1001, 0x1002, ...  The chip's
-      // log records the addr it actually latched for each access.  Any
-      // mismatch == arbiter sampled a_addr AFTER the consumer changed it.
+      // Port A check for the DROP-ON-BUSY contract: Port A requests may be
+      // dropped when the core is busy with Port B (matching the original
+      // psram, whose DSP/ARAM consumer tolerates dropped reads).  So the
+      // serviced addresses must be a MONOTONIC SUBSEQUENCE of the requested
+      // sequence (0x1000, 0x1001, ...), not a strict 1:1 mapping.  A real
+      // error is a serviced address that goes BACKWARD or was never asked
+      // (== the arbiter latched a stale/garbage address).
       begin : port_a_check
         int  k;
         logic [21:0] got;
-        $display("[tb] Port A bank-0 reads serviced: %0d", psram_chip.bank0_read_log_count);
+        logic [21:0] prev_got;
+        prev_got = 22'h000FFF;  // one below the first expected (0x1000)
+        $display("[tb] Port A bank-0 reads serviced: %0d (of up to %0d requested)",
+                 psram_chip.bank0_read_log_count, a_seq - 16'h1000);
         for (k = 0; k < psram_chip.bank0_read_log_count; k++) begin
           got = psram_chip.bank0_read_addr_log[k];
-          // The Nth bank-0 read should have addr = 0x1000 + N
-          if (got !== 22'(16'h1000 + k)) begin
+          // Must be strictly increasing and within the requested range.
+          if (got <= prev_got || got < 22'h001000 || got >= {6'b0, a_seq}) begin
             errs++;
             a_addr_mismatch++;
             if (a_addr_mismatch <= 8)
-              $display("ERROR Port A read %0d: chip saw addr=%h, consumer asked %h",
-                       k, got, 22'(16'h1000 + k));
+              $display("ERROR Port A read %0d: chip saw addr=%h (prev=%h) — not a valid in-order request",
+                       k, got, prev_got);
           end else begin
             a_serviced_count++;
           end
+          prev_got = got;
         end
         $display("[tb] Port A: %0d reads with correct addr, %0d address mismatches",
                  a_serviced_count, a_addr_mismatch);

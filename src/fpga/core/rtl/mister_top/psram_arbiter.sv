@@ -172,11 +172,43 @@ module psram_arbiter #(
   end
 
   // ----- Per-port read responses -----
+  // CRITICAL: the psram core has a SINGLE data_out register that holds the
+  // result of the most recent read regardless of which port issued it.
+  // The original solo psram had one consumer, so that was always its data.
+  // With two masters sharing the core, a Port B (savestate) read would
+  // overwrite core_data_out — and ARAM (Port A) reads core_data_out
+  // CONTINUOUSLY and ungated (ARAM_Q = aram_16_out = a_data_out in
+  // SNES.sv).  So a savestate serve-read would feed savestate bytes into
+  // ARAM_Q → the SMP/DSP reads garbage from "ARAM" → audio corruption that
+  // persists (the SMP writes the garbage back into ARAM).
+  //
+  // Fix: give each port its OWN latched data register.  When a port's read
+  // completes (its grant + read_avail), capture core_data_out into that
+  // port's latch.  Each consumer then only ever sees its own last read.
   wire        core_read_avail;
   wire [15:0] core_data_out;
-  assign a_read_avail = grant_valid &  grant_is_a & grant_was_read & core_read_avail;
-  assign b_read_avail = grant_valid & ~grant_is_a & grant_was_read & core_read_avail;
-  assign a_data_out   = core_data_out;
+  wire        a_read_complete = grant_valid &  grant_is_a & grant_was_read & core_read_avail;
+  wire        b_read_complete = grant_valid & ~grant_is_a & grant_was_read & core_read_avail;
+
+  // Port A (ARAM) reads core_data_out CONTINUOUSLY and ungated in SNES.sv
+  // (ARAM_Q = aram_16_out = a_data_out).  It must therefore be insulated
+  // from Port B's reads, which also land on the shared core_data_out
+  // register.  Latch A's own last-read value so a savestate serve-read
+  // can never bleed into ARAM_Q.  The +1 clk_mem latency (~11 ns) is far
+  // inside the consumer's clk_sys sample window (~46 ns).
+  reg  [15:0] a_data_latched = 16'h0000;
+  always @(posedge clk) begin
+    if (a_read_complete) a_data_latched <= core_data_out;
+  end
+  assign a_read_avail = a_read_complete;
+  assign a_data_out   = a_data_latched;
+
+  // Port B (savestate) consumer (ss_psram_arbiter) captures b_data_out on
+  // the same cycle b_read_avail pulses, so it must see core_data_out
+  // DIRECTLY (no extra latch cycle) — a latch here shifts every served
+  // word by one, scrambling the serve stream.  B never reads ungated, so
+  // it doesn't need the protection A does.
+  assign b_read_avail = b_read_complete;
   assign b_data_out   = core_data_out;
 
   // ----- Per-port busy -----
