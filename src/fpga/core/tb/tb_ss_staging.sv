@@ -226,11 +226,11 @@ module tb_ss_staging #(
   // CDCs into clk_mem, psram_arbiter Port B drives the psram core and chip).
   wire        ss_psram_wr_req;
   wire [18:0] ss_psram_wr_addr;
-  wire [15:0] ss_psram_wr_data;
+  wire [63:0] ss_psram_wr_data;
   wire        ss_psram_wr_ack;
   wire        ss_psram_rd_req;
   wire [18:0] ss_psram_rd_addr;
-  wire [15:0] ss_psram_rd_data;
+  wire [63:0] ss_psram_rd_data;
   wire        ss_psram_rd_ack;
 
   // Shorten the serve idle-completion watchdog so the SAVE test can verify

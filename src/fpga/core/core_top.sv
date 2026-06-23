@@ -541,11 +541,11 @@ module core_top (
   // requests and ARAM (Port A) gets the full bandwidth as before.
   wire        ss_psram_wr_req;
   wire [18:0] ss_psram_wr_addr;
-  wire [15:0] ss_psram_wr_data;
+  wire [63:0] ss_psram_wr_data;
   wire        ss_psram_wr_ack;
   wire        ss_psram_rd_req;
   wire [18:0] ss_psram_rd_addr;
-  wire [15:0] ss_psram_rd_data;
+  wire [63:0] ss_psram_rd_data;
   wire        ss_psram_rd_ack;
 
   // clk_mem-side: ss_psram_arbiter drives Port B of psram_arbiter inside SNES.

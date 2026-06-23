@@ -132,15 +132,23 @@ module save_state_controller #(
 
     // PSRAM staging interface (CRAM1 bank 1) — CDC'd into clk_mem by
     // ss_psram_arbiter (instantiated in core_top).  Drives Port B of
-    // psram_arbiter.  In this Step-4 baseline build the toggles never
-    // fire (SAVE still goes through SDRAM), so Port B stays idle.
+    // psram_arbiter.
+    //
+    // 2026-06-23: BURST interface.  One req toggle transfers a whole
+    // 64-bit chunk (4×16-bit PSRAM words at base+0..+3) in a single
+    // clk_mem-side burst, paying the clk_sys↔clk_mem toggle-CDC round
+    // trip ONCE per chunk instead of once per word.  This is ~3× faster
+    // than the old per-word handshake and lets PSRAM staging outrun the
+    // SNES DMA that feeds SSDATA (which has no flow control), fixing the
+    // ~8KB staging cutoff.  Address is the chunk-base word address (the
+    // arbiter adds +0..+3 for the 4 words).
     output reg         ss_psram_wr_req  = 0,
     output reg  [18:0] ss_psram_wr_addr = 19'h0,
-    output reg  [15:0] ss_psram_wr_data = 16'h0,
+    output reg  [63:0] ss_psram_wr_data = 64'h0,
     input  wire        ss_psram_wr_ack,
     output reg         ss_psram_rd_req  = 0,
     output reg  [18:0] ss_psram_rd_addr = 19'h0,
-    input  wire [15:0] ss_psram_rd_data,
+    input  wire [63:0] ss_psram_rd_data,
     input  wire        ss_psram_rd_ack
 );
 
@@ -1066,7 +1074,6 @@ module save_state_controller #(
           // its 25-bit width but only the low 19 bits are meaningful here.
           save_buffer    <= ss_din;
           save_addr      <= {6'b0, ss_addr[16:0], 2'b00};
-          save_word_idx  <= 2'd0;
           sys_state      <= SYS_SAVE_WR_REQ;
           if (!first_save_seen) begin
             first_save_chunk <= ss_din;
@@ -1088,61 +1095,40 @@ module save_state_controller #(
         end
       end
 
-      // ----- SAVE staging: write the latched chunk's 4 words to PSRAM -----
-      // CRAM1 bank 1 (private to savestate), word-addressed; step by 1 per
-      // word (no stride-by-2 like the SDRAM controller required).
+      // ----- SAVE staging: burst-write the whole 64-bit chunk to PSRAM -----
+      // CRAM1 bank 1 (private to savestate).  One req toggle transfers all
+      // 4 words (base+0..+3); the arbiter writes them back-to-back and acks
+      // once.  This single-CDC-round-trip-per-chunk path is fast enough to
+      // outrun the SNES DMA feeding SSDATA.
       SYS_SAVE_WR_REQ: begin
-        ss_psram_wr_req  <= ~ss_psram_wr_req;  // toggle to request a write
-        ss_psram_wr_addr <= save_addr[18:0] + {17'b0, save_word_idx};
-        case (save_word_idx)
-          2'd0: ss_psram_wr_data <= save_buffer[15:0];
-          2'd1: ss_psram_wr_data <= save_buffer[31:16];
-          2'd2: ss_psram_wr_data <= save_buffer[47:32];
-          2'd3: ss_psram_wr_data <= save_buffer[63:48];
-        endcase
-        sys_state <= SYS_SAVE_WR_WAIT;
+        ss_psram_wr_req  <= ~ss_psram_wr_req;  // toggle to request the burst
+        ss_psram_wr_addr <= save_addr[18:0];   // chunk-base word address
+        ss_psram_wr_data <= save_buffer;       // full 64-bit chunk
+        sys_state        <= SYS_SAVE_WR_WAIT;
       end
 
       SYS_SAVE_WR_WAIT: begin
         if (psram_wr_done) begin
-          if (save_word_idx == 2'd3) begin
-            // Chunk fully committed → release the firmware for the next one.
-            ss_ack    <= ~ss_ack;
-            sys_state <= SYS_SAVE_ACTIVE;
-          end else begin
-            save_word_idx <= save_word_idx + 2'd1;
-            sys_state     <= SYS_SAVE_WR_REQ;
-          end
+          // Whole chunk committed → release the firmware for the next one.
+          ss_ack    <= ~ss_ack;
+          sys_state <= SYS_SAVE_ACTIVE;
         end
       end
 
-      // ----- SAVE serve: read staged PSRAM (4 words/chunk) → fifo_save -----
-      // 2026-06-22: SAVE serve moved off cart-ROM SDRAM onto CRAM1 bank 1.
-      // Address = chunk_idx*4 + word_idx (PSRAM word-stride is 1, not 2).
+      // ----- SAVE serve: burst-read staged PSRAM chunk → fifo_save -----
+      // 2026-06-23: one burst read per chunk (all 4 words at once).  The
+      // arbiter returns the assembled 64-bit chunk; we push it straight
+      // into fifo_save.  Chunk-base word address = chunk_idx*4.
       SYS_SAVE_SRV_RD_REQ: begin
         ss_psram_rd_req  <= ~ss_psram_rd_req;
-        ss_psram_rd_addr <= {save_serve_idx[16:0], 2'b00} + {17'b0, save_serve_widx};
+        ss_psram_rd_addr <= {save_serve_idx[16:0], 2'b00};
         sys_state <= SYS_SAVE_SRV_RD_WAIT;
       end
 
       SYS_SAVE_SRV_RD_WAIT: begin
         if (psram_rd_done) begin
-          case (save_serve_widx)
-            2'd0: save_serve_buf[15:0]  <= ss_psram_rd_data;
-            2'd1: save_serve_buf[31:16] <= ss_psram_rd_data;
-            2'd2: save_serve_buf[47:32] <= ss_psram_rd_data;
-            2'd3: save_serve_buf[63:48] <= ss_psram_rd_data;
-          endcase
-          sys_state <= SYS_SAVE_SRV_RD_NEXT;
-        end
-      end
-
-      SYS_SAVE_SRV_RD_NEXT: begin
-        if (save_serve_widx == 2'd3) begin
-          sys_state <= SYS_SAVE_SRV_PUSH;
-        end else begin
-          save_serve_widx <= save_serve_widx + 2'd1;
-          sys_state       <= SYS_SAVE_SRV_RD_REQ;
+          save_serve_buf <= ss_psram_rd_data;  // full 64-bit chunk
+          sys_state      <= SYS_SAVE_SRV_PUSH;
         end
       end
 

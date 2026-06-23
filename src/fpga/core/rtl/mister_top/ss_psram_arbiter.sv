@@ -1,41 +1,41 @@
-// ss_psram_arbiter — savestate-side PSRAM CDC + access driver.
+// ss_psram_arbiter — savestate-side PSRAM CDC + 4-word BURST access driver.
 //
-// Mirrors ss_sdram_arbiter.sv but targets psram_arbiter's Port B instead of
-// sdram.sv.  Lets the save_state_controller (clk_sys, 21.48 MHz) issue
-// 16-bit reads/writes to a PSRAM region (clk_mem, 85.9 MHz) using the same
-// toggle-CDC handshake pattern.
+// Translates the save_state_controller's per-chunk requests (clk_sys,
+// 21.48 MHz) into PSRAM Port-B accesses (clk_mem, 85.9 MHz) on
+// psram_arbiter.  Mirrors the toggle-CDC handshake of ss_sdram_arbiter but
+// transfers a WHOLE 64-bit chunk (4×16-bit PSRAM words) per request.
 //
-// Differences from ss_sdram_arbiter (kept intentionally minimal):
-//   - Address width is 19 bits (covers 1 MB at 16-bit granularity, ample
-//     for the 512 KB savestate slot — psram itself supports 22-bit, but
-//     we use less here so the constant base addr is a clean alignment).
-//   - psram has no `busy` deassert / reassert handshake the way sdram.sv
-//     does: psram_arbiter exposes `b_busy` which is high from the cycle a
-//     transaction kicks off through the cycle it completes.  We wait for
-//     b_busy to rise (transaction accepted) then fall (transaction done).
-//   - psram_arbiter pulses `b_read_avail` for one clk_mem cycle when read
-//     data is valid; we latch on that pulse instead of after busy falls.
+// ## Why burst
 //
-// Protocol on the clk_sys side is identical to the SDRAM version: flip
-// req toggle, wait for ack toggle.  Address/data multi-bit CDC is handled
-// the same way (SETTLE state pads several clk_mem cycles after the
-// synch_3'd req edge so all bits land).
+// The earlier per-word design paid a full clk_sys↔clk_mem toggle-CDC round
+// trip (synch_3 each way + settle ≈ 30+ clk_mem cycles) for EACH of the 4
+// words in a chunk.  That made a chunk so slow that the SNES DMA feeding
+// SSDATA (no flow control) outran staging and the save died ~8 KB in.
+//
+// Burst pays the CDC round trip ONCE per chunk: the controller hands over
+// the 64-bit chunk + base word address with a single req toggle; this FSM
+// writes (or reads) the 4 consecutive PSRAM words back-to-back, then
+// toggles ack once.  ~3× faster per chunk — comfortably ahead of DMA even
+// under ARAM contention on the shared CRAM1 chip.
+//
+// Savestate uses PSRAM bank 1 (private; ARAM uses bank 0).  PSRAM has no
+// skip-stale quirk, so the 4 words step the word address by 1 (base+0..+3).
 
 module ss_psram_arbiter (
     input  wire        clk_sys,
     input  wire        clk_mem,
 
-    // clk_sys domain — from save_state_controller
+    // clk_sys domain — from save_state_controller (one req per 64-bit chunk)
     input  wire        ss_psram_wr_req,   // toggle
-    input  wire [18:0] ss_psram_wr_addr,
-    input  wire [15:0] ss_psram_wr_data,
+    input  wire [18:0] ss_psram_wr_addr,  // chunk-base word address
+    input  wire [63:0] ss_psram_wr_data,  // full 64-bit chunk
     output wire        ss_psram_wr_ack,   // toggle (clk_sys)
     input  wire        ss_psram_rd_req,   // toggle
-    input  wire [18:0] ss_psram_rd_addr,
-    output wire [15:0] ss_psram_rd_data,  // synch_3'd back to clk_sys
+    input  wire [18:0] ss_psram_rd_addr,  // chunk-base word address
+    output wire [63:0] ss_psram_rd_data,  // assembled 64-bit chunk (synch_3'd)
     output wire        ss_psram_rd_ack,   // toggle (clk_sys)
 
-    // clk_mem domain — to psram_arbiter Port B
+    // clk_mem domain — to psram_arbiter Port B (single-word interface)
     output reg         b_write_en,
     output reg         b_read_en,
     output reg  [21:0] b_addr,
@@ -48,11 +48,10 @@ module ss_psram_arbiter (
     input  wire        b_busy
 );
 
-  // Savestate region is fixed to PSRAM bank 1; address is the 19-bit
-  // word offset, zero-extended into the 22-bit psram address bus.
+  // Savestate region is fixed to PSRAM bank 1.
   assign b_bank_sel = 1'b1;
 
-  // ----- clk_sys → clk_mem CDC -----
+  // ----- clk_sys → clk_mem CDC of the request toggles -----
   wire ss_psram_wr_req_mem;
   wire ss_psram_rd_req_mem;
   synch_3 sync_ss_wr_req (.i(ss_psram_wr_req), .o(ss_psram_wr_req_mem), .clk(clk_mem));
@@ -63,26 +62,28 @@ module ss_psram_arbiter (
   wire ss_psram_wr_edge_mem = (ss_psram_wr_req_mem != prev_ss_psram_wr_req_mem);
   wire ss_psram_rd_edge_mem = (ss_psram_rd_req_mem != prev_ss_psram_rd_req_mem);
 
-  // ----- clk_mem-side FSM -----
-  localparam SS_IDLE      = 3'd0;
-  localparam SS_WR_SETTLE = 3'd1;
-  localparam SS_WR_ISSUE  = 3'd2;
-  localparam SS_WR_WAIT   = 3'd3;
-  localparam SS_RD_SETTLE = 3'd4;
-  localparam SS_RD_ISSUE  = 3'd5;
-  localparam SS_RD_WAIT   = 3'd6;
+  // ----- clk_mem-side burst FSM -----
+  localparam SS_IDLE       = 4'd0;
+  localparam SS_WR_SETTLE  = 4'd1;   // wait for CDC addr/data to settle
+  localparam SS_WR_ISSUE   = 4'd2;   // assert write_en for word[widx]
+  localparam SS_WR_WAIT    = 4'd3;   // wait for that word's transaction to finish
+  localparam SS_WR_DONE    = 4'd4;   // all 4 words done → ack
+  localparam SS_RD_SETTLE  = 4'd5;
+  localparam SS_RD_ISSUE   = 4'd6;
+  localparam SS_RD_WAIT    = 4'd7;
+  localparam SS_RD_DONE    = 4'd8;
 
-  reg [2:0]  ss_mem_state = SS_IDLE;
+  reg [3:0]  ss_mem_state = SS_IDLE;
   reg        ss_psram_wr_ack_mem  = 0;
   reg        ss_psram_rd_ack_mem  = 0;
-  reg [15:0] ss_psram_rd_data_mem = 16'h0000;
   reg        busy_seen = 0;
+  reg [2:0]  settle_cnt = 3'd0;
+  reg [1:0]  widx = 2'd0;            // which of the 4 words this burst is on
 
-  // Settle counter: same role as ss_sdram_arbiter — pad after the
-  // synch_3 edge so multi-bit addr/data settles across CDC before we
-  // latch.  3 cycles is plenty at 85.9 MHz vs. the >180 ns the clk_sys
-  // side holds addr/data stable.
-  reg [2:0] settle_cnt = 3'd0;
+  // Latched burst parameters (captured once after CDC settle).
+  reg [18:0] burst_addr  = 19'd0;
+  reg [63:0] burst_wdata = 64'd0;
+  reg [63:0] burst_rdata = 64'd0;
 
   initial begin
     b_write_en        = 1'b0;
@@ -104,6 +105,7 @@ module ss_psram_arbiter (
         b_write_high_byte <= 1'b0;
         b_write_low_byte  <= 1'b0;
         busy_seen         <= 1'b0;
+        widx              <= 2'd0;
         if (ss_psram_wr_edge_mem) begin
           settle_cnt   <= 3'd3;
           ss_mem_state <= SS_WR_SETTLE;
@@ -113,34 +115,34 @@ module ss_psram_arbiter (
         end
       end
 
+      // ---- WRITE burst ----
       SS_WR_SETTLE: begin
         if (settle_cnt == 3'd0) begin
-          b_addr            <= {3'b000, ss_psram_wr_addr};
-          b_data_in         <= ss_psram_wr_data;
-          b_write_high_byte <= 1'b1;
-          b_write_low_byte  <= 1'b1;
-          ss_mem_state      <= SS_WR_ISSUE;
+          burst_addr   <= ss_psram_wr_addr;
+          burst_wdata  <= ss_psram_wr_data;
+          ss_mem_state <= SS_WR_ISSUE;
         end else begin
           settle_cnt <= settle_cnt - 3'd1;
         end
       end
 
       SS_WR_ISSUE: begin
-        // Wait until Port B reports the underlying psram core is idle
-        // (b_busy reflects either ARAM in flight or a previous request).
-        // psram_arbiter accepts our write_en once b_busy is 0.
+        // Issue word[widx] when Port B is free.  psram_arbiter accepts
+        // write_en when b_busy is 0 (its drop-on-busy gate).
         if (~b_busy) begin
-          b_write_en   <= 1'b1;
-          ss_mem_state <= SS_WR_WAIT;
+          b_addr            <= {3'b000, burst_addr} + {20'b0, widx};
+          b_data_in         <= burst_wdata[widx*16 +: 16];
+          b_write_high_byte <= 1'b1;
+          b_write_low_byte  <= 1'b1;
+          b_write_en        <= 1'b1;
+          busy_seen         <= 1'b0;
+          ss_mem_state      <= SS_WR_WAIT;
         end
       end
 
       SS_WR_WAIT: begin
-        // Once the arbiter latches the request, b_busy will rise.  After
-        // we observe it rise, drop write_en and wait for b_busy to fall —
-        // that's transaction complete.  We need write_en held until the
-        // arbiter has committed it; psram_arbiter combinationally feeds
-        // start_b into the core, so by the next clk after start b_busy=1.
+        // Hold write_en until the arbiter latches it (b_busy rises), then
+        // drop it and wait for the transaction to complete (b_busy falls).
         if (b_busy) begin
           b_write_en        <= 1'b0;
           b_write_high_byte <= 1'b0;
@@ -148,14 +150,24 @@ module ss_psram_arbiter (
           busy_seen         <= 1'b1;
         end
         if (busy_seen && ~b_busy) begin
-          ss_psram_wr_ack_mem <= ~ss_psram_wr_ack_mem;
-          ss_mem_state        <= SS_IDLE;
+          if (widx == 2'd3) begin
+            ss_mem_state <= SS_WR_DONE;
+          end else begin
+            widx         <= widx + 2'd1;
+            ss_mem_state <= SS_WR_ISSUE;
+          end
         end
       end
 
+      SS_WR_DONE: begin
+        ss_psram_wr_ack_mem <= ~ss_psram_wr_ack_mem;
+        ss_mem_state        <= SS_IDLE;
+      end
+
+      // ---- READ burst ----
       SS_RD_SETTLE: begin
         if (settle_cnt == 3'd0) begin
-          b_addr       <= {3'b000, ss_psram_rd_addr};
+          burst_addr   <= ss_psram_rd_addr;
           ss_mem_state <= SS_RD_ISSUE;
         end else begin
           settle_cnt <= settle_cnt - 3'd1;
@@ -164,7 +176,9 @@ module ss_psram_arbiter (
 
       SS_RD_ISSUE: begin
         if (~b_busy) begin
+          b_addr       <= {3'b000, burst_addr} + {20'b0, widx};
           b_read_en    <= 1'b1;
+          busy_seen    <= 1'b0;
           ss_mem_state <= SS_RD_WAIT;
         end
       end
@@ -174,29 +188,35 @@ module ss_psram_arbiter (
           b_read_en <= 1'b0;
           busy_seen <= 1'b1;
         end
-        // b_read_avail pulses the cycle psram presents data_out — same
-        // cycle b_busy falls.  Latch the data, toggle ack, return to idle.
-        if (b_read_avail) begin
-          ss_psram_rd_data_mem <= b_data_out;
-        end
+        // b_read_avail pulses (same cycle b_busy falls) with the word.
+        if (b_read_avail) burst_rdata[widx*16 +: 16] <= b_data_out;
         if (busy_seen && ~b_busy) begin
-          // Capture data here too in case read_avail and busy-falling
-          // arrive on the same cycle (psram.sv asserts both at
-          // STATE_READ_DATA_RECEIVED).
-          if (b_read_avail) ss_psram_rd_data_mem <= b_data_out;
-          ss_psram_rd_ack_mem <= ~ss_psram_rd_ack_mem;
-          ss_mem_state        <= SS_IDLE;
+          if (b_read_avail) burst_rdata[widx*16 +: 16] <= b_data_out;
+          if (widx == 2'd3) begin
+            ss_mem_state <= SS_RD_DONE;
+          end else begin
+            widx         <= widx + 2'd1;
+            ss_mem_state <= SS_RD_ISSUE;
+          end
         end
+      end
+
+      SS_RD_DONE: begin
+        ss_psram_rd_ack_mem <= ~ss_psram_rd_ack_mem;
+        ss_mem_state        <= SS_IDLE;
       end
 
       default: ss_mem_state <= SS_IDLE;
     endcase
   end
 
-  // ----- clk_mem → clk_sys CDC -----
+  // ----- clk_mem → clk_sys CDC of acks + read data -----
   synch_3 sync_ss_wr_ack (.i(ss_psram_wr_ack_mem), .o(ss_psram_wr_ack), .clk(clk_sys));
   synch_3 sync_ss_rd_ack (.i(ss_psram_rd_ack_mem), .o(ss_psram_rd_ack), .clk(clk_sys));
-  synch_3 #(.WIDTH(16)) sync_ss_rd_data
-      (.i(ss_psram_rd_data_mem), .o(ss_psram_rd_data), .clk(clk_sys));
+  // burst_rdata is fully assembled and stable by the time the rd_ack toggle
+  // propagates (3 clk_sys cycles), so a plain synch_3 of the 64-bit value is
+  // safe — the controller samples it only after seeing the ack edge.
+  synch_3 #(.WIDTH(64)) sync_ss_rd_data
+      (.i(burst_rdata), .o(ss_psram_rd_data), .clk(clk_sys));
 
 endmodule
