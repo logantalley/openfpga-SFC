@@ -1846,10 +1846,14 @@ module core_top (
       //                                    DMA-vs-CDC race / serve from BRAM
       //   completed, GREEN ~$96, RED=$00 → data applied clean → APF handshake
       //                                    or apply-correctness is the issue
-      2'd0: begin row_value = dbg_load_stall_cnt_video[7:0];                       row_marker_rgb = 24'hFF0000; end
+      // 2026-06-23 DIAGNOSTIC: RED+GREEN = ss_addr_max (highest chunk index the
+      // SAVE firmware emitted).  Full SMW save expects ss_addr_max ≈ 0x4000+
+      // (GREEN≈40+, RED any).  If SAVE dies ~8KB in, expect GREEN=04 RED=02
+      // (≈0x402).  YELLOW/CYAN keep the firmware-progress + completion taps.
+      2'd0: begin row_value = dbg_max_sram_base_lo_video;                         row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_max_sram_base_hi_video;                          row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = {dbg_load_en_cnt_video,   dbg_rti_arms_video};       row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = {dbg_load_vect_cnt_video, dbg_load_busy_cnt_video};  row_marker_rgb = 24'h00FFFF; end
+      2'd3: begin row_value = {dbg_save_end_writes_video, dbg_fw_nmidis_video};    row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

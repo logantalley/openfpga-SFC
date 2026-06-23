@@ -784,15 +784,16 @@ module save_state_controller #(
   assign debug_save_wr_count_lo = stage_max_count[7:0];
   assign debug_save_wr_count_hi = stage_max_count[15:8];
 
-  // ss_addr max (load side) — sanity check on how many chunks firmware reads
+  // ss_addr max (load AND save side) — the highest chunk index the firmware
+  // ever emitted via ss_req.  DIAGNOSTIC (2026-06-23): for a full SMW save
+  // this should reach ~0x4000+ (128KB WRAM = 16384 chunks, plus VRAM etc).
+  // If the SAVE dies ~8KB in, this will read ~0x0402.  Routed to the overlay
+  // RED (low byte) + GREEN (high byte) rows in core_top.
   reg [16:0] ss_addr_max = 17'd0;
-  assign debug_max_sram_base_lo = ss_addr_max[7:0];
-  // Repurposed: high byte = full sys_state (5-bit FSM state) + flags so we can
-  // tell where the FSM ended up.  bit7=ss_busy_ever, bit6=load_cmd_pending,
-  // bit5=ss_req_ever, bit4:0 = sys_state.
-  assign debug_max_sram_base_hi = {ss_busy_ever, load_cmd_pending, ss_req_ever, sys_state[4:0]};
+  assign debug_max_sram_base_lo = ss_addr_max[7:0];        // RED   = ss_addr_max[7:0]
+  assign debug_max_sram_base_hi = ss_addr_max[15:8];       // GREEN = ss_addr_max[15:8]
   assign debug_ss_addr_overflow = 8'h00;
-  assign debug_ss_addr_max_hi   = ss_addr_max[16:9];
+  assign debug_ss_addr_max_hi   = {7'b0, ss_addr_max[16]}; // (bit16 if ever needed)
 
   // Bridge_rd count for save side
   reg [15:0] bridge_rd_count = 16'h0000;
