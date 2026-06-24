@@ -220,6 +220,7 @@ module save_state_controller #(
   reg [24:0] save_addr;          // SDRAM byte addr base for this chunk
   reg [16:0] save_serve_idx;     // chunk index being served back to APF
   reg [16:0] save_serve_idx_max = 17'd0;  // DIAGNOSTIC: max serve idx reached
+  reg        serve_aborted = 1'b0;        // DIAGNOSTIC: SRV_PUSH watchdog fired
   reg [1:0]  save_serve_widx;    // which of 4 SDRAM words being read
   reg [63:0] save_serve_buf;     // assembled 64-bit chunk to push to fifo_save
   // Full declared slot = savestate_size (512KB) / 8 bytes = 65536 chunks.
@@ -787,10 +788,15 @@ module save_state_controller #(
   // reset at SERVE_COMPLETE so we can read it via overlay after a load.
   // Reveals how many chunks APF actually streamed.
   reg [16:0] stage_max_count = 17'h00000;
-  // 2026-06-23 DIAGNOSTIC: repurposed to expose cnt_save_chunks (SAVE-side
-  // PSRAM commits) on YELLOW+CYAN, to compare against ss_addr_max on RED+GREEN.
-  assign debug_save_wr_count_lo = cnt_save_chunks[7:0];
-  assign debug_save_wr_count_hi = cnt_save_chunks[15:8];
+  // 2026-06-23 DIAGNOSTIC ROUND 3:
+  //   YELLOW = {sys_state[4:0], fifo_save_wr_full, fifo_save_rd_empty, serve_aborted}
+  //            → where the serve ENDED + FIFO flags + whether the watchdog
+  //              abort path fired.  sys_state: IDLE=0, SRV_PUSH=7, SRV_DONE=8.
+  //   CYAN   = save_serve_idle[15:8] → how high the idle watchdog climbed
+  //            (near SAVE_SERVE_IDLE_MAX hi byte $93 = watchdog fired).
+  assign debug_save_wr_count_lo = {sys_state[4:0], fifo_save_wr_full,
+                                   fifo_save_rd_empty, serve_aborted};
+  assign debug_save_wr_count_hi = save_serve_idle[15:8];
 
   // ss_addr max (load AND save side) — the highest chunk index the firmware
   // ever emitted via ss_req.  DIAGNOSTIC (2026-06-23): for a full SMW save
@@ -1168,8 +1174,9 @@ module save_state_controller #(
         end else if (apf_reading) begin
           save_serve_idle <= 21'd0;            // APF still draining — wait.
         end else if (save_serve_idle >= SAVE_SERVE_IDLE_MAX) begin
-          ss_loading <= 0;                     // APF stopped → done, no freeze.
-          sys_state  <= SYS_IDLE;
+          ss_loading    <= 0;                  // APF stopped → done, no freeze.
+          serve_aborted <= 1'b1;               // DIAGNOSTIC: watchdog fired here
+          sys_state     <= SYS_IDLE;
         end else begin
           save_serve_idle <= save_serve_idle + 21'd1;
         end
