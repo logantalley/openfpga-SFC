@@ -221,6 +221,12 @@ module save_state_controller #(
   reg [16:0] save_serve_idx;     // chunk index being served back to APF
   reg [16:0] save_serve_idx_max = 17'd0;  // DIAGNOSTIC: max serve idx reached
   reg        serve_aborted = 1'b0;        // DIAGNOSTIC: SRV_PUSH watchdog fired
+  reg        apf_ever_read = 1'b0;        // set once APF has read the slot at
+                                          // least once during a serve — arms
+                                          // the idle watchdog (APF can be slow
+                                          // to START after savestate_start_ok;
+                                          // aborting before its first read
+                                          // truncated the save at one FIFO).
   reg [1:0]  save_serve_widx;    // which of 4 SDRAM words being read
   reg [63:0] save_serve_buf;     // assembled 64-bit chunk to push to fifo_save
   // Full declared slot = savestate_size (512KB) / 8 bytes = 65536 chunks.
@@ -1009,6 +1015,8 @@ module save_state_controller #(
 
     // Serve watchdog clock-edge bookkeeping (see SAVE serve states below).
     prev_bridge_rd_lo_sys <= bridge_rd_lo_sys;
+    // Arm the serve idle-watchdog only after APF has actually read the slot.
+    if (apf_reading) apf_ever_read <= 1'b1;
     if (ss_req != prev_ss_req) begin
       ss_req_ever    <= 1;
       ss_req_toggles <= ss_req_toggles + 4'd1;
@@ -1112,6 +1120,8 @@ module save_state_controller #(
           save_serve_widx      <= 2'd0;
           serve_prefilled      <= 1'b1;
           save_serve_idle      <= 21'd0;
+          apf_ever_read        <= 1'b0;  // re-arm: watchdog only after 1st APF read
+          serve_aborted        <= 1'b0;
           sys_state            <= SYS_SAVE_SRV_RD_REQ;
         end
       end
@@ -1164,6 +1174,17 @@ module save_state_controller #(
         if (~fifo_save_wr_full) begin
           fifo_save_write_req <= 1;
           save_serve_widx     <= 2'd0;
+          // BUGFIX 2026-06-25: reset the idle watchdog on every successful
+          // push.  A push IS progress — the serve is not stuck.  Previously
+          // save_serve_idle was only reset in the `apf_reading` branch, which
+          // only runs when the FIFO is FULL; for a real (>1024-chunk) save the
+          // FIFO fills and the serve oscillates push↔full, but the brief
+          // SRV_PUSH+full+apf_reading coincidence rarely fired, so the idle
+          // counter climbed monotonically to SAVE_SERVE_IDLE_MAX and ABORTED
+          // the serve after exactly one FIFO-depth (1024 chunks).  Resetting
+          // here means the watchdog only trips when the serve makes NO
+          // progress for the whole window (APF genuinely stopped).
+          save_serve_idle <= 21'd0;
           if (save_serve_idx == SAVE_SERVE_LAST) begin
             sys_state <= SYS_SAVE_SRV_DONE;
           end else begin
@@ -1173,8 +1194,13 @@ module save_state_controller #(
           end
         end else if (apf_reading) begin
           save_serve_idle <= 21'd0;            // APF still draining — wait.
-        end else if (save_serve_idle >= SAVE_SERVE_IDLE_MAX) begin
-          ss_loading    <= 0;                  // APF stopped → done, no freeze.
+        end else if (apf_ever_read && save_serve_idle >= SAVE_SERVE_IDLE_MAX) begin
+          // Only abort once APF has read at least once (watchdog armed) AND
+          // has then gone idle for the full window.  Before APF's first read
+          // the serve must wait indefinitely — APF can take many ms to start
+          // after savestate_start_ok, and aborting in that gap truncated the
+          // save to exactly one FIFO depth.
+          ss_loading    <= 0;
           serve_aborted <= 1'b1;               // DIAGNOSTIC: watchdog fired here
           sys_state     <= SYS_IDLE;
         end else begin
@@ -1192,7 +1218,7 @@ module save_state_controller #(
           sys_state  <= SYS_IDLE;
         end else if (apf_reading) begin
           save_serve_idle <= 21'd0;
-        end else if (save_serve_idle >= SAVE_SERVE_IDLE_MAX) begin
+        end else if (apf_ever_read && save_serve_idle >= SAVE_SERVE_IDLE_MAX) begin
           ss_loading <= 0;
           sys_state  <= SYS_IDLE;
         end else begin

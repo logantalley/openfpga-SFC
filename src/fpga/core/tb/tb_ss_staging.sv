@@ -144,7 +144,10 @@ module tb_ss_staging #(
                                                 // matching APF's real pacing)
     parameter int CLKMEM_PHASE_PS  = 3777,      // clk_mem initial phase offset
     parameter int RUN_SAVE         = 0,         // 1 = run the SAVE-path test instead of LOAD
-    parameter int SAVE_CHUNKS      = 8          // # 64-bit chunks the firmware "saves"
+    parameter int SAVE_CHUNKS      = 8,         // # 64-bit chunks the firmware "saves"
+    parameter int SAVE_PAUSE_AT    = 0,         // chunk index to pause APF reads at (0=off)
+    parameter int SAVE_PAUSE_CYC   = 4000,      // clk_sys cycles to pause (> idle_max=2000)
+    parameter int SAVE_PRESTART_DLY = 0         // clk_sys cycles to delay APF's FIRST read
 );
   localparam [24:0] STAGING_BASE  = 25'h800000; // byte address (matches DUT)
 
@@ -596,7 +599,19 @@ module tb_ss_staging #(
   // serve *logic* from the TB-only over-read (the real throughput margin is
   // validated on hardware).
   task automatic bridge_read32(input [31:0] addr, output [31:0] data);
-    while (ssc.fifo_save_rd_empty) @(posedge clk_74a);
+    int wait_cyc;
+    // Bounded wait for FIFO non-empty.  If the serve has ABORTED (the bug),
+    // the FIFO drains and stays empty forever — return 0 (as APF would read
+    // past the served data) instead of hanging, so the self-check can flag
+    // the resulting zero chunks as errors.
+    wait_cyc = 0;
+    while (ssc.fifo_save_rd_empty && wait_cyc < 100000) begin
+      @(posedge clk_74a); wait_cyc++;
+    end
+    if (ssc.fifo_save_rd_empty) begin
+      data = 32'h0;  // serve produced nothing more (aborted / underran)
+      return;
+    end
     @(posedge clk_74a);
     bridge_addr <= addr;
     bridge_rd   <= 1'b1;          // rising edge → handler issues rdreq
@@ -728,9 +743,37 @@ module tb_ss_staging #(
       // high word = save_pat[63:32].
       begin : serve_check
         logic [31:0] elo, ehi;
+        // Model APF being SLOW TO START reading after savestate_start_ok.
+        // This is the real hardware failure: the serve fills the FIFO (1024
+        // chunks) and then, before APF's first read, the idle watchdog
+        // counted to SAVE_SERVE_IDLE_MAX and ABORTED — truncating the save to
+        // exactly one FIFO depth.  The fix (apf_ever_read arming) must let the
+        // serve wait through this pre-start gap.
+        if (SAVE_PRESTART_DLY > 0) begin
+          $display("[tb] APF delaying first read %0d clk_sys...", SAVE_PRESTART_DLY);
+          repeat (SAVE_PRESTART_DLY) @(posedge clk_sys);
+          $display("[tb] APF first read now. sys_state=%0d serve_aborted=%b idx_max=%0d ss_loading=%b",
+                   ssc.sys_state, ssc.serve_aborted, ssc.save_serve_idx_max, ssc.ss_loading);
+        end
         // APF sees bridge_rd_data = byteswap32(fifo_q); the FIFO holds the
         // staged 64-bit chunk (save_pat).  Expected per-word = byteswapped.
+        //
+        // 2026-06-25: inject a mid-stream APF PAUSE longer than
+        // SAVE_SERVE_IDLE_MAX (TB override = 2000) once the serve has filled
+        // the FIFO.  This reproduces the hardware failure mode: with the old
+        // watchdog (reset only in the apf_reading branch), a real >FIFO-depth
+        // save let save_serve_idle climb to MAX and ABORT the serve after one
+        // FIFO depth.  With the fix (reset on every push), a pause only stalls
+        // while there's genuinely no progress; reads resume cleanly after.
         for (i = 0; i < SAVE_CHUNKS; i++) begin
+          // Pause partway through, long enough to exceed the idle watchdog.
+          if (SAVE_PAUSE_AT > 0 && i == SAVE_PAUSE_AT) begin
+            $display("[tb] APF pausing %0d clk_sys at chunk %0d (idle_max overridden=%0d)",
+                     SAVE_PAUSE_CYC, i, 2000);
+            repeat (SAVE_PAUSE_CYC) @(posedge clk_sys);
+            $display("[tb] APF resuming reads, sys_state=%0d ss_loading=%b serve_aborted=%b idx_max=%0d",
+                     ssc.sys_state, ssc.ss_loading, ssc.serve_aborted, ssc.save_serve_idx_max);
+          end
           bridge_read32(32'h4000_0000 + (i*2  )*4, rdw); elo = rdw;
           bridge_read32(32'h4000_0000 + (i*2+1)*4, rdw); ehi = rdw;
           if (elo !== 32'h0 && ehi !== 32'h0) nz += 2;
