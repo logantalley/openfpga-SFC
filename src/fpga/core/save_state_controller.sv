@@ -467,12 +467,13 @@ module save_state_controller #(
   // CRAM1 bank 1 (PSRAM), which is a different physical chip from cart-ROM
   // SDRAM, so the running game's instruction fetch is undisturbed.  Only
   // LOAD staging (SDRAM staging hijack) still needs MCLK paused.
-  assign ss_pause_cpu = (sys_state == SYS_STAGE_FIFO_RD)     ||
-                        (sys_state == SYS_STAGE_FIFO_WAIT)   ||
-                        (sys_state == SYS_STAGE_FIFO_LATCH)  ||
-                        (sys_state == SYS_STAGE_WR_REQ)      ||
-                        (sys_state == SYS_STAGE_WR_WAIT)     ||
-                        (sys_state == SYS_STAGE_IDLE);
+  // 2026-06-25: LOAD now stages to PSRAM bank 1 (mirrors SAVE), NOT cart-ROM
+  // SDRAM, so LOAD staging no longer starves the running game's instruction
+  // fetch.  The load firmware force-blanks the screen and disables NMI/HDMA
+  // for the whole restore (self-contained — verified), so NO MCLK pause is
+  // needed for LOAD either.  ss_pause_cpu is now never asserted; kept as a
+  // tied-low output for interface compatibility.
+  assign ss_pause_cpu = 1'b0;
 
   // Edge / handshake tracking
   reg prev_savestate_start = 0;
@@ -1051,7 +1052,9 @@ module save_state_controller #(
       savestate_load_err  <= 0;
       savestate_start_ok  <= 0;
       savestate_start_err <= 0;
-      ss_loading          <= 1;
+      // 2026-06-25: LOAD no longer hijacks cart-ROM SDRAM (stages to PSRAM
+      // bank 1).  ss_loading stays low so the SDRAM mux never switches away
+      // from the running game's cart-ROM path.
     end
 
     case (sys_state)
@@ -1062,13 +1065,10 @@ module save_state_controller #(
       SYS_IDLE: begin
         if (~savestate_load_s) savestate_load_ack <= 0;
         if (fifo_drain_ok) begin
-          // Begin staging.  stage_addr starts at STAGING_BASE_WORD on
-          // the first FIFO entry of a transfer; once running, it just
-          // keeps incrementing through the whole load.
+          // Begin staging.  LOAD stages to PSRAM bank 1 (chunk N at word N*4),
+          // tracked by stage_entry_count — no SDRAM byte address needed.
           if (stage_entry_count == 17'd0) begin
-            stage_addr <= STAGING_BASE_WORD;
             stage_half <= 1'b0;
-            ss_loading <= 1;
           end
           sys_state <= SYS_STAGE_FIFO_RD;
         end else if (load_cmd_pending) begin
@@ -1305,58 +1305,31 @@ module save_state_controller #(
         end
       end
 
+      // 2026-06-25: LOAD staging moved to PSRAM bank 1 (mirrors SAVE).  One
+      // burst writes the whole 64-bit chunk; chunk N lands at PSRAM word
+      // base N*4.  No cart-ROM SDRAM hijack, no stride-2 quirk.
       SYS_STAGE_WR_REQ: begin
-        // v58: hold off until the wr_gap_cnt cooldown elapses (set in
-        // WR_WAIT after previous word's ack).  Tests if rapid-fire
-        // back-to-back writes are dropping words 2,3.
-        if (wr_gap_cnt == 4'd0) begin
-          ss_sdram_wr_req  <= ~ss_sdram_wr_req;  // toggle to request a write
-          ss_sdram_wr_addr <= stage_addr;
-          case (stage_word_idx)
-            2'd0: ss_sdram_wr_data <= stage_buffer[15:0];
-            2'd1: ss_sdram_wr_data <= stage_buffer[31:16];
-            2'd2: ss_sdram_wr_data <= stage_buffer[47:32];
-            2'd3: ss_sdram_wr_data <= stage_buffer[63:48];
-          endcase
-          if (!first_stage_seen) begin
-            first_stage_word <= stage_buffer[15:0];
-            first_stage_addr <= stage_addr;
-            first_stage_seen <= 1;
-          end
-          // v62: capture the upper-half slice we feed for word 2, in
-          // clk_sys, BEFORE any CDC.  Bisects controller-source vs CDC.
-          if (stage_word_idx == 2'd2 && !dbg_w2_src_seen) begin
-            dbg_w2_src      <= stage_buffer[47:32];
-            dbg_w2_src_seen <= 1'b1;
-          end
-          sys_state <= SYS_STAGE_WR_WAIT;
+        ss_psram_wr_req  <= ~ss_psram_wr_req;
+        ss_psram_wr_addr <= {stage_entry_count[16:0], 2'b00};  // chunk*4
+        ss_psram_wr_data <= stage_buffer;
+        if (!first_stage_seen) begin
+          first_stage_word <= stage_buffer[15:0];
+          first_stage_addr <= {6'b0, stage_entry_count[16:0], 2'b00};
+          first_stage_seen <= 1;
         end
+        sys_state <= SYS_STAGE_WR_WAIT;
       end
 
       SYS_STAGE_WR_WAIT: begin
-        if (sdram_wr_done) begin
+        if (psram_wr_done) begin
           if (cnt_stage_wr_done != 8'hFF) cnt_stage_wr_done <= cnt_stage_wr_done + 8'd1;
           if (cnt_stage_wr_done_wide != 16'hFFFF) cnt_stage_wr_done_wide <= cnt_stage_wr_done_wide + 16'd1;
-          // sdram.sv treats addr[24:1] as the 16-bit word and addr[0] as
-          // byte-within-word, AND skips re-access when addr[24:1] is
-          // unchanged.  So distinct 16-bit words must step addr by 2.
-          stage_addr <= stage_addr + 25'd2;
-          // v58 test: add a settle gap before next word's WR_REQ to see
-          // if rapid-fire writes were dropping words 2,3.
-          wr_gap_cnt <= 4'd8;
-          if (stage_word_idx == 2'd3) begin
-            if (stage_entry_count != 17'h1FFFF) begin
-              stage_entry_count <= stage_entry_count + 17'd1;
-              // Unconditionally update max — stage_entry_count is strictly
-              // increasing within a single load (only reset at COMPLETE).
-              stage_max_count <= stage_entry_count + 17'd1;
-            end
-            have_staged_any <= 1;
-            sys_state <= SYS_STAGE_FIFO_RD;
-          end else begin
-            stage_word_idx <= stage_word_idx + 2'd1;
-            sys_state      <= SYS_STAGE_WR_REQ;
+          if (stage_entry_count != 17'h1FFFF) begin
+            stage_entry_count <= stage_entry_count + 17'd1;
+            stage_max_count   <= stage_entry_count + 17'd1;
           end
+          have_staged_any <= 1;
+          sys_state <= SYS_STAGE_FIFO_RD;
         end
       end
 
@@ -1379,16 +1352,13 @@ module save_state_controller #(
           if (cnt_guard_pass != 8'hFF) cnt_guard_pass <= cnt_guard_pass + 8'd1;
           savestate_load_busy <= 1;
           // Run the SDRAM read-back probe first to capture ground truth
-          // about what is actually staged.  After 4 probe reads, fall
-          // through to SERVE_KICK_WAIT.
-          if (!probe_done) begin
-            probe_idx          <= 2'd0;
-            stage_addr_at_done <= stage_addr;  // sticky snapshot
-            sys_state          <= SYS_PROBE_REQ;
-          end else begin
-            kick_wait <= 8'd64;
-            sys_state <= SYS_SERVE_KICK_WAIT;
-          end
+          // 2026-06-25: the old SDRAM read-back probe is bypassed — staging
+          // is now in PSRAM bank 1, so the SDRAM probe would read garbage.
+          // Go straight to the serve kick.  (PROBE states left in place but
+          // unreachable; cleaned up later.)
+          probe_done <= 1;
+          kick_wait  <= 8'd64;
+          sys_state  <= SYS_SERVE_KICK_WAIT;
         end
       end
 
@@ -1475,11 +1445,10 @@ module save_state_controller #(
           end
         end
         if (new_ddr_req && ss_rnw) begin
-          // ss_addr = 64-bit chunk index.  Each chunk = 4 SDRAM 16-bit
-          // words at byte-stride 2 = 8 bytes of SDRAM addr space.  Staging
-          // wrote chunk N at STAGING_BASE_WORD + N*8.  Match here.
-          serve_addr     <= STAGING_BASE_WORD + ({5'd0, ss_addr, 3'b000});
-          serve_word_idx <= 2'd0;
+          // 2026-06-25: LOAD serve reads from PSRAM bank 1 (mirrors SAVE).
+          // ss_addr = chunk index; chunk N staged at PSRAM word N*4.  One
+          // burst read returns the whole 64-bit chunk.
+          serve_addr     <= {6'b0, ss_addr, 2'b00};  // chunk*4 (PSRAM word)
           if (cnt_serve_rd_entries != 8'hFF)
             cnt_serve_rd_entries <= cnt_serve_rd_entries + 8'd1;
           sys_state      <= SYS_SERVE_RD_REQ;
@@ -1489,21 +1458,16 @@ module save_state_controller #(
       end
 
       SYS_SERVE_RD_REQ: begin
-        ss_sdram_rd_req  <= ~ss_sdram_rd_req;  // toggle to request a read
-        ss_sdram_rd_addr <= serve_addr;
+        ss_psram_rd_req  <= ~ss_psram_rd_req;       // burst-read the chunk
+        ss_psram_rd_addr <= serve_addr[18:0];
         sys_state        <= SYS_SERVE_RD_WAIT;
       end
 
       SYS_SERVE_RD_WAIT: begin
-        if (sdram_rd_done) begin
-          case (serve_word_idx)
-            2'd0: serve_buffer[15:0]  <= ss_sdram_rd_data;
-            2'd1: serve_buffer[31:16] <= ss_sdram_rd_data;
-            2'd2: serve_buffer[47:32] <= ss_sdram_rd_data;
-            2'd3: serve_buffer[63:48] <= ss_sdram_rd_data;
-          endcase
-          if (!first_serve_seen && serve_word_idx == 2'd0) begin
-            first_serve_word <= ss_sdram_rd_data;
+        if (psram_rd_done) begin
+          serve_buffer <= ss_psram_rd_data;          // full 64-bit chunk
+          if (!first_serve_seen) begin
+            first_serve_word <= ss_psram_rd_data[15:0];
             first_serve_seen <= 1;
           end
           if (serve_rd_count != 16'hFFFF)
@@ -1513,15 +1477,9 @@ module save_state_controller #(
       end
 
       SYS_SERVE_RD_NEXT: begin
-        if (serve_word_idx == 2'd3) begin
-          if (cnt_serve_ack_entries != 8'hFF)
-            cnt_serve_ack_entries <= cnt_serve_ack_entries + 8'd1;
-          sys_state <= SYS_SERVE_ACK;
-        end else begin
-          serve_word_idx <= serve_word_idx + 2'd1;
-          serve_addr     <= serve_addr + 25'd2;  // stride 2 (see staging note)
-          sys_state      <= SYS_SERVE_RD_REQ;
-        end
+        if (cnt_serve_ack_entries != 8'hFF)
+          cnt_serve_ack_entries <= cnt_serve_ack_entries + 8'd1;
+        sys_state <= SYS_SERVE_ACK;
       end
 
       SYS_SERVE_ACK: begin

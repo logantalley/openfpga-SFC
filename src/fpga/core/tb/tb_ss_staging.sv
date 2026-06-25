@@ -864,111 +864,29 @@ module tb_ss_staging #(
     $display("[tb] fifo_or_checksum        : %h", ssc.fifo_or_checksum);
     $display("[tb] fifo_load_drop_cnt      : %0d  overflow=%b",
              ssc.fifo_load_drop_cnt, ssc.fifo_load_overflow);
-    $display("[tb] chip total writes/reads : %0d / %0d",
-             chip.total_writes, chip.total_reads);
-    $display("[tb] writes by word class    : c0=%0d c1=%0d c2=%0d c3=%0d (expect %0d each)",
-             chip.wr_count_by_class[0], chip.wr_count_by_class[1],
-             chip.wr_count_by_class[2], chip.wr_count_by_class[3],
-             NUM_BRIDGE_WORDS / 2);
-    $display("[tb] probe_result_0..3       : %h %h %h %h",
-             ssc.probe_result_0, ssc.probe_result_1,
-             ssc.probe_result_2, ssc.probe_result_3);
-    $display("[tb] v60 first_w2_data       : %h (expect %h)",
-             dbg_real_writes_unused, expected_word(2));
-    $display("[tb] v60 first_w2_addr_lo    : %h (expect 04)", dbg_w2_info[7:0]);
-    $display("[tb] v62 dbg_w2_src (ctrl)   : %h (expect %h)",
-             ssc.dbg_w2_src, expected_word(2));
-    $display("[tb] v63 dbg_pop2 (raw FIFO) : %h (expect %h)",
-             ssc.dbg_pop2, expected_word(2));
-    $display("[tb] v64 dbg_wr1/wr2 (push)  : %h %h (expect %h %h)",
-             ssc.dbg_wr1, ssc.dbg_wr2, bswap(vpat(0)) & 32'hFFFF,
-             bswap(vpat(1)) & 32'hFFFF);
-    // v66 raw addr capture.  TB now drives a clean 1-cycle strobe at
-    // addr 0x4..00,04,08,0C: expect $00,$04,$08,$0C (distinct, no repeats).
-    $display("[tb] v66 raw addr a1..a4     : %h %h %h %h (expect 00 04 08 0C)",
-             ssc.dbg_a1, ssc.dbg_a2, ssc.dbg_a3, ssc.dbg_a4);
-    // v67 bridge faithfulness for words 2,3 (the "odd word" drop test).
-    $display("[tb] v67 dbg_wr3/wr4 (push)  : %h %h (expect %h %h)",
-             ssc.dbg_wr3, ssc.dbg_wr4, bswap(vpat(2)) & 32'hFFFF,
-             bswap(vpat(3)) & 32'hFFFF);
-    if (ssc.dbg_wr4 !== (bswap(vpat(3)) & 32'hFFFF)) begin
-      errors++;
-      $display("ERROR: dbg_wr4 = %h, expected %h",
-               ssc.dbg_wr4, bswap(vpat(3)) & 32'hFFFF);
-    end
+    $display("[tb] PSRAM bank1 writes      : %0d (expect %0d chunks)",
+             psram_chip.total_writes_bank1, NUM_BRIDGE_WORDS / 2);
 
-    // v64 write-side: 2nd word pushed into FIFO == bridge word 1's swapped lo.
-    if (ssc.dbg_wr2 !== (bswap(vpat(1)) & 32'hFFFF)) begin
-      errors++;
-      $display("ERROR: dbg_wr2 = %h, expected %h",
-               ssc.dbg_wr2, bswap(vpat(1)) & 32'hFFFF);
-    end
-
-    // v62 controller-side capture of stage_buffer[47:32] at word-2 WR_REQ.
-    if (ssc.dbg_w2_src !== expected_word(2)) begin
-      errors++;
-      $display("ERROR: dbg_w2_src = %h, expected %h",
-               ssc.dbg_w2_src, expected_word(2));
-    end
-    // v63 raw FIFO second-pop data feeding stage_buffer[63:32].
-    if (ssc.dbg_pop2 !== expected_word(2)) begin
-      errors++;
-      $display("ERROR: dbg_pop2 = %h, expected %h",
-               ssc.dbg_pop2, expected_word(2));
-    end
-
-    // v60 chip-boundary capture must match chunk0 word2.
-    if (dbg_real_writes_unused !== expected_word(2)) begin
-      errors++;
-      $display("ERROR: first_w2_data = %h, expected %h",
-               dbg_real_writes_unused, expected_word(2));
-    end
-    if (dbg_w2_info[7:0] !== 8'h04) begin
-      errors++;
-      $display("ERROR: first_w2_addr_lo = %h, expected 04", dbg_w2_info[7:0]);
-    end
-
-    // Per-class write counts — the saturated-counter evidence gap, resolved.
-    for (k = 0; k < 4; k++) begin
-      if (chip.wr_count_by_class[k] != NUM_BRIDGE_WORDS / 2) begin
-        errors++;
-        $display("ERROR: word class %0d got %0d chip writes, expected %0d",
-                 k, chip.wr_count_by_class[k], NUM_BRIDGE_WORDS / 2);
-      end
-    end
-
-    // Full content check of every staged word.
+    // 2026-06-25: LOAD now stages to PSRAM bank 1 (chunk N at word N*4),
+    // mirroring SAVE.  Full content check of every staged 16-bit word read
+    // directly from the PSRAM chip model.  PSRAM word k holds expected_word(k).
     begin
       int mism = 0;
+      logic [15:0] pw;
       for (k = 0; k < NUM_BRIDGE_WORDS * 2; k++) begin
-        lin = (STAGING_BASE >> 1) + k;
         exp = expected_word(k);
-        got = chip.mem.exists(lin) ? chip.mem[lin] : 16'hDEAD;
-        if (got !== exp) begin
+        pw  = psram_chip.peek(1'b1, k[21:0]);   // bank 1, word k
+        if (pw !== exp) begin
           errors++;
           mism++;
           if (mism <= 16)
-            $display("ERROR: staged word %0d (chunk %0d idx %0d, lin=%h): got %h expected %h",
-                     k, k / 4, k % 4, lin, got, exp);
+            $display("ERROR: staged word %0d (chunk %0d idx %0d): got %h expected %h",
+                     k, k / 4, k % 4, pw, exp);
         end
       end
       if (mism > 16) $display("  ... and %0d more mismatches", mism - 16);
-      $display("[tb] content check: %0d / %0d words wrong", mism,
+      $display("[tb] PSRAM content check     : %0d / %0d words wrong", mism,
                NUM_BRIDGE_WORDS * 2);
-    end
-
-    // Controller's own probe registers (chunk 0 words 0..3 via real reads).
-    begin
-      logic [15:0] pr[4];
-      pr[0] = ssc.probe_result_0; pr[1] = ssc.probe_result_1;
-      pr[2] = ssc.probe_result_2; pr[3] = ssc.probe_result_3;
-      for (k = 0; k < 4; k++) begin
-        if (pr[k] !== expected_word(k)) begin
-          errors++;
-          $display("ERROR: probe_result_%0d = %h, expected %h",
-                   k, pr[k], expected_word(k));
-        end
-      end
     end
 
     if (ssc.fifo_load_drop_cnt != 0) begin
