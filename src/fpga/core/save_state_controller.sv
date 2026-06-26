@@ -795,15 +795,11 @@ module save_state_controller #(
   // reset at SERVE_COMPLETE so we can read it via overlay after a load.
   // Reveals how many chunks APF actually streamed.
   reg [16:0] stage_max_count = 17'h00000;
-  // 2026-06-23 DIAGNOSTIC ROUND 3:
-  //   YELLOW = {sys_state[4:0], fifo_save_wr_full, fifo_save_rd_empty, serve_aborted}
-  //            → where the serve ENDED + FIFO flags + whether the watchdog
-  //              abort path fired.  sys_state: IDLE=0, SRV_PUSH=7, SRV_DONE=8.
-  //   CYAN   = save_serve_idle[15:8] → how high the idle watchdog climbed
-  //            (near SAVE_SERVE_IDLE_MAX hi byte $93 = watchdog fired).
-  assign debug_save_wr_count_lo = {sys_state[4:0], fifo_save_wr_full,
-                                   fifo_save_rd_empty, serve_aborted};
-  assign debug_save_wr_count_hi = save_serve_idle[15:8];
+  // 2026-06-26 LOAD DRIFT DIAGNOSTIC: total chunks LOAD-staged into PSRAM.
+  // Compare against the firmware's read count and the expected chunk count
+  // for the game; a short/over count or any drop = drift.
+  assign debug_save_wr_count_lo = stage_max_count[7:0];
+  assign debug_save_wr_count_hi = stage_max_count[15:8];
 
   // ss_addr max (load AND save side) — the highest chunk index the firmware
   // ever emitted via ss_req.  DIAGNOSTIC (2026-06-23): for a full SMW save
@@ -854,8 +850,11 @@ module save_state_controller #(
   //   w0_wr_count     → {7'b0, fifo_load_overflow}  ($01 = overflowed)
   // v47: chunk 4 word 0 / word 1 low bytes.  Want $30 / $30 for SMW.
   // v57: probe_result_2 low (word 2 want $2D) + probe_result_3 low (word 3 want $53)
-  assign debug_last_w0_data_lo = probe_result_2[7:0];
-  assign debug_last_w0_data_hi = probe_result_3[7:0];
+  // 2026-06-26 LOAD DRIFT DIAGNOSTIC: chunks dropped during LOAD staging
+  // (load FIFO overflow → every chunk after the drop shifts = mid-stream
+  // drift = garbage restore).  last_w0_lo/hi = fifo_load_drop_cnt.
+  assign debug_last_w0_data_lo = fifo_load_drop_cnt[7:0];
+  assign debug_last_w0_data_hi = fifo_load_drop_cnt[15:8];
   assign debug_w0_wr_count     = {7'b0, fifo_load_overflow};
 
   // Count of fifo_load_write events with non-zero bridge_wr_data.  Lives

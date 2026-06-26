@@ -147,7 +147,9 @@ module tb_ss_staging #(
     parameter int SAVE_CHUNKS      = 8,         // # 64-bit chunks the firmware "saves"
     parameter int SAVE_PAUSE_AT    = 0,         // chunk index to pause APF reads at (0=off)
     parameter int SAVE_PAUSE_CYC   = 4000,      // clk_sys cycles to pause (> idle_max=2000)
-    parameter int SAVE_PRESTART_DLY = 0         // clk_sys cycles to delay APF's FIRST read
+    parameter int SAVE_PRESTART_DLY = 0,        // clk_sys cycles to delay APF's FIRST read
+    parameter int USE_REAL_STA     = 0,         // 1 = stream a real .sta payload (smw_payload.hex)
+    parameter int REAL_STA_CHUNKS  = 4096       // # chunks of the real payload to round-trip test
 );
   localparam [24:0] STAGING_BASE  = 25'h800000; // byte address (matches DUT)
 
@@ -187,6 +189,8 @@ module tb_ss_staging #(
   reg         fw_ss_req          = 1'b0;
   reg         fw_ss_busy         = 1'b0;
   wire        ss_ack_w;
+  wire [63:0] ss_dout_w;
+  wire        ss_load_w;
 
   // Bridge data pattern for word n: both 16-bit halves nonzero & unique.
   function automatic [31:0] vpat(input int n);
@@ -201,6 +205,14 @@ module tb_ss_staging #(
   // Byte-reverse (replicates bridge_wr_swapped in save_state_controller).
   function automatic [31:0] bswap(input [31:0] x);
     bswap = {x[7:0], x[15:8], x[23:16], x[31:24]};
+  endfunction
+
+  // Build the 64-bit chunk the LOAD firmware reads, from the two file words.
+  // smw_payload.hex stores word w0=0xB0B1B2B3 (file bytes b0..b3, b0=MSB) and
+  // w1=0xB4B5B6B7.  The controller stages file bytes little-endian (b0 in
+  // [7:0]) so ss_dout = {b7..b0}.  Thus want = {bswap(w1), bswap(w0)}.
+  function automatic [63:0] bswap_chunk(input [31:0] w0, input [31:0] w1);
+    bswap_chunk = {bswap(w1), bswap(w0)};
   endfunction
 
   // Expected 16-bit SDRAM word for global staged word index k.
@@ -262,10 +274,10 @@ module tb_ss_staging #(
       .savestate_start_err_s(),
 
       .ss_save(),
-      .ss_load(),
+      .ss_load(ss_load_w),
 
       .ss_din(fw_ss_din),
-      .ss_dout(),
+      .ss_dout(ss_dout_w),
       .ss_addr(fw_ss_addr),
       .ss_rnw(fw_ss_rnw),
       .ss_req(fw_ss_req),
@@ -592,6 +604,24 @@ module tb_ss_staging #(
     while (ss_ack_w === ack_prev) @(posedge clk_sys);
   endtask
 
+  // Model the LOAD firmware reading one chunk back: present chunk index with
+  // ss_rnw=1, toggle ss_req, wait for ss_ack, capture ss_dout.  This exactly
+  // matches the verified firmware behaviour (ss_addr = 0,1,2,... monotonic,
+  // no region resets; chunk k = save-stream bytes [8k..8k+7]).
+  task automatic fw_load_chunk(input [16:0] idx, output [63:0] data);
+    logic ack_prev;
+    @(posedge clk_sys);
+    ack_prev   = ss_ack_w;
+    fw_ss_addr <= idx;
+    fw_ss_rnw  <= 1'b1;
+    fw_ss_req  <= ~fw_ss_req;
+    @(posedge clk_sys);
+    while (ss_ack_w === ack_prev) @(posedge clk_sys);
+    // ss_dout is registered in SYS_SERVE_ACK on the same edge ss_ack toggles.
+    @(posedge clk_sys);
+    data = ss_dout_w;
+  endtask
+
   // APF reads one 32-bit word from the slot (showahead=ON: q is the head;
   // the rising-edge pop advances afterward).  Waits for data to be available
   // first — real APF reads (~75 cyc/word) are slower than the serve produces,
@@ -623,10 +653,75 @@ module tb_ss_staging #(
     repeat (4) @(posedge clk_74a);  // gap before next read
   endtask
 
+  // Real .sta payload storage (loaded from smw_payload.hex when USE_REAL_STA=1).
+  // Each entry is one 32-bit big-endian bridge word (file bytes [4n..4n+3]).
+  logic [31:0] sta_words [0:131071];
+
   initial begin : main
     int n, k;
     int unsigned lin;
     logic [15:0] got, exp;
+
+    // =====================================================================
+    // REAL .sta ROUND-TRIP TEST (USE_REAL_STA=1): stream a real SMW savestate
+    // payload through LOAD staging into PSRAM bank 1, then model the firmware
+    // reading every chunk back and verify byte-exactness against the file.
+    // This catches any DATA-DEPENDENT drift the synthetic vpat() can't.
+    // =====================================================================
+    if (USE_REAL_STA) begin : real_sta_test
+      int c, serve_errs, nchunks;
+      logic [63:0] got64, want64;
+      $readmemh("core/tb/smw_payload.hex", sta_words);
+      nchunks = REAL_STA_CHUNKS;
+      serve_errs = 0;
+      $display("=== REAL .sta test: streaming %0d chunks (%0d KB) ===",
+               nchunks, nchunks*8/1024);
+
+      #5_000_000;  // let any mem init settle
+
+      // Stream the real payload as bridge writes (2 words per chunk).
+      for (n = 0; n < nchunks*2; n++) begin
+        bridge_write(32'h4000_0000 + 4*n, sta_words[n]);
+        repeat (BRIDGE_GAP_CYC) @(posedge clk_74a);
+        if (n == 4) savestate_load <= 1'b1;  // command arrives shortly after data starts
+      end
+      $display("[tb] real payload streamed, t=%0t", $time);
+      #20_000_000;
+      savestate_load <= 1'b0;
+
+      // Wait for staging→serve kick.
+      fork begin
+        int wd; wd=0;
+        while (ssc.sys_state !== 5'd20 && wd < 2000000) begin @(posedge clk_sys); wd++; end
+      end join
+      if (ssc.sys_state !== 5'd20) begin
+        $display("*** REAL .sta FAIL — serve never kicked (sys_state=%0d) ***", ssc.sys_state);
+        $finish;
+      end
+      $display("[tb] serve kicked; firmware reading %0d chunks back...", nchunks);
+
+      fw_ss_busy <= 1'b1;
+      for (c = 0; c < nchunks; c++) begin
+        fw_load_chunk(c[16:0], got64);
+        // Expected chunk c = file bytes [8c..8c+7].  sta_words[2c] = bytes
+        // [8c..8c+3] big-endian, sta_words[2c+1] = [8c+4..8c+7].  The firmware
+        // reads chunk as 64-bit little-endian word: byte0 in [7:0].  Build the
+        // expected the same way save_state_controller serves it.
+        want64 = bswap_chunk(sta_words[2*c], sta_words[2*c+1]);
+        if (got64 !== want64) begin
+          serve_errs++;
+          if (serve_errs <= 24)
+            $display("ERROR real chunk %0d: got %h want %h", c, got64, want64);
+        end
+      end
+      fw_ss_busy <= 1'b0;
+      $display("[tb] REAL .sta round-trip: %0d / %0d chunks wrong", serve_errs, nchunks);
+      if (serve_errs == 0)
+        $display("*** REAL .sta PASS — full payload round-trips byte-exact ***");
+      else
+        $display("*** REAL .sta FAIL — %0d chunks corrupted ***", serve_errs);
+      $finish;
+    end
 
     // =====================================================================
     // SAVE-path test (RUN_SAVE=1): stage SAVE_CHUNKS firmware chunks into
@@ -893,6 +988,52 @@ module tb_ss_staging #(
       errors++;
       $display("ERROR: load FIFO dropped %0d words (TB pacing too fast?)",
                ssc.fifo_load_drop_cnt);
+    end
+
+    // ===================================================================
+    // LOAD SERVE ROUND-TRIP CHECK (2026-06-26): model the firmware reading
+    // each chunk back via ss_req/ss_rnw=1/ss_addr and verify ss_dout matches
+    // what was staged.  This closes the §9 "drift" gap WITHOUT the SNES core:
+    // it exercises the real LOAD serve FSM (PSRAM burst read → ss_dout) end to
+    // end across the exact firmware interface.  Firmware model is the verified
+    // sequence: ss_addr = 0,1,2,...,N monotonic, chunk k = staged words [4k..4k+3].
+    begin : load_serve_roundtrip
+      int c, nchunks, serve_errs;
+      logic [63:0] got, want;
+      serve_errs = 0;
+      nchunks = NUM_BRIDGE_WORDS / 2;   // 2 bridge words = 1 chunk
+
+      // Keep the firmware "busy" so the controller stays in the serve loop,
+      // then wait for it to reach SERVE_WAIT_REQ (serve kicked after staging).
+      fw_ss_busy <= 1'b1;
+      fork
+        begin
+          int wd; wd = 0;
+          while (ssc.sys_state !== 5'd20 /*SYS_SERVE_WAIT_REQ*/ && wd < 500000) begin
+            @(posedge clk_sys); wd++;
+          end
+        end
+      join
+      if (ssc.sys_state !== 5'd20) begin
+        errors++;
+        $display("ERROR: serve never reached SERVE_WAIT_REQ (sys_state=%0d) — LOAD kick failed",
+                 ssc.sys_state);
+      end else begin
+        $display("[tb] serve kicked (SERVE_WAIT_REQ); firmware reading %0d chunks back...", nchunks);
+        for (c = 0; c < nchunks; c++) begin
+          fw_load_chunk(c[16:0], got);
+          want = {expected_word(4*c+3), expected_word(4*c+2),
+                  expected_word(4*c+1), expected_word(4*c+0)};
+          if (got !== want) begin
+            serve_errs++;
+            errors++;
+            if (serve_errs <= 16)
+              $display("ERROR: LOAD serve chunk %0d: got %h want %h", c, got, want);
+          end
+        end
+        $display("[tb] LOAD serve round-trip   : %0d / %0d chunks wrong", serve_errs, nchunks);
+      end
+      fw_ss_busy <= 1'b0;
     end
 
     $display("");

@@ -1850,23 +1850,21 @@ module core_top (
       // SAVE firmware emitted).  Full SMW save expects ss_addr_max ≈ 0x4000+
       // (GREEN≈40+, RED any).  If SAVE dies ~8KB in, expect GREEN=04 RED=02
       // (≈0x402).  YELLOW/CYAN keep the firmware-progress + completion taps.
-      // 2026-06-26 LOAD FUNNEL DIAGNOSTIC — pinpoints where LOAD restore dies.
-      // Each row is a saturating count; read after a LOAD attempt:
-      //   RED    = cnt_ss_load_pulses     (we pulsed ss_load to enter firmware)
-      //   GREEN  = cnt_serve_wait_entries (kick reached SERVE_WAIT_REQ)
-      //   YELLOW = cnt_serve_rd_entries   (firmware requested a chunk read, ss_rnw=1)
-      //   CYAN   = cnt_serve_ack_entries  (we served a chunk back to firmware)
-      // Interpretation:
-      //   RED=0          → ss_load never pulsed (staging/kick path broke)
-      //   RED>0 GREEN=0  → kicked but never entered SERVE_WAIT (shouldn't happen)
-      //   GREEN>0 YELLOW=0 → firmware never requested data (didn't enter/run, or
-      //                      vector-hijack/ss_busy never armed → firmware not executing)
-      //   YELLOW>0 CYAN=0 → firmware requested but serve never acked (PSRAM read path)
-      //   all > 0        → data flowed; restore logic / data-correctness is the issue
-      2'd0: begin row_value = dbg_first_addr_hi_video;                            row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_data_b0_video;                           row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_data_b1_video;                           row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_addr_lo_video;                           row_marker_rgb = 24'h00FFFF; end
+      // 2026-06-26 LOAD RESIDENCY-HAZARD DIAGNOSTIC.  The 512KB datapath is
+      // PROVEN byte-exact in sim, so the black screen is the live-CPU restore
+      // hazard: with no pause, the game's own NMI can re-enter during the
+      // firmware's residency and corrupt the stack-swap / rti timing.
+      //   RED   = {dbg_load_en_cnt, dbg_load_busy_cnt}  (load armed | ss_busy rose)
+      //   GREEN = {dbg_rti_arms,   dbg_vect_reentry}    (clean RTI | NMI RE-ENTRY)
+      //   YELLOW= {dbg_fw_entry,   dbg_fw_nmidis}       (reached Load_start | NMITIMEN-disable)
+      //   CYAN  = {dbg_load_vect_cnt, dbg_load_busy_cnt}
+      // KEY: GREEN low nibble (vect_reentry) > 0  → re-entrant NMI hazard FIRING.
+      //      GREEN high nibble (rti_arms)    == 0 → firmware never RTI'd (runaway).
+      //      YELLOW low nibble (fw_nmidis)   == 0 → never reached NMI-disable (died early).
+      2'd0: begin row_value = {dbg_load_en_cnt_video,  dbg_load_busy_cnt_video}; row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = {dbg_rti_arms_video,     dbg_vect_reentry_video};  row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = {dbg_fw_entry_video,     dbg_fw_nmidis_video};     row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = {dbg_load_vect_cnt_video,dbg_load_busy_cnt_video}; row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
