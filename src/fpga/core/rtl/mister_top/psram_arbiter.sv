@@ -114,33 +114,78 @@ module psram_arbiter #(
   // clk_mem cycles (the DSP holds RAM_CE_N low across all states),
   // causing the APF "Save Failed" timeout when ss_psram_arbiter could
   // never get a transaction through.
+  // ----- Lossless Port A WRITES (2026-06-26 fix) -----
+  // Port A WRITES must never be dropped: besides live SMP writes, Port A
+  // carries the savestate LOAD restore writing ARAM at DMA rate.  Under
+  // contention with Port B (the firmware simultaneously reading the staged
+  // savestate), drop-on-busy silently discarded ~95% of ARAM restore writes
+  // → corrupt APU state → black screen + no audio.  So we LATCH each Port A
+  // write request (rising edge of a_write_en) with its parameters and hold
+  // it pending until serviced — guaranteeing zero loss.
+  //
+  // Port A READS keep drop-on-busy (the live SMP/DSP tolerates dropped reads
+  // — latching a read late just yields stale data anyway, and the previous
+  // pending-read attempt broke audio).  Port B keeps its round-robin slot
+  // (its own ss_psram_arbiter retry handshake makes it lossless end-to-end).
+  reg        prev_a_write_en = 1'b0;
+  reg        aw_pending  = 1'b0;
+  reg        aw_cap_bank = 1'b0;
+  reg [21:0] aw_cap_addr = 22'd0;
+  reg [15:0] aw_cap_data = 16'd0;
+  reg        aw_cap_ub   = 1'b0;
+  reg        aw_cap_lb   = 1'b0;
+  wire a_write_edge = a_write_en & ~prev_a_write_en;
+
   reg last_served_a = 1'b0;  // 1 = A was last serviced; prefer B next
-  wire can_start = ~core_busy;
-  // If both ports want service, alternate based on who went last.
-  // If only one wants service, give it to that one.
-  wire prefer_a = a_req & (~b_req | last_served_a == 1'b0);
-  wire prefer_b = b_req & (~a_req | last_served_a == 1'b1);
-  wire start_a  = can_start &  prefer_a;
-  wire start_b  = can_start & ~prefer_a & prefer_b;
+
+  // Aggregate "wants service" per port.  Port A's write is represented by
+  // the pending latch (lossless); Port A's read + Port B stay live-level.
+  wire a_wants = aw_pending | a_read_en;
+  wire b_wants = b_req;
+
+  wire can_start = ~core_busy & ~grant_valid;
+  // Pending Port A WRITE has top priority (it cannot be dropped and must
+  // not be starved).  Otherwise round-robin between A-read and B.
+  wire start_aw = can_start & aw_pending;
+  wire prefer_a = a_read_en & (~b_wants | last_served_a == 1'b0);
+  wire prefer_b = b_wants   & (~a_read_en | last_served_a == 1'b1);
+  wire start_ar = can_start & ~aw_pending &  prefer_a;
+  wire start_b  = can_start & ~aw_pending & ~prefer_a & prefer_b;
+  wire start_a  = start_aw | start_ar;   // any Port A transaction this cycle
 
   always @(posedge clk) begin
-    if (start_a) last_served_a <= 1'b1;
+    prev_a_write_en <= a_write_en;
+    // Capture a Port A write at its request edge; hold pending until served.
+    // (Edge-detect so a sustained a_write_en across consecutive same-cycle
+    // writes still produces exactly one pending request per distinct write —
+    // the ARAM DMA pulses WE_N per byte, giving one edge per byte.)
+    if (a_write_edge) begin
+      aw_pending  <= 1'b1;
+      aw_cap_bank <= a_bank_sel;
+      aw_cap_addr <= a_addr;
+      aw_cap_data <= a_data_in;
+      aw_cap_ub   <= a_write_high_byte;
+      aw_cap_lb   <= a_write_low_byte;
+    end else if (start_aw) begin
+      aw_pending <= 1'b0;     // consumed (only clear if no new edge same cycle)
+    end
+    if (start_a)  last_served_a <= 1'b1;
     else if (start_b) last_served_a <= 1'b0;
   end
 
-  // ----- Drive psram core directly from live port signals -----
-  // The selected port's signals flow straight into the core — same
-  // semantics as the original solo psram instance.  No capture register
-  // is needed because the consumer is expected to hold its lines stable
-  // for the entire access (psram.sv samples data_in at state 3, ~35 ns
-  // after the request edge; ARAM holds the lines longer than that).
-  wire        sel_bank_sel        = start_a ? a_bank_sel        : b_bank_sel;
-  wire [21:0] sel_addr            = start_a ? a_addr            : b_addr;
-  wire [15:0] sel_data_in         = start_a ? a_data_in         : b_data_in;
-  wire        sel_write_high_byte = start_a ? a_write_high_byte : b_write_high_byte;
-  wire        sel_write_low_byte  = start_a ? a_write_low_byte  : b_write_low_byte;
-  wire        core_write_en       = (start_a & a_write_en) | (start_b & b_write_en);
-  wire        core_read_en        = (start_a & a_read_en)  | (start_b & b_read_en);
+  // ----- Drive psram core -----
+  // A pending write replays from its capture registers; an A read and a B
+  // access drive from live signals (their consumers hold lines stable for
+  // the access window, or tolerate drops).
+  wire        sel_bank_sel        = start_aw ? aw_cap_bank
+                                  : start_ar ? a_bank_sel : b_bank_sel;
+  wire [21:0] sel_addr            = start_aw ? aw_cap_addr
+                                  : start_ar ? a_addr     : b_addr;
+  wire [15:0] sel_data_in         = start_aw ? aw_cap_data : b_data_in;
+  wire        sel_write_high_byte = start_aw ? aw_cap_ub   : b_write_high_byte;
+  wire        sel_write_low_byte  = start_aw ? aw_cap_lb   : b_write_low_byte;
+  wire        core_write_en       = start_aw | (start_b & b_write_en);
+  wire        core_read_en        = (start_ar & a_read_en) | (start_b & b_read_en);
 
   // ----- Grant clocked block -----
   // Grant tracking serves two purposes:
@@ -158,7 +203,7 @@ module psram_arbiter #(
     if (start_a) begin
       grant_valid    <= 1'b1;
       grant_is_a     <= 1'b1;
-      grant_was_read <= a_read_en;
+      grant_was_read <= start_ar & a_read_en;  // a pending WRITE is never a read
       saw_busy       <= 1'b0;
     end else if (start_b) begin
       grant_valid    <= 1'b1;
