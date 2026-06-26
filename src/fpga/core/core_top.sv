@@ -1850,21 +1850,22 @@ module core_top (
       // SAVE firmware emitted).  Full SMW save expects ss_addr_max ≈ 0x4000+
       // (GREEN≈40+, RED any).  If SAVE dies ~8KB in, expect GREEN=04 RED=02
       // (≈0x402).  YELLOW/CYAN keep the firmware-progress + completion taps.
-      // 2026-06-26 LOAD RESIDENCY-HAZARD DIAGNOSTIC.  The 512KB datapath is
-      // PROVEN byte-exact in sim, so the black screen is the live-CPU restore
-      // hazard: with no pause, the game's own NMI can re-enter during the
-      // firmware's residency and corrupt the stack-swap / rti timing.
-      //   RED   = {dbg_load_en_cnt, dbg_load_busy_cnt}  (load armed | ss_busy rose)
-      //   GREEN = {dbg_rti_arms,   dbg_vect_reentry}    (clean RTI | NMI RE-ENTRY)
-      //   YELLOW= {dbg_fw_entry,   dbg_fw_nmidis}       (reached Load_start | NMITIMEN-disable)
-      //   CYAN  = {dbg_load_vect_cnt, dbg_load_busy_cnt}
-      // KEY: GREEN low nibble (vect_reentry) > 0  → re-entrant NMI hazard FIRING.
-      //      GREEN high nibble (rti_arms)    == 0 → firmware never RTI'd (runaway).
-      //      YELLOW low nibble (fw_nmidis)   == 0 → never reached NMI-disable (died early).
-      2'd0: begin row_value = {dbg_load_en_cnt_video,  dbg_load_busy_cnt_video}; row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = {dbg_rti_arms_video,     dbg_vect_reentry_video};  row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = {dbg_fw_entry_video,     dbg_fw_nmidis_video};     row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = {dbg_load_vect_cnt_video,dbg_load_busy_cnt_video}; row_marker_rgb = 24'h00FFFF; end
+      // 2026-06-26 LOAD-RESUME DIAGNOSTIC.  Firmware reads correct data + cleanly
+      // RTIs, but the game never resumes (instant black, no restore frame).  This
+      // tests WHY the game doesn't run after RTI.
+      //   RED   = NMITIMEN value the firmware wrote to $4200 during load.
+      //           **BIT 7 IS THE ANSWER**: if RED < $80 (bit7 clear), NMI stays
+      //           DISABLED → NMI-driven game main loop never resumes → black.
+      //           Expect RED ≥ $80 (e.g. $81/$A1) for a healthy resume.
+      //   GREEN = count of game-ROM/WRAM fetches AFTER the firmware RTI'd.
+      //           0 → CPU never executed game code after RTI (wedged / bad PC).
+      //           >0 → game CPU IS running (black is then display/NMI, not a wedge).
+      //   YELLOW= {dbg_rti_arms, dbg_vect_reentry}  (clean RTI | NMI re-entry; expect 1x/0)
+      //   CYAN  = {dbg_fw_entry, dbg_fw_nmidis}     (reached Load_start | NMITIMEN-disable)
+      2'd0: begin row_value = dbg_byte_at_8000_video;                            row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_byte_at_8001_video;                            row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = {dbg_rti_arms_video,  dbg_vect_reentry_video};     row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = {dbg_fw_entry_video,  dbg_fw_nmidis_video};        row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

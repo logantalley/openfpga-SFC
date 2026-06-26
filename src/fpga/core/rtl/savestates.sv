@@ -348,14 +348,25 @@ always @(posedge clk) begin
 			end
 		end
 
-		// Snoop CPU's data input continuously while at the JML opcode/operand addresses.
-		// Captures the LAST value of cpu_di while ca holds that address, which is the
-		// byte the CPU actually consumes.
-		if (ss_busy & (ca[23:0] == 24'h008000)) begin
-			dbg_byte_at_8000 <= cpu_di;
+		// 2026-06-26 LOAD-RESUME DIAGNOSTIC.
+		//   dbg_byte_at_8000 := the VALUE the firmware writes to NMITIMEN ($4200)
+		//     during a load.  Mapper_finish does `sta $4200` (asm:1069-1070) with
+		//     the restored NMITIMEN.  If bit 7 is CLEAR, NMI stays disabled and an
+		//     NMI-driven game's main loop never resumes → static/black screen.
+		//     Expect bit7 SET ($80+, e.g. $A1 / $81) for a running game.
+		//   dbg_byte_at_8001 := saturating count of game-ROM instruction fetches
+		//     AFTER rd_rti fires (the CPU returned to game code and is executing).
+		//     0 → CPU never ran game code after RTI (wedged).  >0 → game IS running
+		//     (so a black screen would then be a display/NMI issue, not a CPU wedge).
+		if (load_en & cpuwr_ce & (ca[15:0] == 16'h4200)) begin
+			dbg_byte_at_8000 <= di;          // NMITIMEN value written during load
 		end
-		if (ss_busy & (ca[23:0] == 24'h008001)) begin
-			dbg_byte_at_8001 <= cpu_di;
+		// Count game-code fetches after the firmware RTI'd (rd_rti latched, then
+		// cleared at cpurd_ce_n).  After ss_busy drops, the CPU is the game again;
+		// count its low-bank ROM/WRAM fetches as proof of life.  Use a separate
+		// sticky window: arm on rd_rti, count fetches outside firmware bank $FF.
+		if (rd_rti & cpurd_ce & (ca[23:16] != 8'hFF) & (dbg_byte_at_8001 != 8'hFF)) begin
+			dbg_byte_at_8001 <= dbg_byte_at_8001 + 8'd1;
 		end
 
 		if (cpurd_ce_n) begin
