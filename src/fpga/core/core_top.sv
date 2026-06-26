@@ -1850,15 +1850,23 @@ module core_top (
       // SAVE firmware emitted).  Full SMW save expects ss_addr_max ≈ 0x4000+
       // (GREEN≈40+, RED any).  If SAVE dies ~8KB in, expect GREEN=04 RED=02
       // (≈0x402).  YELLOW/CYAN keep the firmware-progress + completion taps.
-      // 2026-06-23 DIAGNOSTIC:
-      //   RED+GREEN = ss_addr_max  (highest chunk index firmware emitted)
-      //   YELLOW+CYAN = cnt_save_chunks (chunks actually committed to PSRAM)
-      // If RED+GREEN ≈ 0x81CF but YELLOW+CYAN ≈ 0x0402 → staging drops chunks.
-      // If YELLOW+CYAN also ≈ 0x81CF → staging is fine; bug is in serve/readback.
-      2'd0: begin row_value = dbg_max_sram_base_lo_video;                         row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_max_sram_base_hi_video;                          row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_save_wr_count_lo_video;                          row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_save_wr_count_hi_video;                          row_marker_rgb = 24'h00FFFF; end
+      // 2026-06-26 LOAD FUNNEL DIAGNOSTIC — pinpoints where LOAD restore dies.
+      // Each row is a saturating count; read after a LOAD attempt:
+      //   RED    = cnt_ss_load_pulses     (we pulsed ss_load to enter firmware)
+      //   GREEN  = cnt_serve_wait_entries (kick reached SERVE_WAIT_REQ)
+      //   YELLOW = cnt_serve_rd_entries   (firmware requested a chunk read, ss_rnw=1)
+      //   CYAN   = cnt_serve_ack_entries  (we served a chunk back to firmware)
+      // Interpretation:
+      //   RED=0          → ss_load never pulsed (staging/kick path broke)
+      //   RED>0 GREEN=0  → kicked but never entered SERVE_WAIT (shouldn't happen)
+      //   GREEN>0 YELLOW=0 → firmware never requested data (didn't enter/run, or
+      //                      vector-hijack/ss_busy never armed → firmware not executing)
+      //   YELLOW>0 CYAN=0 → firmware requested but serve never acked (PSRAM read path)
+      //   all > 0        → data flowed; restore logic / data-correctness is the issue
+      2'd0: begin row_value = dbg_first_addr_hi_video;                            row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_data_b0_video;                           row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_data_b1_video;                           row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_addr_lo_video;                           row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
