@@ -646,8 +646,7 @@ module save_state_controller #(
   //   sram_w0_lo → stage_addr_at_done[15:8]  (mid byte; for $800000 it's $00)
   //   sram_w0_hi → stage_addr_at_done[23:16] (high byte; for $800000 it's $80)
   // If high byte is NOT $80, stage_addr never got the BASE assignment!
-  assign debug_first_sram_w0_lo = stage_addr_at_done[15:8];
-  assign debug_first_sram_w0_hi = stage_addr_at_done[23:16];
+  // (debug_first_sram_w0_lo/hi reassigned below, after first_serve_chunk decl)
   // The previously-unassigned debug_first_pf_addr_lo/hi outputs were
   // dangling (default 0) — that's why v28/v29 readings of "cnt_stage_*"
   // via dbg_first_pf_addr_*_video always showed $00.  Wire them up here.
@@ -673,8 +672,7 @@ module save_state_controller #(
   // v54: first nonzero-data 0x4xxxxxxx write — low 2 bytes of bridge_addr.
   // Reveals the starting OFFSET APF uses within savestate region.
   // v55b: re-wire to deep SDRAM probes after the ~sdram_busy gate fix.
-  assign debug_first_sram_w1_lo = probe_result_2[7:0];  // 32 KB in
-  assign debug_first_sram_w1_hi = probe_result_3[7:0];  // last chunk
+  // (debug_first_sram_w1_lo/hi reassigned below, after first_serve_chunk decl)
 
   // Capture the FULL first served chunk (all 4 SDRAM words) so we can
   // verify the complete byte mapping against the known .sta payload:
@@ -682,6 +680,17 @@ module save_state_controller #(
   //   correct words: w0=$4E53 w1=$5345 w2=$532D w3=$0053
   reg [63:0] first_serve_chunk = 64'h0;
   reg        first_serve_chunk_seen = 0;
+
+  // 2026-06-29 SERVE-vs-READBACK split (override the earlier debug_first_sram_*
+  // assigns — last assign wins in Verilog).  Expose the CONTROLLER's view of
+  // the first served chunk's bytes 0..3 (want 53 4E 45 53 'SNES').  Firmware
+  // side read 00 00 45 53.  If these = 53 4E 45 53 → PSRAM read is fine and the
+  // byte0/1 loss is in the controller→savestates ss_dout/load_buf handoff.  If
+  // these = 00 00 45 53 too → the serve read itself loses the first word.
+  assign debug_first_sram_w0_lo = first_serve_chunk[7:0];     // want $53 'S'
+  assign debug_first_sram_w0_hi = first_serve_chunk[15:8];    // want $4E 'N'
+  assign debug_first_sram_w1_lo = first_serve_chunk[23:16];   // want $45 'E'
+  assign debug_first_sram_w1_hi = first_serve_chunk[31:24];   // want $53 'S'
 
   // Diagnostic: capture serve_addr's low byte at the 2nd, 5th, 16th, 64th
   // SERVE_ACK entries.  If chunks are served sequentially with stride 8
