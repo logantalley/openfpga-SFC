@@ -1850,22 +1850,20 @@ module core_top (
       // SAVE firmware emitted).  Full SMW save expects ss_addr_max ≈ 0x4000+
       // (GREEN≈40+, RED any).  If SAVE dies ~8KB in, expect GREEN=04 RED=02
       // (≈0x402).  YELLOW/CYAN keep the firmware-progress + completion taps.
-      // 2026-06-26 LOAD-RESUME DIAGNOSTIC.  Firmware reads correct data + cleanly
-      // RTIs, but the game never resumes (instant black, no restore frame).  This
-      // tests WHY the game doesn't run after RTI.
-      //   RED   = NMITIMEN value the firmware wrote to $4200 during load.
-      //           **BIT 7 IS THE ANSWER**: if RED < $80 (bit7 clear), NMI stays
-      //           DISABLED → NMI-driven game main loop never resumes → black.
-      //           Expect RED ≥ $80 (e.g. $81/$A1) for a healthy resume.
-      //   GREEN = count of game-ROM/WRAM fetches AFTER the firmware RTI'd.
-      //           0 → CPU never executed game code after RTI (wedged / bad PC).
-      //           >0 → game CPU IS running (black is then display/NMI, not a wedge).
-      //   YELLOW= {dbg_rti_arms, dbg_vect_reentry}  (clean RTI | NMI re-entry; expect 1x/0)
-      //   CYAN  = {dbg_fw_entry, dbg_fw_nmidis}     (reached Load_start | NMITIMEN-disable)
-      2'd0: begin row_value = dbg_byte_at_8000_video;                            row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_byte_at_8001_video;                            row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = {dbg_rti_arms_video,  dbg_vect_reentry_video};     row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = {dbg_fw_entry_video,  dbg_fw_nmidis_video};        row_marker_rgb = 24'h00FFFF; end
+      // 2026-06-26 LOAD HEADER CAPTURE.  The firmware reads byte-exact data in
+      // sim, NMI re-enables ($A0), CPU runs after RTI ($D0 fetches) — yet the
+      // restore is garbage.  This shows the ACTUAL first 4 bytes the firmware
+      // reads from SSDATA during a real hardware load — the "SNES" magic.
+      //   RED=byte0 (want $53 'S'), GREEN=byte1 (want $4E 'N'),
+      //   YELLOW=byte2 (want $45 'E'), CYAN=byte3 (want $53 'S').
+      // If RED/GREEN/YELLOW/CYAN = 53/4E/45/53 → read path perfect on hardware;
+      //   the garbage is on the restore-WRITE side.
+      // If they are wrong/zero → the hardware read path is broken (firmware is
+      //   restoring from wrong/unstaged data) despite the sim round-trip passing.
+      2'd0: begin row_value = dbg_load_byte0_video;                             row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_byte1_video;                             row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_byte_at_8000_video;                           row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_byte_at_8001_video;                           row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 

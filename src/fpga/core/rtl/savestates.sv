@@ -318,56 +318,28 @@ always @(posedge clk) begin
 				dbg_fw_at_8003 <= dbg_fw_at_8003 + 4'd1;
 			end
 
-			// Snapshot the first two bytes the LOAD firmware reads from SSDATA.
-			// These should be 'S' (0x53) and 'N' (0x4E) — the start of the
-			// save-state header — if the load round-trip is intact.  Only
-			// capture during a load, gated on cpurd_ce so we sample the
-			// byte that's actually consumed by the CPU.
+			// 2026-06-26 LOAD HEADER CAPTURE — the decisive read-side check.
+			// The firmware's FIRST 4 SSDATA reads during a load are the "SNES"
+			// magic written at save time.  If these come back $53 $4E $45 $53
+			// ('S','N','E','S'), the firmware is reading the SAVED state
+			// correctly on hardware (read path perfect → garbage restore is a
+			// WRITE-side / restore problem).  If they're wrong, the hardware
+			// read path differs from the proven sim round-trip.
+			//   dbg_load_byte0 = byte @ stream addr 0  (want $53 'S')
+			//   dbg_load_byte1 = byte @ stream addr 1  (want $4E 'N')
+			//   dbg_byte_at_8000 = byte @ stream addr 2 (want $45 'E')
+			//   dbg_byte_at_8001 = byte @ stream addr 3 (want $53 'S')
 			if (ss_busy & load_en & ss_data_sel) begin
-				// Capture bytes at chunk-boundary CPU reads to verify
-				// staging works past chunk 0.  Load_start preamble reads
-				// addrs 0..10 via CPU.  Addr 8 = first byte of chunk 1
-				// (= file byte 8 = $00 per .sta).  This isn't great
-				// discrimination ($00 == $00), so also grab the version
-				// string at addr 0x20 if the CPU happens to traverse it
-				// during the post-WRAM lda SSDATA's.
-				//
-				// Capture targets (verify all four = expected):
-				if (ss_data_addr == 20'd8) begin
-					dbg_load_byte0 <= ss_do;   // want $00 (chunk1 byte0)
-				end
-				if (ss_data_addr == 20'd9) begin
-					dbg_load_byte1 <= ss_do;   // want $00 (chunk1 byte1)
-				end
-				if (ss_data_addr == 20'd10) begin
-					dbg_byte_at_8000 <= ss_do; // want $00 (chunk1 byte2)
-				end
-				if (ss_data_addr == 20'd11) begin
-					dbg_byte_at_8001 <= ss_do; // want $00 (chunk1 byte3)
-				end
+				if (ss_data_addr == 20'd0) dbg_load_byte0   <= ss_do;
+				if (ss_data_addr == 20'd1) dbg_load_byte1   <= ss_do;
+				if (ss_data_addr == 20'd2) dbg_byte_at_8000 <= ss_do;
+				if (ss_data_addr == 20'd3) dbg_byte_at_8001 <= ss_do;
 			end
 		end
 
-		// 2026-06-26 LOAD-RESUME DIAGNOSTIC.
-		//   dbg_byte_at_8000 := the VALUE the firmware writes to NMITIMEN ($4200)
-		//     during a load.  Mapper_finish does `sta $4200` (asm:1069-1070) with
-		//     the restored NMITIMEN.  If bit 7 is CLEAR, NMI stays disabled and an
-		//     NMI-driven game's main loop never resumes → static/black screen.
-		//     Expect bit7 SET ($80+, e.g. $A1 / $81) for a running game.
-		//   dbg_byte_at_8001 := saturating count of game-ROM instruction fetches
-		//     AFTER rd_rti fires (the CPU returned to game code and is executing).
-		//     0 → CPU never ran game code after RTI (wedged).  >0 → game IS running
-		//     (so a black screen would then be a display/NMI issue, not a CPU wedge).
-		if (load_en & cpuwr_ce & (ca[15:0] == 16'h4200)) begin
-			dbg_byte_at_8000 <= di;          // NMITIMEN value written during load
-		end
-		// Count game-code fetches after the firmware RTI'd (rd_rti latched, then
-		// cleared at cpurd_ce_n).  After ss_busy drops, the CPU is the game again;
-		// count its low-bank ROM/WRAM fetches as proof of life.  Use a separate
-		// sticky window: arm on rd_rti, count fetches outside firmware bank $FF.
-		if (rd_rti & cpurd_ce & (ca[23:16] != 8'hFF) & (dbg_byte_at_8001 != 8'hFF)) begin
-			dbg_byte_at_8001 <= dbg_byte_at_8001 + 8'd1;
-		end
+		// (NMITIMEN-snoop diagnostic removed — confirmed NMITIMEN=$A0 on
+		// hardware, bit7 set, NMI re-enables fine.  dbg_byte_at_8000/8001 are
+		// now reused by the LOAD HEADER CAPTURE below.)
 
 		if (cpurd_ce_n) begin
 			if (rd_rti) begin
