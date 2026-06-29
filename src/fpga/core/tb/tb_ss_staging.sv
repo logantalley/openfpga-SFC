@@ -408,6 +408,7 @@ module tb_ss_staging #(
   wire [15:0] ss_psram_b_data_out;
   wire        ss_psram_b_read_avail;
   wire        ss_psram_b_busy;
+  wire        ss_psram_b_grant;
 
   ss_psram_arbiter ss_psram_arb (
       .clk_sys(clk_sys),
@@ -431,7 +432,8 @@ module tb_ss_staging #(
       .b_bank_sel       (ss_psram_b_bank_sel),
       .b_data_out       (ss_psram_b_data_out),
       .b_read_avail     (ss_psram_b_read_avail),
-      .b_busy           (ss_psram_b_busy)
+      .b_busy           (ss_psram_b_busy),
+      .b_grant          (ss_psram_b_grant)
   );
 
   // CRAM1 pin bus (single chip model).
@@ -507,6 +509,7 @@ module tb_ss_staging #(
       .b_read_avail(ss_psram_b_read_avail),
       .b_data_out(ss_psram_b_data_out),
       .b_busy(ss_psram_b_busy),
+      .b_grant(ss_psram_b_grant),
 
       .cram_a(cram1_a),
       .cram_dq(cram1_dq),
@@ -1002,6 +1005,12 @@ module tb_ss_staging #(
       logic [63:0] got, want;
       serve_errs = 0;
       nchunks = NUM_BRIDGE_WORDS / 2;   // 2 bridge words = 1 chunk
+
+      // 2026-06-26: enable Port A (live ARAM) contention DURING the serve.
+      // On hardware the SPC700 still hits ARAM (Port A) while the firmware
+      // reads the savestate (Port B).  This reproduces the "chunk-0 word-0
+      // reads zero" race seen on hardware (overlay: 00 00 45 53).
+      a_traffic_active = 1'b1;
 
       // Keep the firmware "busy" so the controller stays in the serve loop,
       // then wait for it to reach SERVE_WAIT_REQ (serve kicked after staging).

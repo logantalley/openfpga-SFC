@@ -49,6 +49,7 @@ module MAIN_SNES (
     output wire [15:0] ss_psram_b_data_out,
     output wire        ss_psram_b_read_avail,
     output wire        ss_psram_b_busy,
+    output wire        ss_psram_b_grant,
 
     output wire [3:0]  dbg_rti_arms,
     output wire [3:0]  dbg_vect_reentry,
@@ -902,6 +903,7 @@ module MAIN_SNES (
       .b_read_avail(ss_psram_b_read_avail),
       .b_data_out(ss_psram_b_data_out),
       .b_busy(ss_psram_b_busy),
+      .b_grant(ss_psram_b_grant),
 
       // Actual PSRAM interface
       .cram_a(cram1_a),

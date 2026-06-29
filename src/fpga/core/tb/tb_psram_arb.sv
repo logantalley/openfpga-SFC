@@ -52,6 +52,7 @@ module tb_psram_arb;
       .b_data_in(b_data_in), .b_write_high_byte(b_write_high_byte),
       .b_write_low_byte(b_write_low_byte), .b_read_en(b_read_en),
       .b_read_avail(b_read_avail), .b_data_out(b_data_out), .b_busy(b_busy),
+      .b_grant(),
       .cram_a(cram_a), .cram_dq(cram_dq), .cram_wait(cram_wait),
       .cram_clk(cram_clk), .cram_adv_n(cram_adv_n), .cram_cre(cram_cre),
       .cram_ce0_n(cram_ce0_n), .cram_ce1_n(cram_ce1_n), .cram_oe_n(cram_oe_n),

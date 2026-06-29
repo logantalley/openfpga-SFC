@@ -67,6 +67,14 @@ module psram_arbiter #(
     output wire        b_read_avail,
     output wire [15:0] b_data_out,
     output wire        b_busy,
+    // b_grant pulses for exactly one cycle when Port B's request is ACCEPTED
+    // (the transaction actually launches into the psram core).  The Port B
+    // consumer (ss_psram_arbiter) uses this for a deterministic handshake
+    // instead of inferring acceptance from b_busy edges — which are ambiguous
+    // under Port A contention (b_busy reads 0 while Port A is in flight) and
+    // caused the first-word-of-first-chunk read to be dropped non-determin-
+    // istically (hardware: chunk0 words 0/1 = 0x0000, words 2/3 correct).
+    output wire        b_grant,
 
     // ----- Physical PSRAM pins -----
     output wire [21:16] cram_a,
@@ -255,15 +263,20 @@ module psram_arbiter #(
   // it doesn't need the protection A does.
   assign b_read_avail = b_read_complete;
   assign b_data_out   = core_data_out;
+  assign b_grant      = start_b;   // 1-cycle pulse: Port B request accepted
 
   // ----- Per-port busy -----
-  // Each port's busy reflects whether THAT port's transaction is in
-  // flight or starting this cycle.  ss_psram_arbiter polls b_busy in
-  // SS_WR_ISSUE / SS_RD_ISSUE to gate the write_en/read_en pulse; if
-  // b_busy is high (Port B in flight), it stalls.  Doesn't include the
-  // OTHER port's transaction state.
+  // a_busy: only A's own transaction state (A tolerates contention; its
+  // consumer doesn't poll this meaningfully).
   assign a_busy = (grant_valid &  grant_is_a) | start_a;
-  assign b_busy = (grant_valid & ~grant_is_a) | start_b;
+  // b_busy (2026-06-26 fix): high whenever the core CANNOT accept a new Port B
+  // start next cycle — core busy, ANY grant in flight (A or B), a pending A
+  // write, or B starting.  The OLD `(grant_valid & ~grant_is_a) | start_b`
+  // read 0 while Port A was in flight (grant_is_a=1), so the Port B issuer's
+  // `~b_busy` gate fired during A contention and the first burst-read word was
+  // lost.  This formulation makes the issue gate truthful.  (The read FSM also
+  // now uses the explicit b_grant pulse, so it no longer depends on b_busy.)
+  assign b_busy = core_busy | grant_valid | aw_pending | start_b;
 
   // ----- Underlying psram core -----
   psram #(

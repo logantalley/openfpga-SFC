@@ -45,7 +45,8 @@ module ss_psram_arbiter (
     output wire        b_bank_sel,
     input  wire [15:0] b_data_out,
     input  wire        b_read_avail,
-    input  wire        b_busy
+    input  wire        b_busy,
+    input  wire        b_grant       // 1-cycle: our request was accepted by the core
 );
 
   // Savestate region is fixed to PSRAM bank 1.
@@ -126,30 +127,21 @@ module ss_psram_arbiter (
         end
       end
 
+      // DETERMINISTIC write handshake (2026-06-26): hold b_write_en until the
+      // arbiter ACCEPTS it (b_grant pulse), then deassert and advance.  The
+      // next word's grant cannot fire until the core is free again (the
+      // arbiter's start_b requires ~core_busy), so words serialize correctly
+      // with no reliance on b_busy edge inference.
       SS_WR_ISSUE: begin
-        // Issue word[widx] when Port B is free.  psram_arbiter accepts
-        // write_en when b_busy is 0 (its drop-on-busy gate).
-        if (~b_busy) begin
-          b_addr            <= {3'b000, burst_addr} + {20'b0, widx};
-          b_data_in         <= burst_wdata[widx*16 +: 16];
-          b_write_high_byte <= 1'b1;
-          b_write_low_byte  <= 1'b1;
-          b_write_en        <= 1'b1;
-          busy_seen         <= 1'b0;
-          ss_mem_state      <= SS_WR_WAIT;
-        end
-      end
-
-      SS_WR_WAIT: begin
-        // Hold write_en until the arbiter latches it (b_busy rises), then
-        // drop it and wait for the transaction to complete (b_busy falls).
-        if (b_busy) begin
+        b_addr            <= {3'b000, burst_addr} + {20'b0, widx};
+        b_data_in         <= burst_wdata[widx*16 +: 16];
+        b_write_high_byte <= 1'b1;
+        b_write_low_byte  <= 1'b1;
+        b_write_en        <= 1'b1;
+        if (b_grant) begin       // our write launched into the core
           b_write_en        <= 1'b0;
           b_write_high_byte <= 1'b0;
           b_write_low_byte  <= 1'b0;
-          busy_seen         <= 1'b1;
-        end
-        if (busy_seen && ~b_busy) begin
           if (widx == 2'd3) begin
             ss_mem_state <= SS_WR_DONE;
           end else begin
@@ -157,6 +149,12 @@ module ss_psram_arbiter (
             ss_mem_state <= SS_WR_ISSUE;
           end
         end
+      end
+
+      // SS_WR_WAIT retained as a no-op safety state (unused by the new
+      // b_grant-driven write path).
+      SS_WR_WAIT: begin
+        ss_mem_state <= SS_WR_ISSUE;
       end
 
       SS_WR_DONE: begin
@@ -174,24 +172,26 @@ module ss_psram_arbiter (
         end
       end
 
+      // DETERMINISTIC read handshake (2026-06-26 race fix): hold b_read_en
+      // until the arbiter ACCEPTS it (b_grant pulse).  Do NOT gate on ~b_busy
+      // — under Port A contention b_busy reads 0 while Port A is in flight, so
+      // the old gate fired b_read_en at the wrong time and the first word's
+      // capture was lost.  b_grant fires for exactly one cycle when this read
+      // actually launches into the core.
       SS_RD_ISSUE: begin
-        if (~b_busy) begin
-          b_addr       <= {3'b000, burst_addr} + {20'b0, widx};
-          b_read_en    <= 1'b1;
-          busy_seen    <= 1'b0;
+        b_addr    <= {3'b000, burst_addr} + {20'b0, widx};
+        b_read_en <= 1'b1;
+        if (b_grant) begin       // our read launched
+          b_read_en    <= 1'b0;
           ss_mem_state <= SS_RD_WAIT;
         end
       end
 
       SS_RD_WAIT: begin
-        if (b_busy) begin
-          b_read_en <= 1'b0;
-          busy_seen <= 1'b1;
-        end
-        // b_read_avail pulses (same cycle b_busy falls) with the word.
-        if (b_read_avail) burst_rdata[widx*16 +: 16] <= b_data_out;
-        if (busy_seen && ~b_busy) begin
-          if (b_read_avail) burst_rdata[widx*16 +: 16] <= b_data_out;
+        // After grant, the core drives b_read_avail for exactly one cycle when
+        // the data is valid (psram STATE_READ_DATA_RECEIVED).  Capture it then.
+        if (b_read_avail) begin
+          burst_rdata[widx*16 +: 16] <= b_data_out;
           if (widx == 2'd3) begin
             ss_mem_state <= SS_RD_DONE;
           end else begin
