@@ -207,6 +207,22 @@ reg        prev_ddr_busy_r; // For falling-edge detection
 reg        load_fetch_done_r; // load_fetch_done delayed 1 cycle (see fix note)
 reg        dbg_ddr_di_cap_seen; // one-shot: captured ddr_di at first load_buf write
 
+// 2026-06-30 ROOT-CAUSE FIX (chunk0 byte0 = 0x00).  MCLK = clk_sys & clk_sys_en
+// is a real GATED/DERIVED clock (SNES.sv), so its edges are physically skewed
+// from clk_sys by the AND-gate + global-buffer insertion delay.  The 64-bit
+// ss_dout→ddr_di bus crosses clk_sys→MCLK with NO synchronizer, so sampling it
+// on an MCLK edge can catch the bus mid-propagation: byte0 (the only low byte
+// that must transition 0→1 from ss_dout's 64'h0 reset for the 'SNES' header)
+// latches its stale reset 0 while already-settled higher bytes latch correctly
+// → deterministic byte0=0x00.  All prior "add upstream margin" fixes failed
+// because the skew is at the MCLK SAMPLE edge, not a clk_sys-cycle alignment.
+// Fix: double-register ddr_di into the MCLK domain and consume the twice-
+// registered copy.  ss_dout is held stable by the controller from
+// SYS_SERVE_RD_NEXT until the next chunk (many MCLK cycles, verified single
+// driver, never cleared between serves), so ddr_di_r2 is always past the
+// settling window of any single MCLK edge.
+reg [63:0] ddr_di_r, ddr_di_r2;
+
 wire load_fetch_done = load_en & prev_ddr_busy_r & ~ddr_busy;
 
 // Detect if NMI is being used. Some games do not use NMI during game play.
@@ -264,6 +280,8 @@ always @(posedge clk) begin
 		load_pf_ready <= 0;
 		load_pf_addr <= 0;
 		prev_ddr_busy_r <= 0;
+		ddr_di_r <= 64'h0;
+		ddr_di_r2 <= 64'h0;
 	end else begin
 		prev_ddr_busy_r <= ddr_busy;
 		// Defer the load_buf capture by one MCLK cycle so ddr_di (the
@@ -275,6 +293,12 @@ always @(posedge clk) begin
 		// harmless extra margin — ddr_di is held stable by the controller
 		// until the next request, so a late sample is always safe.
 		load_fetch_done_r <= load_fetch_done;
+
+		// Double-register the unsynchronized ddr_di bus into MCLK (see note at
+		// the ddr_di_r declaration).  ddr_di_r2 is the settled copy consumed by
+		// the load_buf capture and the ss_do read mux.
+		ddr_di_r  <= ddr_di;
+		ddr_di_r2 <= ddr_di_r;
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
@@ -417,7 +441,7 @@ always @(posedge clk) begin
 						// clear load_buf_valid so STATUS_BUSY stalls the firmware
 						// until load_fetch_done completes the swap below.
 						if (load_pf_ready) begin
-							load_buf       <= ddr_di;
+							load_buf       <= ddr_di_r2;  // settled MCLK copy (CDC fix)
 							load_buf_valid <= 1;
 							load_pf_ready  <= 0;
 							ddr_state      <= LOAD_DATA;
@@ -508,8 +532,8 @@ always @(posedge clk) begin
 		if (load_fetch_done_r) begin
 			if (~load_buf_valid) begin
 				// First chunk arrived (or byte-7 swap stalled): copy the now-
-				// settled ddr_di → load_buf, unblock the firmware, prefetch next.
-				load_buf       <= ddr_di;
+				// settled MCLK copy (ddr_di_r2) → load_buf, prefetch next.
+				load_buf       <= ddr_di_r2;  // settled MCLK copy (CDC fix)
 				load_buf_valid <= 1;
 				load_pf_ready  <= 0;
 				ddr_state      <= LOAD_DATA;
@@ -524,8 +548,8 @@ always @(posedge clk) begin
 				// controller's ss_dout holds 53 4E → the ddr_di crossing/timing
 				// is the culprit, NOT the ss_dout data-lead I already fixed.
 				if (~dbg_ddr_di_cap_seen) begin
-					dbg_load_byte0   <= ddr_di[7:0];    // want $53
-					dbg_byte_at_8000 <= ddr_di[15:8];   // want $4E
+					dbg_load_byte0   <= ddr_di_r2[7:0];    // want $53 (settled copy)
+					dbg_byte_at_8000 <= ddr_di_r2[15:8];   // want $4E (settled copy)
 					dbg_ddr_di_cap_seen <= 1'b1;
 				end
 			end else begin
@@ -657,7 +681,7 @@ always @(*) begin
 		if (load_en)
 			ss_do = load_buf[ss_data_addr[2:0]*8 +:8];
 		else
-			ss_do = ddr_di[ss_data_addr[2:0]*8 +:8];
+			ss_do = ddr_di[ss_data_addr[2:0]*8 +:8];  // (non-load path; unchanged)
 	end
 	if (ss_status_sel) begin
 		if (load_en)
