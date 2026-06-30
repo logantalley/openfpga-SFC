@@ -1487,11 +1487,24 @@ module save_state_controller #(
       SYS_SERVE_RD_NEXT: begin
         if (cnt_serve_ack_entries != 8'hFF)
           cnt_serve_ack_entries <= cnt_serve_ack_entries + 8'd1;
+        // 2026-06-30 DATA-LEAD FIX (root cause of chunk0 word0 = 0x0000):
+        // ss_dout (clk_sys) feeds savestates.sv's ddr_di with NO synchronizer
+        // across the clk_sys → MCLK (gated clk_sys) boundary.  Previously
+        // ss_dout and ss_ack were written on the SAME clk_sys edge in
+        // SYS_SERVE_ACK, giving the MCLK consumer zero data-lead margin: the
+        // load_buf <= ddr_di capture (triggered off the ack-derived busy fall)
+        // could sample ddr_di on the very edge ss_dout updated, catching the
+        // residual reset 0 in the low word of the FIRST chunk (ss_dout's prior
+        // value is 64'h0).  The PSRAM datapath was proven correct in sim, so
+        // this handoff is the real culprit.  Fix: drive ss_dout HERE, one full
+        // clk_sys cycle (≈4 MCLK cycles) BEFORE toggling ss_ack, so the 64-bit
+        // data has fully propagated/settled before the consumer's trigger
+        // arrives.  serve_buffer is stable from SYS_SERVE_RD_WAIT.
+        ss_dout   <= serve_buffer;
         sys_state <= SYS_SERVE_ACK;
       end
 
       SYS_SERVE_ACK: begin
-        ss_dout   <= serve_buffer;
         ss_ack    <= ~ss_ack;
         if (!first_serve_chunk_seen) begin
           first_serve_chunk      <= serve_buffer;
