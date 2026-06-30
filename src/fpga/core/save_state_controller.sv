@@ -701,7 +701,16 @@ module save_state_controller #(
   //   stage=53 4E, serve=00 00  → PSRAM store or serve-read drops word0.
   //   stage=00 00               → corruption is UPSTREAM (bridge/byte-swap/
   //                               FIFO) — everything I've fixed is irrelevant.
-  assign debug_first_sram_w0_lo = first_stage_word[7:0];      // STAGED  want $53 'S'
+  // 2026-06-30 SS_DOUT BYTE0 PROBE: capture ss_dout[7:0] in SYS_SERVE_ACK (one
+  // cycle AFTER ss_dout<=serve_buffer in RD_NEXT, so ss_dout holds the
+  // committed value).  Compares the CONTROLLER's actual ss_dout byte0 (what
+  // physically crosses to savestates) against first_serve_chunk byte0 (RED, =
+  // serve_buffer snapshot = 53).  If this = 53 but savestates ddr_di_r2[7:0] =
+  // 00 → loss is in the clk_sys→MCLK crossing.  If this = 00 → ss_dout itself
+  // lost byte0 (my data-lead RD_NEXT copy sampled serve_buffer too early).
+  reg [7:0] dbg_ss_dout_b0 = 8'h00;
+  reg       dbg_ss_dout_b0_seen = 0;
+  assign debug_first_sram_w0_lo = dbg_ss_dout_b0;             // ss_dout[7:0]  want $53
   assign debug_first_sram_w0_hi = first_stage_word[15:8];     // STAGED  want $4E 'N'
   assign debug_first_sram_w1_lo = first_serve_chunk[7:0];     // SERVED  want $53 'S'
   assign debug_first_sram_w1_hi = first_serve_chunk[15:8];    // SERVED  want $4E 'N'
@@ -1523,6 +1532,12 @@ module save_state_controller #(
         if (!first_serve_chunk_seen) begin
           first_serve_chunk      <= serve_buffer;
           first_serve_chunk_seen <= 1;
+        end
+        // Probe: ss_dout was committed in RD_NEXT (prev cycle); capture its
+        // byte0 here to compare against serve_buffer's byte0 (first_serve_chunk).
+        if (!dbg_ss_dout_b0_seen) begin
+          dbg_ss_dout_b0      <= ss_dout[7:0];
+          dbg_ss_dout_b0_seen <= 1;
         end
         // Now we know chunks ARE iterated sequentially.  Capture the
         // FIRST BYTE served at specific ACK indices to verify the data.

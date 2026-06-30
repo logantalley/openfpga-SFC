@@ -1887,8 +1887,16 @@ module core_top (
       // If YEL/CYA = 00 00 while RED/GRN = 53 4E → ddr_di (post-CDC, MCLK) is
       // zero for the low word at capture even though ss_dout holds 53 4E: the
       // ddr_di crossing/timing is the culprit (not the ss_dout data-lead).
+      // 2026-06-30 BYTE0 TRIANGULATION (all four are BYTE0 = bits[7:0], want 53):
+      //   RED    = first_serve_chunk[7:0]  — serve_buffer snapshot @ ACK (=53 known)
+      //   GREEN  = ss_dout[7:0]            — controller's committed ss_dout @ ACK
+      //   YELLOW = ddr_di_r2[7:0]          — savestates MCLK settled copy @ capture
+      //   CYAN   = ddr_di_r2[15:8]         — byte1 reference (=4E known)
+      // If GREEN=53 & YELLOW=00 → loss is the clk_sys→MCLK crossing (ss_dout ok).
+      // If GREEN=00 → ss_dout itself lost byte0 (data-lead RD_NEXT copy too early);
+      //   fix = move ss_dout copy back to SYS_SERVE_ACK.
       2'd0: begin row_value = dbg_first_sram_w1_lo_video;                      row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w1_hi_video;                      row_marker_rgb = 24'h00FF00; end
+      2'd1: begin row_value = dbg_first_sram_w0_lo_video;                      row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_load_byte0_video;                           row_marker_rgb = 24'hFFFF00; end
       2'd3: begin row_value = dbg_byte_at_8000_video;                         row_marker_rgb = 24'h00FFFF; end
     endcase
