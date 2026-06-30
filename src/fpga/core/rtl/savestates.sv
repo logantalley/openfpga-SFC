@@ -204,6 +204,7 @@ reg        load_buf_valid;  // load_buf contains valid data (cleared to stall)
 reg        load_pf_ready;   // Prefetch completed, ddr_di has next chunk
 reg [19:0] load_pf_addr;    // Address for next LOAD_DATA during prefetch
 reg        prev_ddr_busy_r; // For falling-edge detection
+reg        load_fetch_done_r; // load_fetch_done delayed 1 cycle (see fix note)
 
 wire load_fetch_done = load_en & prev_ddr_busy_r & ~ddr_busy;
 
@@ -263,6 +264,16 @@ always @(posedge clk) begin
 		prev_ddr_busy_r <= 0;
 	end else begin
 		prev_ddr_busy_r <= ddr_busy;
+		// 2026-06-29 FIRST-CHUNK WORD-0 FIX: load_fetch_done asserts off the
+		// COMBINATIONAL ddr_busy fall, which coincides with the controller's
+		// REGISTERED ss_dout(=ddr_di) update edge.  Sampling ddr_di on that
+		// same edge raced the wide register's settle and captured a zero low
+		// word on the FIRST chunk (ddr_di's prior value is the 64'h0 reset).
+		// Defer the capture by one MCLK cycle: ddr_di is held stable by the
+		// controller until the next request, so a one-cycle-late sample is
+		// always safe and removes the race.  (Hidden behind the firmware's
+		// STATUS_BUSY poll — no throughput cost.)
+		load_fetch_done_r <= load_fetch_done;
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
@@ -486,16 +497,16 @@ always @(posedge clk) begin
 		end
 
 		// ---- Load prefetch completion handler ----
-		// Detects ddr_busy falling edge (prev_ddr_busy_r was 1, ddr_busy is 0).
-		// This fires on the same cycle as DDR_END → DDR_IDLE.  Because this
-		// block appears AFTER the case block above, its ddr_state assignment
-		// overrides DDR_END's DDR_IDLE (last non-blocking write wins).
-		if (load_fetch_done) begin
+		// 2026-06-29 FIX: fire on load_fetch_done_r (ONE cycle after the
+		// combinational ddr_busy fall) instead of load_fetch_done.  By then the
+		// controller's registered ss_dout(=ddr_di) has fully settled, so the
+		// load_buf capture no longer races the wide-register update edge that
+		// zeroed the first chunk's low word.  ss_dout is held stable by the
+		// controller until the next request, so the 1-cycle defer is safe.
+		if (load_fetch_done_r) begin
 			if (~load_buf_valid) begin
-				// Buffer is not valid: either the first chunk just arrived, or
-				// the byte-7 swap fired before the prefetch was ready (stall
-				// path).  Either way, copy ddr_di → load_buf, unblock the
-				// firmware, and immediately prefetch the next chunk.
+				// First chunk arrived (or byte-7 swap stalled): copy the now-
+				// settled ddr_di → load_buf, unblock the firmware, prefetch next.
 				load_buf       <= ddr_di;
 				load_buf_valid <= 1;
 				load_pf_ready  <= 0;

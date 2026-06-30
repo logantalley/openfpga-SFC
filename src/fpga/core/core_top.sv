@@ -1863,18 +1863,15 @@ module core_top (
       //   the garbage is on the restore-WRITE side.
       // If they are wrong/zero → the hardware read path is broken (firmware is
       //   restoring from wrong/unstaged data) despite the sim round-trip passing.
-      // 2026-06-29 SERVE-vs-READBACK SPLIT.  Shows the CONTROLLER's view of the
-      // first served chunk's bytes 0..3 (want 53 4E 45 53 'SNES').  Compare to
-      // the firmware-side capture which read 00 00 45 53:
-      //   If these = 53 4E 45 53 → controller serves chunk0 correctly; the
-      //     byte0/1 loss is in the controller→savestates ss_dout/load_buf
-      //     handoff (first-chunk timing) → fix that.
-      //   If these = 00 00 45 53 too → the PSRAM serve READ returns a zero
-      //     first word → the bug is in the read datapath after all.
-      2'd0: begin row_value = dbg_first_sram_w0_lo_video;                       row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w0_hi_video;                       row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video;                       row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video;                       row_marker_rgb = 24'h00FFFF; end
+      // 2026-06-29 FIRST-CHUNK FIX VERIFICATION.  Firmware-side capture of the
+      // first 4 bytes it reads from SSDATA during load (want 53 4E 45 53).
+      // Previously read 00 00 45 53 (word0 zeroed by the load_fetch_done race).
+      // With the 1-cycle-deferred load_buf capture, ALL FOUR should now read
+      // 53 4E 45 53 — and the game should restore live.
+      2'd0: begin row_value = dbg_load_byte0_video;                            row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_load_byte1_video;                            row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_byte_at_8000_video;                          row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_byte_at_8001_video;                          row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
