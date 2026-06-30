@@ -687,10 +687,24 @@ module save_state_controller #(
   // side read 00 00 45 53.  If these = 53 4E 45 53 → PSRAM read is fine and the
   // byte0/1 loss is in the controller→savestates ss_dout/load_buf handoff.  If
   // these = 00 00 45 53 too → the serve read itself loses the first word.
-  assign debug_first_sram_w0_lo = first_serve_chunk[7:0];     // want $53 'S'
-  assign debug_first_sram_w0_hi = first_serve_chunk[15:8];    // want $4E 'N'
-  assign debug_first_sram_w1_lo = first_serve_chunk[23:16];   // want $45 'E'
-  assign debug_first_sram_w1_hi = first_serve_chunk[31:24];   // want $53 'S'
+  // 2026-06-30 STAGE-vs-SERVE split (the decisive upstream test).  The
+  // firmware reads chunk0 word0 as 0x0000 (bytes 'S','N' lost) while bytes
+  // 'E','S' survive.  This compares the bytes at TWO points BEFORE the
+  // controller→savestates handoff:
+  //   w0 = first_stage_word  : chunk0 word0 as written INTO PSRAM (post-FIFO
+  //                            assembly, pre-store).  want 53 4E.
+  //   w1 = first_serve_chunk : chunk0 word0 as READ BACK from PSRAM at serve.
+  //                            want 53 4E.
+  // Interpretation:
+  //   stage=53 4E, serve=53 4E  → data perfect through PSRAM; loss is in the
+  //                               ss_dout/load_buf handoff (or firmware read).
+  //   stage=53 4E, serve=00 00  → PSRAM store or serve-read drops word0.
+  //   stage=00 00               → corruption is UPSTREAM (bridge/byte-swap/
+  //                               FIFO) — everything I've fixed is irrelevant.
+  assign debug_first_sram_w0_lo = first_stage_word[7:0];      // STAGED  want $53 'S'
+  assign debug_first_sram_w0_hi = first_stage_word[15:8];     // STAGED  want $4E 'N'
+  assign debug_first_sram_w1_lo = first_serve_chunk[7:0];     // SERVED  want $53 'S'
+  assign debug_first_sram_w1_hi = first_serve_chunk[15:8];    // SERVED  want $4E 'N'
 
   // Diagnostic: capture serve_addr's low byte at the 2nd, 5th, 16th, 64th
   // SERVE_ACK entries.  If chunks are served sequentially with stride 8

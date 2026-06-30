@@ -1863,15 +1863,25 @@ module core_top (
       //   the garbage is on the restore-WRITE side.
       // If they are wrong/zero → the hardware read path is broken (firmware is
       //   restoring from wrong/unstaged data) despite the sim round-trip passing.
-      // 2026-06-29 FIRST-CHUNK FIX VERIFICATION.  Firmware-side capture of the
-      // first 4 bytes it reads from SSDATA during load (want 53 4E 45 53).
-      // Previously read 00 00 45 53 (word0 zeroed by the load_fetch_done race).
-      // With the 1-cycle-deferred load_buf capture, ALL FOUR should now read
-      // 53 4E 45 53 — and the game should restore live.
-      2'd0: begin row_value = dbg_load_byte0_video;                            row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_load_byte1_video;                            row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_byte_at_8000_video;                          row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_byte_at_8001_video;                          row_marker_rgb = 24'h00FFFF; end
+      // 2026-06-30 STAGE-vs-SERVE UPSTREAM SPLIT.  The firmware reads chunk0
+      // word0 as 00 00 (bytes 'S','N' lost), bytes 'E','S' survive.  Three
+      // fixes downstream (defer, SS_RD_HOLD, ss_dout data-lead) changed
+      // nothing → the zero is likely UPSTREAM.  These 4 rows compare the SAME
+      // bytes at two points BEFORE the handoff:
+      //   RED/GREEN  = first_stage_word[7:0]/[15:8]  — chunk0 word0 WRITTEN to
+      //                PSRAM (post-FIFO assembly).  want 53 4E.
+      //   YELLOW/CYAN= first_serve_chunk[7:0]/[15:8] — chunk0 word0 READ BACK
+      //                from PSRAM at serve.  want 53 4E.
+      // Decode:
+      //   RED/GRN=53 4E, YEL/CYA=53 4E → data perfect thru PSRAM; loss is the
+      //       ss_dout/load_buf handoff or firmware read (keep hunting there).
+      //   RED/GRN=53 4E, YEL/CYA=00 00 → PSRAM store/serve drops word0.
+      //   RED/GRN=00 00                → UPSTREAM (bridge/byte-swap/FIFO); all
+      //       the serve/handoff fixes are irrelevant.
+      2'd0: begin row_value = dbg_first_sram_w0_lo_video;                      row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_sram_w0_hi_video;                      row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_first_sram_w1_lo_video;                      row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_first_sram_w1_hi_video;                      row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
