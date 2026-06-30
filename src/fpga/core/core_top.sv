@@ -1878,10 +1878,19 @@ module core_top (
       //   RED/GRN=53 4E, YEL/CYA=00 00 → PSRAM store/serve drops word0.
       //   RED/GRN=00 00                → UPSTREAM (bridge/byte-swap/FIFO); all
       //       the serve/handoff fixes are irrelevant.
-      2'd0: begin row_value = dbg_first_sram_w0_lo_video;                      row_marker_rgb = 24'hFF0000; end
-      2'd1: begin row_value = dbg_first_sram_w0_hi_video;                      row_marker_rgb = 24'h00FF00; end
-      2'd2: begin row_value = dbg_first_sram_w1_lo_video;                      row_marker_rgb = 24'hFFFF00; end
-      2'd3: begin row_value = dbg_first_sram_w1_hi_video;                      row_marker_rgb = 24'h00FFFF; end
+      // 2026-06-30 FINAL-LINK PROBE.  Stage=53 4E and serve=53 4E confirmed on
+      // hardware, yet firmware load_buf[15:0]=00 00.  Compare the controller's
+      // SERVE output (clk_sys) against what savestates' MCLK domain actually
+      // latches into load_buf at the capture instant:
+      //   RED/GREEN  = first_serve_chunk[7:0]/[15:8]  (controller serve)  want 53 4E
+      //   YELLOW/CYAN= ddr_di[7:0]/[15:8] at load_buf<=ddr_di (savestates) want 53 4E
+      // If YEL/CYA = 00 00 while RED/GRN = 53 4E → ddr_di (post-CDC, MCLK) is
+      // zero for the low word at capture even though ss_dout holds 53 4E: the
+      // ddr_di crossing/timing is the culprit (not the ss_dout data-lead).
+      2'd0: begin row_value = dbg_first_sram_w1_lo_video;                      row_marker_rgb = 24'hFF0000; end
+      2'd1: begin row_value = dbg_first_sram_w1_hi_video;                      row_marker_rgb = 24'h00FF00; end
+      2'd2: begin row_value = dbg_load_byte0_video;                           row_marker_rgb = 24'hFFFF00; end
+      2'd3: begin row_value = dbg_byte_at_8000_video;                         row_marker_rgb = 24'h00FFFF; end
     endcase
   end
 
