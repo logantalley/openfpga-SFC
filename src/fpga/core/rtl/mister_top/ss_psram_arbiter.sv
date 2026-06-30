@@ -73,6 +73,7 @@ module ss_psram_arbiter (
   localparam SS_RD_ISSUE   = 4'd6;
   localparam SS_RD_WAIT    = 4'd7;
   localparam SS_RD_DONE    = 4'd8;
+  localparam SS_RD_HOLD    = 4'd9;   // let burst_rdata's synch_3 settle before ack
 
   reg [3:0]  ss_mem_state = SS_IDLE;
   reg        ss_psram_wr_ack_mem  = 0;
@@ -193,12 +194,30 @@ module ss_psram_arbiter (
         if (b_read_avail) begin
           burst_rdata[widx*16 +: 16] <= b_data_out;
           if (widx == 2'd3) begin
-            ss_mem_state <= SS_RD_DONE;
+            settle_cnt   <= 3'd7;        // hold data before signaling ack (CDC skew fix)
+            ss_mem_state <= SS_RD_HOLD;
           end else begin
             widx         <= widx + 2'd1;
             ss_mem_state <= SS_RD_ISSUE;
           end
         end
+      end
+
+      // 2026-06-30 MULTI-BIT CDC SKEW FIX: burst_rdata (64 bits) and the
+      // rd_ack toggle each cross clk_mem→clk_sys through INDEPENDENT synch_3
+      // chains.  Previously SS_RD_DONE toggled the ack on the same clk_mem
+      // cycle the last word landed in burst_rdata, so on clk_sys the ack edge
+      // could arrive a cycle BEFORE some data bits resolved → the controller
+      // sampled a partially-updated chunk (low word read as 0x0000 on the
+      // first chunk, whose prior burst_rdata value was the reset 0).  Holding
+      // burst_rdata stable for several clk_mem cycles BEFORE toggling the ack
+      // guarantees the data synch_3 inputs settle a full clk_sys period ahead
+      // of the ack synch_3 input, so data always wins the race on clk_sys.
+      SS_RD_HOLD: begin
+        if (settle_cnt == 3'd0)
+          ss_mem_state <= SS_RD_DONE;
+        else
+          settle_cnt <= settle_cnt - 3'd1;
       end
 
       SS_RD_DONE: begin

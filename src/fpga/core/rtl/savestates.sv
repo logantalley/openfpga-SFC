@@ -264,15 +264,14 @@ always @(posedge clk) begin
 		prev_ddr_busy_r <= 0;
 	end else begin
 		prev_ddr_busy_r <= ddr_busy;
-		// 2026-06-29 FIRST-CHUNK WORD-0 FIX: load_fetch_done asserts off the
-		// COMBINATIONAL ddr_busy fall, which coincides with the controller's
-		// REGISTERED ss_dout(=ddr_di) update edge.  Sampling ddr_di on that
-		// same edge raced the wide register's settle and captured a zero low
-		// word on the FIRST chunk (ddr_di's prior value is the 64'h0 reset).
-		// Defer the capture by one MCLK cycle: ddr_di is held stable by the
-		// controller until the next request, so a one-cycle-late sample is
-		// always safe and removes the race.  (Hidden behind the firmware's
-		// STATUS_BUSY poll — no throughput cost.)
+		// Defer the load_buf capture by one MCLK cycle so ddr_di (the
+		// controller's registered ss_dout) is sampled a cycle after the
+		// ddr_busy fall.  NOTE: the actual first-chunk word-0 zeroing was a
+		// MULTI-BIT CDC SKEW in ss_psram_arbiter (burst_rdata vs rd_ack
+		// crossed clk_mem→clk_sys on independent synch_3 chains); that is
+		// fixed there (SS_RD_HOLD).  This one-cycle defer is retained as
+		// harmless extra margin — ddr_di is held stable by the controller
+		// until the next request, so a late sample is always safe.
 		load_fetch_done_r <= load_fetch_done;
 
 		if (~(load_en | save_en)) begin
