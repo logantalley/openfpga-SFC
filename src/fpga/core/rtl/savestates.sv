@@ -220,6 +220,8 @@ reg [19:0] load_pf_addr;    // Address for next LOAD_DATA during prefetch
 reg        prev_ddr_busy_r; // For falling-edge detection
 reg        load_fetch_done_r; // load_fetch_done delayed 1 cycle (see fix note)
 reg        dbg_ddr_di_cap_seen; // one-shot: captured ddr_di at first load_buf write
+reg [7:0]  dbg_ddr_di_or_b0;    // OR of raw ddr_di[7:0]  over the whole load
+reg [7:0]  dbg_ddr_di_or_b1;    // OR of raw ddr_di[15:8] over the whole load
 
 // 2026-06-30 ROOT-CAUSE FIX (chunk0 byte0 = 0x00).  MCLK = clk_sys & clk_sys_en
 // is a real GATED/DERIVED clock (SNES.sv), so its edges are physically skewed
@@ -296,6 +298,8 @@ always @(posedge clk) begin
 		prev_ddr_busy_r <= 0;
 		ddr_di_r <= 64'h0;
 		ddr_di_r2 <= 64'h0;
+		dbg_ddr_di_or_b0 <= 8'h00;
+		dbg_ddr_di_or_b1 <= 8'h00;
 	end else begin
 		prev_ddr_busy_r <= ddr_busy;
 		// Defer the load_buf capture by one MCLK cycle so ddr_di (the
@@ -313,6 +317,23 @@ always @(posedge clk) begin
 		// the load_buf capture and the ss_do read mux.
 		ddr_di_r  <= ddr_di;
 		ddr_di_r2 <= ddr_di_r;
+
+		// 2026-07-06 DECISIVE TEST: OR-accumulate the RAW ddr_di low two bytes
+		// every MCLK cycle during load, ungated by any trigger.  Five capture-
+		// timing fixes left byte0=00; if byte0 EVER arrives nonzero at this
+		// module input, this OR-accumulator will show it.  If dbg_ddr_di_or_b0
+		// stays 00 across the entire load, byte0 physically never reaches
+		// ddr_di[7:0] here → the loss is in the port/wire path core_top.ss_dout
+		// → ddr_di[7:0], NOT any timing.  (ss_dout[7:0]=53 is proven by GREEN.)
+		if (load_en) begin
+			dbg_ddr_di_or_b0 <= dbg_ddr_di_or_b0 | ddr_di[7:0];
+			dbg_ddr_di_or_b1 <= dbg_ddr_di_or_b1 | ddr_di[15:8];
+		end
+		// Publish the OR-accumulators to the overlay outputs (YELLOW/CYAN).
+		// YELLOW = OR of every raw ddr_di[7:0]  seen during load  (want nonzero)
+		// CYAN   = OR of every raw ddr_di[15:8] seen during load
+		dbg_load_byte0   <= dbg_ddr_di_or_b0;
+		dbg_byte_at_8000 <= dbg_ddr_di_or_b1;
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
@@ -551,21 +572,6 @@ always @(posedge clk) begin
 				load_buf_valid <= 1;
 				load_pf_ready  <= 0;
 				ddr_state      <= LOAD_DATA;
-				// 2026-06-30 PROBE: capture ddr_di's low 16 bits at the EXACT
-				// instant they are written into load_buf for the FIRST chunk.
-				// Stage=53 4E and serve=53 4E (controller side, hardware-
-				// confirmed), yet firmware reads load_buf[15:0]=00 00.  If this
-				// probe shows 53 4E, the bug is AFTER this capture (impossible
-				// for a single reg write → would mean a second clobber of
-				// load_buf).  If it shows 00 00, ddr_di itself (post-CDC, MCLK
-				// domain) presents zero for the low word here while the
-				// controller's ss_dout holds 53 4E → the ddr_di crossing/timing
-				// is the culprit, NOT the ss_dout data-lead I already fixed.
-				if (~dbg_ddr_di_cap_seen) begin
-					dbg_load_byte0   <= ddr_di_r2[7:0];    // want $53 (settled copy)
-					dbg_byte_at_8000 <= ddr_di_r2[15:8];   // want $4E (settled copy)
-					dbg_ddr_di_cap_seen <= 1'b1;
-				end
 			end else begin
 				// Buffer still valid (CPU hasn't reached byte-7 yet) — just
 				// mark prefetch ready so the byte-7 handler can swap inline.
