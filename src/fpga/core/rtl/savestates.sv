@@ -337,8 +337,11 @@ always @(posedge clk) begin
 			dbg_ddr_di_or_b1 <= dbg_ddr_di_or_b1 | ddr_di[15:8];
 		end
 		// Publish the OR-accumulators to the overlay outputs (YELLOW/CYAN).
+		// 2026-07-06: YELLOW was hardwired to 8'h00 at the SNES.sv level since
+		// v60 (dbg_load_byte0 hijack leftover) — every prior YELLOW=00 reading
+		// measured that constant, not this accumulator.  Re-connected now.
 		// YELLOW = OR of every raw ddr_di[7:0]  seen during load  (want nonzero)
-		// CYAN   = OR of every raw ddr_di[15:8] seen during load
+		// CYAN   = OR of every raw ddr_di[15:8] seen during load  (control; =FF)
 		dbg_load_byte0   <= dbg_ddr_di_or_b0;
 		dbg_byte_at_8000 <= dbg_ddr_di_or_b1;
 

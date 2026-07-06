@@ -523,10 +523,11 @@ module MAIN_SNES (
       .DBG_FW_AT_8003     (dbg_fw_at_8003),
       .DBG_BYTE_AT_8000   (dbg_byte_at_8000),
       .DBG_BYTE_AT_8001   (dbg_byte_at_8001),
-      // v60: dbg_load_byte0/1 outputs are HIJACKED below to carry
-      // sdram.dbg_w2_info; main's original drivers go to dummy wires.
-      .DBG_LOAD_BYTE0     (main_dbg_load_byte0_unused),
-      .DBG_LOAD_BYTE1     (main_dbg_load_byte1_unused),
+      // 2026-07-06 RE-CONNECTED: the v60 hijack left these tied to dummy
+      // wires with the top-level outputs assigned constant 8'h00, so every
+      // YELLOW=00 reading since v60 measured a hardwired zero, not ddr_di.
+      .DBG_LOAD_BYTE0     (dbg_load_byte0),
+      .DBG_LOAD_BYTE1     (dbg_load_byte1),
       .DBG_LOAD_EN_CNT    (dbg_load_en_cnt),
       .DBG_LOAD_VECT_CNT  (dbg_load_vect_cnt),
       .DBG_LOAD_BUSY_CNT  (dbg_load_busy_cnt),
@@ -712,14 +713,10 @@ module MAIN_SNES (
   wire [15:0] sdram_dbg_real_writes;   // v60 datapath probe — now unused
   wire [15:0] sdram_dbg_w2_info;       // v60 datapath probe — now unused
   wire [15:0] ss_fw_stall_cnt;         // v68: real firmware prefetch-stall count
-  wire  [7:0] main_dbg_load_byte0_unused;
-  wire  [7:0] main_dbg_load_byte1_unused;
   // v68: route the firmware's real prefetch-stall counter to the overlay
   // (the datapath probes that hijacked these ports through v67 are retired —
   // the datapath is no longer suspect; see investigation log).
   assign dbg_load_stall_cnt = ss_fw_stall_cnt;
-  assign dbg_load_byte0     = 8'h00;
-  assign dbg_load_byte1     = 8'h00;
 
   sdram sdram (
       .init(0),  //~clock_locked),
