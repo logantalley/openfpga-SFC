@@ -180,7 +180,21 @@ reg [7:0] ddr_data;
 reg load_ready;
 reg [19:0] ss_wr_base_addr; // Chunk-aligned address latched when WRITE_DATA is armed
 
-wire ddr_busy = ddr_req != ddr_ack;
+// 2026-07-06 REAL FIX: ddr_ack (from the controller, clk_sys) crosses into
+// this MCLK domain UNSYNCHRONIZED, and it arrives on the SAME edge as the
+// ddr_di data bus (both driven by the controller together).  ddr_busy — and
+// thus load_fetch_done / load_fetch_done_r, the capture trigger — was derived
+// from the RAW ack, so the trigger could fire on the very edge ddr_di is still
+// transitioning.  Double-registering ddr_di ALONE did not help because the
+// trigger still fired early (the data regs hadn't propagated the transition
+// yet).  Synchronize ddr_ack through a 3-FF synch_3 so the trigger is delayed
+// by 3 MCLK stages — strictly MORE than the 2-stage ddr_di_r/ddr_di_r2
+// pipeline — guaranteeing ddr_di_r2 holds the fully-settled chunk (all 64
+// bits, including byte0) before load_fetch_done can assert.  This is the
+// proper matched data+control CDC the handshake needed.
+wire ddr_ack_sync;
+synch_3 sync_ddr_ack (.i(ddr_ack), .o(ddr_ack_sync), .clk(clk));
+wire ddr_busy = ddr_req != ddr_ack_sync;
 
 localparam DDR_IDLE = 4'd0, LOAD_DATA = 4'd1, WRITE_DATA = 4'd2,
 			DDR_END = 4'd6;
