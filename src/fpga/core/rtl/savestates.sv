@@ -237,7 +237,14 @@ reg [7:0]  dbg_ddr_di_or_b1;    // OR of raw ddr_di[15:8] over the whole load
 // SYS_SERVE_RD_NEXT until the next chunk (many MCLK cycles, verified single
 // driver, never cleared between serves), so ddr_di_r2 is always past the
 // settling window of any single MCLK edge.
-reg [63:0] ddr_di_r, ddr_di_r2;
+// (* preserve, noprune *): ap_core.qsf enables aggressive physical synthesis
+// (register retiming, async-signal pipelining, duplication, WYSIWYG remap) and
+// this clk_sys→MCLK crossing is UNCONSTRAINED in the SDC.  Without a
+// preservation barrier the optimizer constant-folded/retimed byte0 of this bus
+// to 0 (ss_dout has an =64'h0 initializer, its source serve_buffer does not, so
+// byte0 'S'=0x53 was treated as the reset constant) → ddr_di[7:0] dead in
+// silicon while sim passed.  Preserve these FFs so the lane survives.
+(* preserve, noprune *) reg [63:0] ddr_di_r, ddr_di_r2;
 
 wire load_fetch_done = load_en & prev_ddr_busy_r & ~ddr_busy;
 

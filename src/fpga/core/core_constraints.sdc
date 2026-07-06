@@ -49,3 +49,13 @@ set_max_delay 23 -from [get_registers { ic|snes|main|SNES|DSP|* }] \
 					  -to   [get_registers { ic|sound_i2s|* }] 
 
 set_false_path -to [get_registers { ic|snes|sdram|ds ic|snes|sdram|data[*]}]
+
+# Savestate ss_dout(clk_sys) -> ddr_di(MCLK, gated) crossing.  This 64-bit bus
+# is captured by ddr_di_r/ddr_di_r2 in savestates (instance ic|snes|main|ss).
+# It was UNCONSTRAINED, so physical synthesis (retiming/async-pipelining/WYSIWYG,
+# enabled in ap_core.qsf) constant-folded byte0 of the lane to 0 in silicon
+# (ddr_di[7:0] dead while sim passed).  Cut the async path so the optimizer
+# treats it as a true CDC boundary and leaves the lane intact.  Paired with
+# (* preserve, noprune *) on the same registers in savestates.sv.
+set_false_path -to [get_registers { ic|snes|main|ss|ddr_di_r[*] \
+												 ic|snes|main|ss|ddr_di_r2[*] }]

@@ -64,7 +64,13 @@ module save_state_controller #(
 
     // Core-side DDR-style interface (toggle-based req/ack)
     input wire [63:0] ss_din,     // Data from core (save)
-    output reg [63:0] ss_dout = 64'h0,  // Data to core (load)
+    // NOTE: no =64'h0 initializer.  ap_core.qsf's physical synthesis used that
+    // reset constant to constant-fold byte0 of the unconstrained ss_dout→ddr_di
+    // crossing to 0 in silicon (ddr_di[7:0] dead, sim passed).  ss_dout is
+    // always driven (SYS_SERVE_RD_NEXT) before it is read on load, so no
+    // initializer is needed.  See core_constraints.sdc false_path + savestates
+    // ddr_di_r (* preserve *).
+    output reg [63:0] ss_dout,          // Data to core (load)
     input wire [16:0] ss_addr,    // DDR word address from savestates.sv
     input wire ss_rnw,            // Read/not-write (0=write/save, 1=read/load)
     input wire ss_req,            // Toggle request from savestates.sv
