@@ -237,6 +237,17 @@ reg        load_done_seen;      // load_en fell via the RTI handshake
 reg        rti_load_seen;       // rd_rti fired while load_en
 reg [7:0]  final_load_addr;     // ss_data_addr[19:12] at load walk end
 
+// 8dfdb93 hardware: chk_save=4D != chk_load=B1, and the load walk's final
+// address (9A) is EXACTLY 2x the save size high byte (4D) — ss_data_addr
+// advances ~2 per byte during load DMA, so addr[2:0] never hits 7, the
+// chunk swap never fires, and the CPU reads chunk-0 bytes forever.  Count
+// the raw SSDATA strobes to identify the doubling mechanism:
+//   read strobes == save size  → strobes fine, increment double-applied
+//   read strobes == 2x         → DMA double-strobes cpurd per byte
+//   write strobes != 0         → cpuwr leaks into the load DMA (B-bus echo)
+reg [19:0] cnt_load_rd;         // cpurd_ce & ss_data_sel strobes during load
+reg [7:0]  cnt_load_wr;         // cpuwr_ce & ss_data_sel strobes during load (sat.)
+
 // 2026-06-30 ROOT-CAUSE FIX (chunk0 byte0 = 0x00).  MCLK = clk_sys & clk_sys_en
 // is a real GATED/DERIVED clock (SNES.sv), so its edges are physically skewed
 // from clk_sys by the AND-gate + global-buffer insertion delay.  The 64-bit
@@ -326,6 +337,8 @@ always @(posedge clk) begin
 		load_done_seen <= 1'b0;
 		rti_load_seen <= 1'b0;
 		final_load_addr <= 8'h00;
+		cnt_load_rd <= 20'h0;
+		cnt_load_wr <= 8'h00;
 	end else begin
 		prev_ddr_busy_r <= ddr_busy;
 		// Defer the load_buf capture by one MCLK cycle so ddr_di (the
@@ -355,19 +368,19 @@ always @(posedge clk) begin
 			dbg_ddr_di_or_b0 <= dbg_ddr_di_or_b0 | ddr_di[7:0];
 			dbg_ddr_di_or_b1 <= dbg_ddr_di_or_b1 | ddr_di[15:8];
 		end
-		// Overlay publishes (a6f0899 read 53/53: byte0 read path proven; rows
-		// repurposed to whole-stream checksums + walk completion):
-		//   RED    (dbg_load_byte0)   = chk_save  — checksum of SAVE stream
-		//   GREEN  (dbg_load_byte1)   = chk_load  — checksum of LOAD stream
-		//                               RED == GREEN → served stream byte-exact
-		//   YELLOW (dbg_byte_at_8000) = {load_done_seen, rti_load_seen, 2'b00,
-		//                                ss_data_size[19:16]}
-		//   CYAN   (dbg_byte_at_8001) = ss_data_addr[19:12] at load walk end
-		//                               (compare against save size nibble)
-		dbg_load_byte0   <= chk_save;
-		dbg_load_byte1   <= chk_load;
-		dbg_byte_at_8000 <= {load_done_seen, rti_load_seen, 2'b00, ss_data_size[19:16]};
-		dbg_byte_at_8001 <= final_load_addr;
+		// Overlay publishes (8dfdb93 read 4D/B1/C4/9A: streams differ and the
+		// load addr travel is 2x the save size — count the raw strobes):
+		//   RED    (dbg_load_byte0)   = ss_data_size[19:12]  (save end; 4D?)
+		//   GREEN  (dbg_load_byte1)   = final load ss_data_addr[19:12] (9A?)
+		//   YELLOW (dbg_byte_at_8000) = SSDATA read-strobe count[19:12] in load
+		//                               == RED → double-applied increment
+		//                               == GREEN → DMA double-strobes reads
+		//   CYAN   (dbg_byte_at_8001) = SSDATA write-strobe count in load
+		//                               (want 00; nonzero = cpuwr B-bus echo)
+		dbg_load_byte0   <= ss_data_size[19:12];
+		dbg_load_byte1   <= final_load_addr;
+		dbg_byte_at_8000 <= cnt_load_rd[19:12];
+		dbg_byte_at_8001 <= cnt_load_wr;
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
@@ -382,6 +395,8 @@ always @(posedge clk) begin
 				chk_load <= 8'h00;
 				load_done_seen <= 0;
 				rti_load_seen <= 0;
+				cnt_load_rd <= 20'h0;
+				cnt_load_wr <= 8'h00;
 			end
 		end
 
@@ -511,6 +526,11 @@ always @(posedge clk) begin
 				// address increment.  Chunk 0 excluded (header, see decl).
 				if (cpurd_ce & load_en & (ss_data_addr[19:3] != 17'd0))
 					chk_load <= {chk_load[6:0], chk_load[7]} ^ ss_do;
+				// Raw strobe census (see decl at cnt_load_rd).
+				if (cpurd_ce & load_en)
+					cnt_load_rd <= cnt_load_rd + 20'd1;
+				if (cpuwr_ce & load_en & (cnt_load_wr != 8'hFF))
+					cnt_load_wr <= cnt_load_wr + 8'd1;
 			end
 		end
 

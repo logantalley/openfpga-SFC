@@ -639,6 +639,20 @@ module tb_ss_serve #(
       errors++;
     end
 
+    // Strobe census must be exactly one read strobe per byte and zero write
+    // strobes (silicon 8dfdb93 shows ~2 addr increments per DMA byte — this
+    // pins the correct contract in sim).
+    if (u_ss.cnt_load_rd !== total_bytes) begin
+      $display("ERROR: cnt_load_rd=%0d != %0d bytes (strobe/byte ratio %f)",
+               u_ss.cnt_load_rd, total_bytes, real'(u_ss.cnt_load_rd) / total_bytes);
+      errors++;
+    end
+    if (u_ss.cnt_load_wr !== 8'd0) begin
+      $display("ERROR: cnt_load_wr=%0d != 0 (write strobes during load DMA)",
+               u_ss.cnt_load_wr);
+      errors++;
+    end
+
     $display("[tb] done: %0d byte errors, %0d prefetch stalls, chk=%h, t=%0t",
              errors, fw_stall_cnt, chk_tb, $time);
     if (fw_stall_cnt != 0 && errors == 0)

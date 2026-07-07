@@ -1887,14 +1887,12 @@ module core_top (
       // If YEL/CYA = 00 00 while RED/GRN = 53 4E → ddr_di (post-CDC, MCLK) is
       // zero for the low word at capture even though ss_dout holds 53 4E: the
       // ddr_di crossing/timing is the culprit (not the ss_dout data-lead).
-      // Whole-stream checksum + walk completion (byte0 path proven @ a6f0899):
-      //   RED    = chk_save — rolling checksum of the SAVE stream (chunk 0 excl.)
-      //   GREEN  = chk_load — same checksum over the LOAD stream
-      //            RED == GREEN → the served stream is byte- and order-exact
-      //   YELLOW = {load_done, rti_seen, 2'b00, save size[19:16]}
-      //            bit7: load walk completed via RTI   bit6: rd_rti fired in load
-      //   CYAN   = ss_data_addr[19:12] at load walk end — compare high nibble
-      //            against YELLOW[3:0] (load consumed as much as save produced)
+      // Strobe census (8dfdb93: load addr travel = 2x save size — find why):
+      //   RED    = ss_data_size[19:12]          — save walk end (expect 4D)
+      //   GREEN  = final load addr[19:12]        — load walk end (expect 9A)
+      //   YELLOW = SSDATA read-strobe cnt[19:12] — ==RED: double-applied inc;
+      //                                            ==GREEN: DMA double-strobes
+      //   CYAN   = SSDATA write-strobe cnt       — want 00; else cpuwr echo
       2'd0: begin row_value = dbg_load_byte0_video;                           row_marker_rgb = 24'hFF0000; end
       2'd1: begin row_value = dbg_load_byte1_video;                           row_marker_rgb = 24'h00FF00; end
       2'd2: begin row_value = dbg_byte_at_8000_video;                         row_marker_rgb = 24'hFFFF00; end
