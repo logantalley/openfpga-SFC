@@ -27,7 +27,7 @@ module savestates
 	input       [7:0] di,
 	output reg  [7:0] ss_do,
 
-	output     [23:0] rom_addr,
+	output reg [23:0] rom_addr,  // reg: assigned in always@(*) (ModelSim requires it)
 
 	output     [19:0] ext_addr,
 
