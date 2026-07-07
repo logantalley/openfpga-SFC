@@ -223,6 +223,20 @@ reg        dbg_ddr_di_cap_seen; // one-shot: captured ddr_di at first load_buf w
 reg [7:0]  dbg_ddr_di_or_b0;    // OR of raw ddr_di[7:0]  over the whole load
 reg [7:0]  dbg_ddr_di_or_b1;    // OR of raw ddr_di[15:8] over the whole load
 
+// Stream checksums (a6f0899 read 53/53: read path proven to the CPU's own
+// read of byte 0 — now verify the ENTIRE stream and the walk completion).
+// Position-sensitive rolling checksum, chk = rotl(chk,1) ^ byte, over every
+// byte the CPU writes to SSDATA during SAVE and reads during LOAD.  The two
+// walks traverse the same stream, so chk_save == chk_load iff the served
+// stream is byte- and order-exact (drift/underrun/skip all break equality).
+// Chunk 0 is excluded from both: the engine patches header fields there, and
+// its correctness is already proven (magic byte = $53 on hardware).
+reg [7:0]  chk_save;
+reg [7:0]  chk_load;
+reg        load_done_seen;      // load_en fell via the RTI handshake
+reg        rti_load_seen;       // rd_rti fired while load_en
+reg [7:0]  final_load_addr;     // ss_data_addr[19:12] at load walk end
+
 // 2026-06-30 ROOT-CAUSE FIX (chunk0 byte0 = 0x00).  MCLK = clk_sys & clk_sys_en
 // is a real GATED/DERIVED clock (SNES.sv), so its edges are physically skewed
 // from clk_sys by the AND-gate + global-buffer insertion delay.  The 64-bit
@@ -307,6 +321,11 @@ always @(posedge clk) begin
 		ddr_di_r2 <= 64'h0;
 		dbg_ddr_di_or_b0 <= 8'h00;
 		dbg_ddr_di_or_b1 <= 8'h00;
+		chk_save <= 8'h00;
+		chk_load <= 8'h00;
+		load_done_seen <= 1'b0;
+		rti_load_seen <= 1'b0;
+		final_load_addr <= 8'h00;
 	end else begin
 		prev_ddr_busy_r <= ddr_busy;
 		// Defer the load_buf capture by one MCLK cycle so ddr_di (the
@@ -336,28 +355,33 @@ always @(posedge clk) begin
 			dbg_ddr_di_or_b0 <= dbg_ddr_di_or_b0 | ddr_di[7:0];
 			dbg_ddr_di_or_b1 <= dbg_ddr_di_or_b1 | ddr_di[15:8];
 		end
-		// 2026-07-07 (d968110 read YELLOW=FF, CYAN=FF): ddr_di[7:0] PROVEN alive
-		// at this module's input — full traffic on both low byte lanes.  The
-		// OR-accumulators stay armed above but are no longer displayed; the
-		// overlay rows now bisect the two remaining downstream capture points
-		// (assigned at their capture sites below):
-		//   YELLOW (dbg_load_byte0)   = ddr_di_r2[7:0] at the FIRST load_buf
-		//                               capture (what load_buf byte0 gets; want $53)
-		//   CYAN   (dbg_byte_at_8000) = ss_do at the firmware's data read of
-		//                               stream addr 0 (CPU-visible byte0; want $53)
-		// Decode: 53/53 → read path good end-to-end, bug is restore-side.
-		//         00/xx → first load_buf capture is torn/stale (capture timing).
-		//         53/00 → ss_do mux or read-before-valid ordering.
+		// Overlay publishes (a6f0899 read 53/53: byte0 read path proven; rows
+		// repurposed to whole-stream checksums + walk completion):
+		//   RED    (dbg_load_byte0)   = chk_save  — checksum of SAVE stream
+		//   GREEN  (dbg_load_byte1)   = chk_load  — checksum of LOAD stream
+		//                               RED == GREEN → served stream byte-exact
+		//   YELLOW (dbg_byte_at_8000) = {load_done_seen, rti_load_seen, 2'b00,
+		//                                ss_data_size[19:16]}
+		//   CYAN   (dbg_byte_at_8001) = ss_data_addr[19:12] at load walk end
+		//                               (compare against save size nibble)
+		dbg_load_byte0   <= chk_save;
+		dbg_load_byte1   <= chk_load;
+		dbg_byte_at_8000 <= {load_done_seen, rti_load_seen, 2'b00, ss_data_size[19:16]};
+		dbg_byte_at_8001 <= final_load_addr;
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
 				save_en <= 1;
+				chk_save <= 8'h00;
 			end else if (~load_old & load) begin
 				load_en <= 1;
 				load_ready <= 1; // APF handles file validity, no header check needed
 				load_buf_valid <= 0;
 				load_pf_ready <= 0;
 				dbg_load_en_cnt <= dbg_load_en_cnt + 4'd1;
+				chk_load <= 8'h00;
+				load_done_seen <= 0;
+				rti_load_seen <= 0;
 			end
 		end
 
@@ -417,11 +441,8 @@ always @(posedge clk) begin
 			// 2026-06-30: dbg_load_byte0 / dbg_byte_at_8000 are REPURPOSED to
 			// capture ddr_di at the load_buf write instant (see prefetch
 			// handler).  Keep byte1/byte3 as the firmware-read view for context.
-			if (ss_busy & load_en & ss_data_sel) begin
-				if (ss_data_addr == 20'd0) dbg_byte_at_8000 <= ss_do;  // CYAN: CPU-visible byte0
-				if (ss_data_addr == 20'd1) dbg_load_byte1   <= ss_do;
-				if (ss_data_addr == 20'd3) dbg_byte_at_8001 <= ss_do;
-			end
+			// (byte-capture probes retired: a6f0899 proved the CPU-visible
+			// header bytes correct; dbg ports now carry the stream checksums)
 		end
 
 		// (NMITIMEN-snoop diagnostic removed — confirmed NMITIMEN=$A0 on
@@ -436,6 +457,13 @@ always @(posedge clk) begin
 				save_en    <= 0;
 				save_end   <= 0;
 				ss_in_vect <= 0;
+				if (load_en) begin
+					// Load walk completed through the RTI handshake — capture
+					// how far the stream pointer got (want save's size nibble).
+					load_done_seen  <= 1;
+					rti_load_seen   <= 1;
+					final_load_addr <= ss_data_addr[19:12];
+				end
 			end
 			// Disarm after the high-byte read cycle ends; the override has
 			// already been latched by the CPU, and any subsequent NMI must
@@ -477,6 +505,12 @@ always @(posedge clk) begin
 		if (cpuwr_ce | cpurd_ce) begin
 			if (ss_data_sel & ss_busy) begin
 				ss_data_addr_inc <= 1;
+				// LOAD stream checksum: ss_do is the byte the CPU samples on
+				// this read (combinational off ss_data_addr, still current
+				// here).  Fires once per byte, same event that arms the
+				// address increment.  Chunk 0 excluded (header, see decl).
+				if (cpurd_ce & load_en & (ss_data_addr[19:3] != 17'd0))
+					chk_load <= {chk_load[6:0], chk_load[7]} ^ ss_do;
 			end
 		end
 
@@ -532,6 +566,11 @@ always @(posedge clk) begin
 
 			ddr_do[ss_data_addr[2:0]*8 +:8] <= ddr_data;
 
+			// SAVE stream checksum: one write per byte.  Chunk 0 excluded
+			// (the engine patches header fields there; see decl).
+			if (ss_data_addr[19:3] != 17'd0)
+				chk_save <= {chk_save[6:0], chk_save[7]} ^ ddr_data;
+
 			if (ss_data_addr[2:0] == 3'd7) begin // 8 bytes written
 				ddr_state <= WRITE_DATA;
 			end
@@ -584,10 +623,6 @@ always @(posedge clk) begin
 				// First chunk arrived (or byte-7 swap stalled): copy the now-
 				// settled MCLK copy (ddr_di_r2) → load_buf, prefetch next.
 				load_buf       <= ddr_di_r2;  // settled MCLK copy (CDC fix)
-				if (~dbg_ddr_di_cap_seen) begin
-					dbg_load_byte0      <= ddr_di_r2[7:0];  // YELLOW: first load_buf byte0
-					dbg_ddr_di_cap_seen <= 1'b1;
-				end
 				load_buf_valid <= 1;
 				load_pf_ready  <= 0;
 				ddr_state      <= LOAD_DATA;
