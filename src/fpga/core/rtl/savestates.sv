@@ -336,14 +336,18 @@ always @(posedge clk) begin
 			dbg_ddr_di_or_b0 <= dbg_ddr_di_or_b0 | ddr_di[7:0];
 			dbg_ddr_di_or_b1 <= dbg_ddr_di_or_b1 | ddr_di[15:8];
 		end
-		// Publish the OR-accumulators to the overlay outputs (YELLOW/CYAN).
-		// 2026-07-06: YELLOW was hardwired to 8'h00 at the SNES.sv level since
-		// v60 (dbg_load_byte0 hijack leftover) — every prior YELLOW=00 reading
-		// measured that constant, not this accumulator.  Re-connected now.
-		// YELLOW = OR of every raw ddr_di[7:0]  seen during load  (want nonzero)
-		// CYAN   = OR of every raw ddr_di[15:8] seen during load  (control; =FF)
-		dbg_load_byte0   <= dbg_ddr_di_or_b0;
-		dbg_byte_at_8000 <= dbg_ddr_di_or_b1;
+		// 2026-07-07 (d968110 read YELLOW=FF, CYAN=FF): ddr_di[7:0] PROVEN alive
+		// at this module's input — full traffic on both low byte lanes.  The
+		// OR-accumulators stay armed above but are no longer displayed; the
+		// overlay rows now bisect the two remaining downstream capture points
+		// (assigned at their capture sites below):
+		//   YELLOW (dbg_load_byte0)   = ddr_di_r2[7:0] at the FIRST load_buf
+		//                               capture (what load_buf byte0 gets; want $53)
+		//   CYAN   (dbg_byte_at_8000) = ss_do at the firmware's data read of
+		//                               stream addr 0 (CPU-visible byte0; want $53)
+		// Decode: 53/53 → read path good end-to-end, bug is restore-side.
+		//         00/xx → first load_buf capture is torn/stale (capture timing).
+		//         53/00 → ss_do mux or read-before-valid ordering.
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
@@ -414,6 +418,7 @@ always @(posedge clk) begin
 			// capture ddr_di at the load_buf write instant (see prefetch
 			// handler).  Keep byte1/byte3 as the firmware-read view for context.
 			if (ss_busy & load_en & ss_data_sel) begin
+				if (ss_data_addr == 20'd0) dbg_byte_at_8000 <= ss_do;  // CYAN: CPU-visible byte0
 				if (ss_data_addr == 20'd1) dbg_load_byte1   <= ss_do;
 				if (ss_data_addr == 20'd3) dbg_byte_at_8001 <= ss_do;
 			end
@@ -579,6 +584,10 @@ always @(posedge clk) begin
 				// First chunk arrived (or byte-7 swap stalled): copy the now-
 				// settled MCLK copy (ddr_di_r2) → load_buf, prefetch next.
 				load_buf       <= ddr_di_r2;  // settled MCLK copy (CDC fix)
+				if (~dbg_ddr_di_cap_seen) begin
+					dbg_load_byte0      <= ddr_di_r2[7:0];  // YELLOW: first load_buf byte0
+					dbg_ddr_di_cap_seen <= 1'b1;
+				end
 				load_buf_valid <= 1;
 				load_pf_ready  <= 0;
 				ddr_state      <= LOAD_DATA;
