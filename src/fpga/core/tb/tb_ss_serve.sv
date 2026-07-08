@@ -30,7 +30,11 @@ module tb_ss_serve #(
     parameter int BRIDGE_GAP_CYC  = 60,     // clk_74a cycles between bridge words
     parameter int CLKMEM_PHASE_PS = 3777,   // clk_mem initial phase offset
     parameter int STA_CHUNKS      = 512,    // # 64-bit chunks to round-trip (4 KB)
-    parameter int ARAM_TRAFFIC    = 1       // Port A (ARAM) traffic during serve
+    parameter int ARAM_TRAFFIC    = 1,      // Port A (ARAM) traffic during serve
+    parameter int SPURIOUS_RD     = 0       // emit a 2nd read strobe per bus cycle
+                                            // (models silicon 68ab774: ~2.3 strobes
+                                            // per consumed byte; the bus-cycle gate
+                                            // must absorb it byte-exactly)
 );
   // Clock periods (ps).  clk_mem deliberately not an exact multiple of
   // clk_sys and phase-offset, so CDC alignment sweeps (same as staging TB).
@@ -379,10 +383,14 @@ module tb_ss_serve #(
 
   // Free-running SNES bus-phase CEs: one bus cycle = 8 MCLK (≈2.68 MHz,
   // the DMA byte rate).  sysclkr early in the cycle, sysclkf late.
-  reg [2:0] bus_phase = 3'd0;
-  always @(posedge mclk) bus_phase <= bus_phase + 3'd1;
-  wire sysclkr_ce = (bus_phase == 3'd1);
-  wire sysclkf_ce = (bus_phase == 3'd5);
+  // SPURIOUS_RD stretches the cycle to 16 MCLK so two read strobes fit
+  // cleanly inside one sysclkf window.
+  localparam [3:0] BUS_LAST  = SPURIOUS_RD ? 4'd15 : 4'd7;
+  localparam [3:0] CLKF_AT   = SPURIOUS_RD ? 4'd13 : 4'd5;
+  reg [3:0] bus_phase = 4'd0;
+  always @(posedge mclk) bus_phase <= (bus_phase == BUS_LAST) ? 4'd0 : bus_phase + 4'd1;
+  wire sysclkr_ce = (bus_phase == 4'd1);
+  wire sysclkf_ce = (bus_phase == CLKF_AT);
 
   wire [7:0]  ss_do_w;
   wire        ss_do_ovr_w;
@@ -482,15 +490,33 @@ module tb_ss_serve #(
   // CPU bus model — one bus cycle per task call = 8 MCLK = DMA byte pace
   // -------------------------------------------------------------------
   task automatic cpu_read(input [23:0] addr, output [7:0] data);
-    @(posedge mclk); ca <= addr;
-    @(posedge mclk); cpurd_n <= 1'b0;   // cpurd_ce fires next MCLK
-    @(posedge mclk);
-    @(posedge mclk);
-    @(posedge mclk); #1 data = ss_do_w; // sample late in the low window
-    cpurd_n <= 1'b1;                    // cpurd_ce_n fires next MCLK
-    @(posedge mclk);
-    @(posedge mclk);
-    @(posedge mclk);
+    if (SPURIOUS_RD) begin
+      // Align to the bus cycle so both strobes land in ONE sysclkf window
+      // (that is the silicon pattern the gate is designed for).
+      @(posedge mclk);
+      while (bus_phase != 4'd0) @(posedge mclk);
+      ca <= addr;
+      @(posedge mclk);                     // 1
+      @(posedge mclk); cpurd_n <= 1'b0;    // low 2..4
+      @(posedge mclk);
+      @(posedge mclk); #1 data = ss_do_w;  // sample at 4 (first strobe = real)
+      cpurd_n <= 1'b1;                     // high at 5
+      @(posedge mclk);
+      @(posedge mclk); cpurd_n <= 1'b0;    // spurious repeat, low 7..8
+      @(posedge mclk);
+      @(posedge mclk); cpurd_n <= 1'b1;    // high at 9, well before CLKF at 13
+      @(posedge mclk);
+    end else begin
+      @(posedge mclk); ca <= addr;
+      @(posedge mclk); cpurd_n <= 1'b0;   // cpurd_ce fires next MCLK
+      @(posedge mclk);
+      @(posedge mclk);
+      @(posedge mclk); #1 data = ss_do_w; // sample late in the low window
+      cpurd_n <= 1'b1;                    // cpurd_ce_n fires next MCLK
+      @(posedge mclk);
+      @(posedge mclk);
+      @(posedge mclk);
+    end
   endtask
 
   task automatic cpu_write(input [23:0] addr, input [7:0] data);
@@ -639,12 +665,13 @@ module tb_ss_serve #(
       errors++;
     end
 
-    // Strobe census must be exactly one read strobe per byte and zero write
-    // strobes (silicon 8dfdb93 shows ~2 addr increments per DMA byte — this
-    // pins the correct contract in sim).
-    if (u_ss.cnt_load_rd !== total_bytes) begin
-      $display("ERROR: cnt_load_rd=%0d != %0d bytes (strobe/byte ratio %f)",
-               u_ss.cnt_load_rd, total_bytes, real'(u_ss.cnt_load_rd) / total_bytes);
+    // Strobe census: raw strobes stay counted ungated (SPURIOUS_RD doubles
+    // them); the byte-exact compare above proves the bus-cycle gate advanced
+    // the stream exactly once per byte regardless.
+    if (u_ss.cnt_load_rd !== total_bytes * (SPURIOUS_RD ? 2 : 1)) begin
+      $display("ERROR: cnt_load_rd=%0d != %0d (strobe/byte ratio %f)",
+               u_ss.cnt_load_rd, total_bytes * (SPURIOUS_RD ? 2 : 1),
+               real'(u_ss.cnt_load_rd) / total_bytes);
       errors++;
     end
     if (u_ss.cnt_load_wr !== 8'd0) begin

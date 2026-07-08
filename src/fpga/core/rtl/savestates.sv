@@ -248,6 +248,14 @@ reg [7:0]  final_load_addr;     // ss_data_addr[19:12] at load walk end
 reg [19:0] cnt_load_rd;         // cpurd_ce & ss_data_sel strobes during load
 reg [7:0]  cnt_load_wr;         // cpuwr_ce & ss_data_sel strobes during load (sat.)
 
+// 68ab774 census: read-strobe count == address travel == ~2.3x the byte
+// count, zero write strobes, ratio varies run to run.  The CPU (CPU.vhd
+// drives CPURD_N combinationally from DMA_A_RD gated by EN/DMA_RUN) emits
+// repeated read strobes for a single byte consumption.  Contract: the SNES
+// delivers at most ONE SSDATA byte per bus cycle (sysclkf_ce delimited), so
+// only the FIRST read strobe in each bus-cycle window advances the stream.
+reg        ss_rd_cycle_taken;   // a data read already advanced this bus cycle
+
 // 2026-06-30 ROOT-CAUSE FIX (chunk0 byte0 = 0x00).  MCLK = clk_sys & clk_sys_en
 // is a real GATED/DERIVED clock (SNES.sv), so its edges are physically skewed
 // from clk_sys by the AND-gate + global-buffer insertion delay.  The 64-bit
@@ -339,7 +347,11 @@ always @(posedge clk) begin
 		final_load_addr <= 8'h00;
 		cnt_load_rd <= 20'h0;
 		cnt_load_wr <= 8'h00;
+		ss_rd_cycle_taken <= 1'b0;
 	end else begin
+		// New bus cycle → a fresh data byte may be consumed.  (Ordering: a
+		// read strobe in the same MCLK cycle re-asserts the flag below.)
+		if (sysclkf_ce) ss_rd_cycle_taken <= 0;
 		prev_ddr_busy_r <= ddr_busy;
 		// Defer the load_buf capture by one MCLK cycle so ddr_di (the
 		// controller's registered ss_dout) is sampled a cycle after the
@@ -368,19 +380,19 @@ always @(posedge clk) begin
 			dbg_ddr_di_or_b0 <= dbg_ddr_di_or_b0 | ddr_di[7:0];
 			dbg_ddr_di_or_b1 <= dbg_ddr_di_or_b1 | ddr_di[15:8];
 		end
-		// Overlay publishes (8dfdb93 read 4D/B1/C4/9A: streams differ and the
-		// load addr travel is 2x the save size — count the raw strobes):
-		//   RED    (dbg_load_byte0)   = ss_data_size[19:12]  (save end; 4D?)
-		//   GREEN  (dbg_load_byte1)   = final load ss_data_addr[19:12] (9A?)
-		//   YELLOW (dbg_byte_at_8000) = SSDATA read-strobe count[19:12] in load
-		//                               == RED → double-applied increment
-		//                               == GREEN → DMA double-strobes reads
-		//   CYAN   (dbg_byte_at_8001) = SSDATA write-strobe count in load
-		//                               (want 00; nonzero = cpuwr B-bus echo)
+		// Overlay publishes (68ab774 read 40/95/95/00: strobes == addr travel,
+		// spurious repeat strobes are real — bus-cycle gate applied):
+		//   RED    (dbg_load_byte0)   = ss_data_size[19:12]  (save end; 40)
+		//   GREEN  (dbg_load_byte1)   = final load ss_data_addr[19:12]
+		//                               == RED → gate fixed the stream advance
+		//   YELLOW (dbg_byte_at_8000) = raw read-strobe count[19:12]
+		//                               (expect still ~95: strobes remain, ignored)
+		//   CYAN   (dbg_byte_at_8001) = chk_save ^ chk_load
+		//                               00 → served stream byte- and order-exact
 		dbg_load_byte0   <= ss_data_size[19:12];
 		dbg_load_byte1   <= final_load_addr;
 		dbg_byte_at_8000 <= cnt_load_rd[19:12];
-		dbg_byte_at_8001 <= cnt_load_wr;
+		dbg_byte_at_8001 <= chk_save ^ chk_load;
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
@@ -519,18 +531,23 @@ always @(posedge clk) begin
 
 		if (cpuwr_ce | cpurd_ce) begin
 			if (ss_data_sel & ss_busy) begin
-				ss_data_addr_inc <= 1;
-				// LOAD stream checksum: ss_do is the byte the CPU samples on
-				// this read (combinational off ss_data_addr, still current
-				// here).  Fires once per byte, same event that arms the
-				// address increment.  Chunk 0 excluded (header, see decl).
-				if (cpurd_ce & load_en & (ss_data_addr[19:3] != 17'd0))
-					chk_load <= {chk_load[6:0], chk_load[7]} ^ ss_do;
-				// Raw strobe census (see decl at cnt_load_rd).
+				// Raw strobe census stays UNGATED (YELLOW diagnostic).
 				if (cpurd_ce & load_en)
 					cnt_load_rd <= cnt_load_rd + 20'd1;
 				if (cpuwr_ce & load_en & (cnt_load_wr != 8'hFF))
 					cnt_load_wr <= cnt_load_wr + 8'd1;
+				// Stream advance: writes always; reads only on the FIRST
+				// strobe of each bus cycle (see ss_rd_cycle_taken decl —
+				// silicon emits ~2.3 read strobes per consumed byte).
+				if (cpuwr_ce | (cpurd_ce & ~ss_rd_cycle_taken)) begin
+					ss_data_addr_inc <= 1;
+					if (cpurd_ce) ss_rd_cycle_taken <= 1;
+					// LOAD stream checksum: ss_do is the byte the CPU samples
+					// on this read (combinational off ss_data_addr, still
+					// current here).  Chunk 0 excluded (header, see decl).
+					if (cpurd_ce & load_en & (ss_data_addr[19:3] != 17'd0))
+						chk_load <= {chk_load[6:0], chk_load[7]} ^ ss_do;
+				end
 			end
 		end
 
