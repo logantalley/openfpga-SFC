@@ -262,9 +262,15 @@ reg        ss_rd_cycle_taken;   // a data read already advanced this bus cycle
 // survived).  Freeze walk #1's results at its RTI so the restart noise
 // can't overwrite them, and expose the walk census.
 reg        walk1_seen;          // first load walk completed (one-shot)
-reg [7:0]  walk1_addr;          // ss_data_addr[19:12] at walk #1 RTI
+reg [19:0] walk1_addr;          // ss_data_addr at walk #1 RTI (death coords)
 reg [7:0]  walk1_cnt_rd;        // cnt_load_rd[19:12] at walk #1 RTI
 reg [7:0]  walk1_chk;           // chk_load at walk #1 RTI
+// 9752033: RED=11 (ONE walk, no restart this run) but GREEN=YELLOW=00 with
+// walk1_chk nonzero → walk #1 died via RTI within the first 4 KB, past the
+// header.  Capture WHERE: the full stream address at death, and the bank
+// byte of the fetch that armed rd_rti ($C0 = firmware flow reached $8008;
+// anything else = spurious ca match on a repeated strobe).
+reg [7:0]  walk1_rti_bank;      // ca[23:16] at the rd_rti arm of walk #1
 
 // 2026-06-30 ROOT-CAUSE FIX (chunk0 byte0 = 0x00).  MCLK = clk_sys & clk_sys_en
 // is a real GATED/DERIVED clock (SNES.sv), so its edges are physically skewed
@@ -359,9 +365,10 @@ always @(posedge clk) begin
 		cnt_load_wr <= 8'h00;
 		ss_rd_cycle_taken <= 1'b0;
 		walk1_seen <= 1'b0;
-		walk1_addr <= 8'h00;
+		walk1_addr <= 20'h0;
 		walk1_cnt_rd <= 8'h00;
 		walk1_chk <= 8'h00;
+		walk1_rti_bank <= 8'h00;
 	end else begin
 		// New bus cycle → a fresh data byte may be consumed.  (Ordering: a
 		// read strobe in the same MCLK cycle re-asserts the flag below.)
@@ -394,22 +401,21 @@ always @(posedge clk) begin
 			dbg_ddr_di_or_b0 <= dbg_ddr_di_or_b0 | ddr_di[7:0];
 			dbg_ddr_di_or_b1 <= dbg_ddr_di_or_b1 | ddr_di[15:8];
 		end
-		// Overlay publishes (012d29a: counters visibly reset at load end →
-		// the walk RESTARTS; isolate walk #1 and count the walks):
-		//   RED    (dbg_load_byte0)   = {load_en rises, ss_busy rises} — walk
-		//                               census; want 11, anything higher =
-		//                               restart storm (who re-pulses ss_load?)
-		//   GREEN  (dbg_load_byte1)   = walk #1 end addr[19:12] (want 40)
-		//   YELLOW (dbg_byte_at_8000) = walk #1 raw strobe count[19:12]
-		//                               (~2.3x expected: repeats still there,
-		//                               now ignored by the bus-cycle gate)
-		//   CYAN   (dbg_byte_at_8001) = chk_save ^ walk #1 chk_load
-		//                               00 → walk #1 consumed the exact save
-		//                               stream: the gate fix is VERIFIED
-		dbg_load_byte0   <= {dbg_load_en_cnt, dbg_load_busy_cnt};
-		dbg_load_byte1   <= walk1_addr;
-		dbg_byte_at_8000 <= walk1_cnt_rd;
-		dbg_byte_at_8001 <= chk_save ^ walk1_chk;
+		// Overlay publishes (9752033: ONE walk, died <4 KB in, past the header
+		// — pinpoint the death):
+		//   RED    (dbg_load_byte0)   = {dbg_rti_arms, dbg_vect_reentry}
+		//                               want 10: one RTI arm, no vector re-entry
+		//   GREEN  (dbg_load_byte1)   = walk #1 death addr[15:8]
+		//   YELLOW (dbg_byte_at_8000) = walk #1 death addr[7:0]
+		//                               (008=after header, 00B=after stack,
+		//                                further = inside the WRAM DMA)
+		//   CYAN   (dbg_byte_at_8001) = ca bank byte at the rd_rti arm
+		//                               C0 = firmware flow reached $8008;
+		//                               else = spurious address match
+		dbg_load_byte0   <= {dbg_rti_arms, dbg_vect_reentry};
+		dbg_load_byte1   <= walk1_addr[15:8];
+		dbg_byte_at_8000 <= walk1_addr[7:0];
+		dbg_byte_at_8001 <= walk1_rti_bank;
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
@@ -453,6 +459,8 @@ always @(posedge clk) begin
 			if (ss_busy & rti_sel & ~rd_rti) begin
 				rd_rti <= 1;
 				dbg_rti_arms <= dbg_rti_arms + 4'd1;
+				if (load_en & ~walk1_seen)
+					walk1_rti_bank <= ca[23:16];
 			end
 
 			// Debug: count when CPU fetches at firmware entry points (while ss_busy=1)
@@ -510,7 +518,7 @@ always @(posedge clk) begin
 					if (~walk1_seen) begin
 						// Walk #1 verdict, immune to walk restarts.
 						walk1_seen   <= 1;
-						walk1_addr   <= ss_data_addr[19:12];
+						walk1_addr   <= ss_data_addr;
 						walk1_cnt_rd <= cnt_load_rd[19:12];
 						walk1_chk    <= chk_load;
 					end
