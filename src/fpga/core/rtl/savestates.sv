@@ -256,6 +256,16 @@ reg [7:0]  cnt_load_wr;         // cpuwr_ce & ss_data_sel strobes during load (s
 // only the FIRST read strobe in each bus-cycle window advances the stream.
 reg        ss_rd_cycle_taken;   // a data read already advanced this bus cycle
 
+// 012d29a hardware: YELLOW live-counted then RESET to 00, GREEN=00, CYAN
+// small+varying → the load walk runs MORE THAN ONCE (each load_en rise
+// resets the counters; a console reset is excluded because chk_save
+// survived).  Freeze walk #1's results at its RTI so the restart noise
+// can't overwrite them, and expose the walk census.
+reg        walk1_seen;          // first load walk completed (one-shot)
+reg [7:0]  walk1_addr;          // ss_data_addr[19:12] at walk #1 RTI
+reg [7:0]  walk1_cnt_rd;        // cnt_load_rd[19:12] at walk #1 RTI
+reg [7:0]  walk1_chk;           // chk_load at walk #1 RTI
+
 // 2026-06-30 ROOT-CAUSE FIX (chunk0 byte0 = 0x00).  MCLK = clk_sys & clk_sys_en
 // is a real GATED/DERIVED clock (SNES.sv), so its edges are physically skewed
 // from clk_sys by the AND-gate + global-buffer insertion delay.  The 64-bit
@@ -348,6 +358,10 @@ always @(posedge clk) begin
 		cnt_load_rd <= 20'h0;
 		cnt_load_wr <= 8'h00;
 		ss_rd_cycle_taken <= 1'b0;
+		walk1_seen <= 1'b0;
+		walk1_addr <= 8'h00;
+		walk1_cnt_rd <= 8'h00;
+		walk1_chk <= 8'h00;
 	end else begin
 		// New bus cycle → a fresh data byte may be consumed.  (Ordering: a
 		// read strobe in the same MCLK cycle re-asserts the flag below.)
@@ -380,19 +394,22 @@ always @(posedge clk) begin
 			dbg_ddr_di_or_b0 <= dbg_ddr_di_or_b0 | ddr_di[7:0];
 			dbg_ddr_di_or_b1 <= dbg_ddr_di_or_b1 | ddr_di[15:8];
 		end
-		// Overlay publishes (68ab774 read 40/95/95/00: strobes == addr travel,
-		// spurious repeat strobes are real — bus-cycle gate applied):
-		//   RED    (dbg_load_byte0)   = ss_data_size[19:12]  (save end; 40)
-		//   GREEN  (dbg_load_byte1)   = final load ss_data_addr[19:12]
-		//                               == RED → gate fixed the stream advance
-		//   YELLOW (dbg_byte_at_8000) = raw read-strobe count[19:12]
-		//                               (expect still ~95: strobes remain, ignored)
-		//   CYAN   (dbg_byte_at_8001) = chk_save ^ chk_load
-		//                               00 → served stream byte- and order-exact
-		dbg_load_byte0   <= ss_data_size[19:12];
-		dbg_load_byte1   <= final_load_addr;
-		dbg_byte_at_8000 <= cnt_load_rd[19:12];
-		dbg_byte_at_8001 <= chk_save ^ chk_load;
+		// Overlay publishes (012d29a: counters visibly reset at load end →
+		// the walk RESTARTS; isolate walk #1 and count the walks):
+		//   RED    (dbg_load_byte0)   = {load_en rises, ss_busy rises} — walk
+		//                               census; want 11, anything higher =
+		//                               restart storm (who re-pulses ss_load?)
+		//   GREEN  (dbg_load_byte1)   = walk #1 end addr[19:12] (want 40)
+		//   YELLOW (dbg_byte_at_8000) = walk #1 raw strobe count[19:12]
+		//                               (~2.3x expected: repeats still there,
+		//                               now ignored by the bus-cycle gate)
+		//   CYAN   (dbg_byte_at_8001) = chk_save ^ walk #1 chk_load
+		//                               00 → walk #1 consumed the exact save
+		//                               stream: the gate fix is VERIFIED
+		dbg_load_byte0   <= {dbg_load_en_cnt, dbg_load_busy_cnt};
+		dbg_load_byte1   <= walk1_addr;
+		dbg_byte_at_8000 <= walk1_cnt_rd;
+		dbg_byte_at_8001 <= chk_save ^ walk1_chk;
 
 		if (~(load_en | save_en)) begin
 			if (~save_old & save) begin
@@ -490,6 +507,13 @@ always @(posedge clk) begin
 					load_done_seen  <= 1;
 					rti_load_seen   <= 1;
 					final_load_addr <= ss_data_addr[19:12];
+					if (~walk1_seen) begin
+						// Walk #1 verdict, immune to walk restarts.
+						walk1_seen   <= 1;
+						walk1_addr   <= ss_data_addr[19:12];
+						walk1_cnt_rd <= cnt_load_rd[19:12];
+						walk1_chk    <= chk_load;
+					end
 				end
 			end
 			// Disarm after the high-byte read cycle ends; the override has
