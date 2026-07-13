@@ -381,14 +381,14 @@ Save_cgram:
 Save_aram:
 	lda.b #SS_ARAM
 	sta SSDATA
-	
+
 	sta SS_EXT_ADDR
-   
+
 	SetupDMA((DMA_DIR_BA | DMA_FIXED_A | DMA_MODE_0), SSDATA, SS_ARAM_DATA, 0)
-   
+
 	lda #$01
-	sta $420B 
-	
+	sta $420B
+
 Save_dsp_regs:
 	lda.b #SS_DPSREGS
 	sta SSDATA
@@ -792,14 +792,14 @@ Load_cgram:
 	
 Load_aram:
 	lda SSDATA				;// load block #
-	
+
 	sta SS_EXT_ADDR
-	
+
 	SetupDMA((DMA_DIR_AB | DMA_FIXED_A | DMA_MODE_0), SSDATA, SS_ARAM_DATA, 0)
-   
+
 	lda #$01
 	sta $420B
-	
+
 Load_dsp_regs:
 	lda SSDATA				;// load block #
 	

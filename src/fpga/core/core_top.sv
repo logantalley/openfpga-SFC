@@ -295,12 +295,7 @@ module core_top (
 
   // Phase C: on-board SRAM no longer used (save: streaming FIFO; load: SDRAM).
   // Drive the pins to safe defaults so the chip stays idle.
-  assign sram_a    = 17'h0;
-  assign sram_dq   = 16'hZZZZ;
-  assign sram_oe_n = 1'b1;
-  assign sram_we_n = 1'b1;
-  assign sram_ub_n = 1'b1;
-  assign sram_lb_n = 1'b1;
+  // sram_* pins are driven by save_state_stream (the savestate ring buffer).
 
   assign dbg_tx                  = 1'bZ;
   assign user1                   = 1'bZ;
@@ -419,8 +414,12 @@ module core_top (
   // Phase C: streaming save + SDRAM-staged load.  The actual payload with
   // ARAM enabled is ~307KB; SDRAM staging area has room for many MB so
   // declare 512KB to give APF margin without overcommitting.
-  wire [31:0] savestate_size        = 32'h80000;  // 512KB
-  wire [31:0] savestate_maxloadsize = 32'h80000;  // 512KB
+  // direct-stream: sized to the real state footprint (~0x40xxx bytes) plus
+  // margin, NOT the old 512KB padded container.  The stream flows through a
+  // 256KB SRAM ring, so bytes past the ring size wrap onto the (long since
+  // consumed) start of the stream — the declared size bounds that overwrite.
+  wire [31:0] savestate_size        = 32'h42000;  // 264KB
+  wire [31:0] savestate_maxloadsize = 32'h42000;
 
   wire savestate_start;
   wire savestate_start_ack;
@@ -520,120 +519,80 @@ module core_top (
   wire ss_save;
   wire ss_load;
 
-  // Phase B: SDRAM staging interface between save_state_controller and SNES.sv.
-  // Controller drives wr/rd req + addr/data in clk_sys; SNES.sv handles CDC
-  // into clk_mem and muxes onto the cart-ROM sdram instance.  Phase B leaves
-  // all these tied to 0 by the controller — no functional change.
-  wire        ss_sdram_wr_req;
-  wire [24:0] ss_sdram_wr_addr;
-  wire [15:0] ss_sdram_wr_data;
+  // direct-stream: the PSRAM/SDRAM staging paths are retired.  SNES.sv still
+  // exposes the staging ports for now (minimal-diff pass); tie them idle.
+  // The blob now flows through the on-board SRAM ring in save_state_stream.
+  wire        ss_sdram_wr_req  = 1'b0;
+  wire [24:0] ss_sdram_wr_addr = 25'h0;
+  wire [15:0] ss_sdram_wr_data = 16'h0;
   wire        ss_sdram_wr_ack;
-  wire        ss_sdram_rd_req;
-  wire [24:0] ss_sdram_rd_addr;
+  wire        ss_sdram_rd_req  = 1'b0;
+  wire [24:0] ss_sdram_rd_addr = 25'h0;
   wire [15:0] ss_sdram_rd_data;
   wire        ss_sdram_rd_ack;
-  wire        ss_loading;
-  wire        ss_pause_cpu;
+  wire        ss_loading   = 1'b0;
+  wire        ss_pause_cpu = 1'b0;  // console never pauses; MCLK ungated
 
-  // PSRAM staging interface — controller (clk_sys) → ss_psram_arbiter → SNES
-  // psram_arbiter Port B (clk_mem, CRAM1 bank 1).  In the Step-4 baseline
-  // build these stay idle (controller doesn't toggle), so Port B never
-  // requests and ARAM (Port A) gets the full bandwidth as before.
-  wire        ss_psram_wr_req;
-  wire [18:0] ss_psram_wr_addr;
-  wire [63:0] ss_psram_wr_data;
-  wire        ss_psram_wr_ack;
-  wire        ss_psram_rd_req;
-  wire [18:0] ss_psram_rd_addr;
-  wire [63:0] ss_psram_rd_data;
-  wire        ss_psram_rd_ack;
-
-  // clk_mem-side: ss_psram_arbiter drives Port B of psram_arbiter inside SNES.
-  wire        ss_psram_b_write_en;
-  wire        ss_psram_b_read_en;
-  wire [21:0] ss_psram_b_addr;
-  wire [15:0] ss_psram_b_data_in;
-  wire        ss_psram_b_write_high_byte;
-  wire        ss_psram_b_write_low_byte;
-  wire        ss_psram_b_bank_sel;
+  wire        ss_psram_b_write_en        = 1'b0;
+  wire        ss_psram_b_read_en         = 1'b0;
+  wire [21:0] ss_psram_b_addr            = 22'h0;
+  wire [15:0] ss_psram_b_data_in         = 16'h0;
+  wire        ss_psram_b_write_high_byte = 1'b0;
+  wire        ss_psram_b_write_low_byte  = 1'b0;
+  wire        ss_psram_b_bank_sel        = 1'b0;
   wire [15:0] ss_psram_b_data_out;
   wire        ss_psram_b_read_avail;
   wire        ss_psram_b_busy;
   wire        ss_psram_b_grant;
-
-  ss_psram_arbiter ss_psram_arb (
-      .clk_sys(clk_sys_21_48),
-      .clk_mem(clk_mem_85_9),
-
-      .ss_psram_wr_req (ss_psram_wr_req),
-      .ss_psram_wr_addr(ss_psram_wr_addr),
-      .ss_psram_wr_data(ss_psram_wr_data),
-      .ss_psram_wr_ack (ss_psram_wr_ack),
-      .ss_psram_rd_req (ss_psram_rd_req),
-      .ss_psram_rd_addr(ss_psram_rd_addr),
-      .ss_psram_rd_data(ss_psram_rd_data),
-      .ss_psram_rd_ack (ss_psram_rd_ack),
-
-      .b_write_en       (ss_psram_b_write_en),
-      .b_read_en        (ss_psram_b_read_en),
-      .b_addr           (ss_psram_b_addr),
-      .b_data_in        (ss_psram_b_data_in),
-      .b_write_high_byte(ss_psram_b_write_high_byte),
-      .b_write_low_byte (ss_psram_b_write_low_byte),
-      .b_bank_sel       (ss_psram_b_bank_sel),
-      .b_data_out       (ss_psram_b_data_out),
-      .b_read_avail     (ss_psram_b_read_avail),
-      .b_busy           (ss_psram_b_busy),
-      .b_grant          (ss_psram_b_grant)
-  );
 
   // bridge_rd_data for the savestate region (0x4xxxxxxx) is produced by
   // a data_unloader instance (see below), wired directly to bridge_rd_data
   // via the existing mux in the always_comb block at the top of this file.
   wire [31:0] save_state_bridge_read_data;
 
-  // Debug taps from save_state_controller (clk_sys domain)
-  wire [3:0] debug_sys_state;
-  wire       debug_ss_busy_seen;
-  wire       debug_ss_busy_ever;
-  wire       debug_ss_save_ever;
-  wire [3:0] debug_ss_save_count;
-  wire [3:0] debug_ss_busy_rises;
-  wire       debug_ss_req_ever;
-  wire [3:0] debug_ss_req_toggles;
-  wire       debug_core_wr_ever;
-  wire       debug_sram_wr_ack_ever;
-  wire [7:0] debug_bridge_wr_count_lo;
-  wire [7:0] debug_bridge_wr_count_hi;
-  wire [7:0] debug_first_wr_data_b0;
-  wire [7:0] debug_first_wr_data_b1;
-  wire [7:0] debug_first_wr_addr_lo;
-  wire [7:0] debug_first_wr_addr_hi;
-  wire [7:0] debug_first_save_byte0;
-  wire [7:0] debug_first_save_byte1;
-  wire [7:0] debug_first_save_addr_lo;
-  wire [7:0] debug_first_save_addr_hi;
-  wire [7:0] debug_first_pf_addr_lo;
-  wire [7:0] debug_first_pf_addr_hi;
-  wire [7:0] debug_first_sram_w0_lo;
-  wire [7:0] debug_first_sram_w0_hi;
-  wire [7:0] debug_first_sram_w1_lo;
-  wire [7:0] debug_first_sram_w1_hi;
-  wire [7:0] debug_max_sram_base_lo;
-  wire [7:0] debug_max_sram_base_hi;
-  wire [7:0] debug_save_wr_count_lo;
-  wire [7:0] debug_save_wr_count_hi;
-  wire [7:0] debug_ss_addr_overflow;
-  wire [7:0] debug_ss_addr_max_hi;
-  wire [7:0] debug_pf_at_first_rd_lo;
-  wire [7:0] debug_pf_at_first_rd_hi;
-  wire [7:0] debug_bridge_rd_count_lo;
-  wire [7:0] debug_bridge_rd_count_hi;
-  wire [7:0] debug_first_rd_addr_lo;
-  wire [7:0] debug_first_rd_addr_hi;
-  wire [7:0] debug_last_w0_data_lo;
-  wire [7:0] debug_last_w0_data_hi;
-  wire [7:0] debug_w0_wr_count;
+  // Retired controller debug taps — held at 0 so the (to-be-removed) video
+  // sync plumbing keeps compiling until the overlay cleanup pass.
+  wire [3:0] debug_sys_state = 4'h0;
+  wire       debug_ss_busy_seen = 1'b0;
+  wire       debug_ss_busy_ever = 1'b0;
+  wire       debug_ss_save_ever = 1'b0;
+  wire [3:0] debug_ss_save_count = 4'h0;
+  wire [3:0] debug_ss_busy_rises = 4'h0;
+  wire       debug_ss_req_ever = 1'b0;
+  wire [3:0] debug_ss_req_toggles = 4'h0;
+  wire       debug_core_wr_ever = 1'b0;
+  wire       debug_sram_wr_ack_ever = 1'b0;
+  wire [7:0] debug_bridge_wr_count_lo = 8'h0;
+  wire [7:0] debug_bridge_wr_count_hi = 8'h0;
+  wire [7:0] debug_first_wr_data_b0 = 8'h0;
+  wire [7:0] debug_first_wr_data_b1 = 8'h0;
+  wire [7:0] debug_first_wr_addr_lo = 8'h0;
+  wire [7:0] debug_first_wr_addr_hi = 8'h0;
+  wire [7:0] debug_first_save_byte0 = 8'h0;
+  wire [7:0] debug_first_save_byte1 = 8'h0;
+  wire [7:0] debug_first_save_addr_lo = 8'h0;
+  wire [7:0] debug_first_save_addr_hi = 8'h0;
+  wire [7:0] debug_first_pf_addr_lo = 8'h0;
+  wire [7:0] debug_first_pf_addr_hi = 8'h0;
+  wire [7:0] debug_first_sram_w0_lo = 8'h0;
+  wire [7:0] debug_first_sram_w0_hi = 8'h0;
+  wire [7:0] debug_first_sram_w1_lo = 8'h0;
+  wire [7:0] debug_first_sram_w1_hi = 8'h0;
+  wire [7:0] debug_max_sram_base_lo = 8'h0;
+  wire [7:0] debug_max_sram_base_hi = 8'h0;
+  wire [7:0] debug_save_wr_count_lo = 8'h0;
+  wire [7:0] debug_save_wr_count_hi = 8'h0;
+  wire [7:0] debug_ss_addr_overflow = 8'h0;
+  wire [7:0] debug_ss_addr_max_hi = 8'h0;
+  wire [7:0] debug_pf_at_first_rd_lo = 8'h0;
+  wire [7:0] debug_pf_at_first_rd_hi = 8'h0;
+  wire [7:0] debug_bridge_rd_count_lo = 8'h0;
+  wire [7:0] debug_bridge_rd_count_hi = 8'h0;
+  wire [7:0] debug_first_rd_addr_lo = 8'h0;
+  wire [7:0] debug_first_rd_addr_hi = 8'h0;
+  wire [7:0] debug_last_w0_data_lo = 8'h0;
+  wire [7:0] debug_last_w0_data_hi = 8'h0;
+  wire [7:0] debug_w0_wr_count = 8'h0;
 
   // Debug taps from savestates.sv (SNES side)
   wire [3:0] dbg_rti_arms;
@@ -653,11 +612,11 @@ module core_top (
   wire [3:0] dbg_load_busy_cnt;
   wire [15:0] dbg_load_stall_cnt;
 
-  save_state_controller save_state_controller (
+  save_state_stream save_state_stream (
       .clk_74a(clk_74a),
       .clk_sys(clk_sys_21_48),
 
-      // APF Bridge — writes (load) and reads (save FIFO drain)
+      // APF Bridge — writes (load stream in) and reads (save stream out)
       .bridge_wr(bridge_wr),
       .bridge_rd(bridge_rd),
       .bridge_endian_little(bridge_endian_little),
@@ -692,70 +651,13 @@ module core_top (
 
       .ss_busy(ss_busy),
 
-      // Debug taps for on-screen overlay
-      .debug_sys_state       (debug_sys_state),
-      .debug_ss_busy_seen    (debug_ss_busy_seen),
-      .debug_ss_busy_ever    (debug_ss_busy_ever),
-      .debug_ss_save_ever    (debug_ss_save_ever),
-      .debug_ss_save_count   (debug_ss_save_count),
-      .debug_ss_busy_rises   (debug_ss_busy_rises),
-      .debug_ss_req_ever     (debug_ss_req_ever),
-      .debug_ss_req_toggles  (debug_ss_req_toggles),
-      .debug_core_wr_ever    (debug_core_wr_ever),
-      .debug_sram_wr_ack_ever(debug_sram_wr_ack_ever),
-      .debug_bridge_wr_count_lo(debug_bridge_wr_count_lo),
-      .debug_bridge_wr_count_hi(debug_bridge_wr_count_hi),
-      .debug_first_wr_data_b0  (debug_first_wr_data_b0),
-      .debug_first_wr_data_b1  (debug_first_wr_data_b1),
-      .debug_first_wr_addr_lo  (debug_first_wr_addr_lo),
-      .debug_first_wr_addr_hi  (debug_first_wr_addr_hi),
-      .debug_first_save_byte0  (debug_first_save_byte0),
-      .debug_first_save_byte1  (debug_first_save_byte1),
-      .debug_first_save_addr_lo(debug_first_save_addr_lo),
-      .debug_first_save_addr_hi(debug_first_save_addr_hi),
-      .debug_first_pf_addr_lo  (debug_first_pf_addr_lo),
-      .debug_first_pf_addr_hi  (debug_first_pf_addr_hi),
-      .debug_first_sram_w0_lo  (debug_first_sram_w0_lo),
-      .debug_first_sram_w0_hi  (debug_first_sram_w0_hi),
-      .debug_first_sram_w1_lo  (debug_first_sram_w1_lo),
-      .debug_first_sram_w1_hi  (debug_first_sram_w1_hi),
-      .debug_max_sram_base_lo  (debug_max_sram_base_lo),
-      .debug_max_sram_base_hi  (debug_max_sram_base_hi),
-      .debug_save_wr_count_lo  (debug_save_wr_count_lo),
-      .debug_save_wr_count_hi  (debug_save_wr_count_hi),
-      .debug_ss_addr_overflow  (debug_ss_addr_overflow),
-      .debug_ss_addr_max_hi    (debug_ss_addr_max_hi),
-      .debug_pf_at_first_rd_lo (debug_pf_at_first_rd_lo),
-      .debug_pf_at_first_rd_hi (debug_pf_at_first_rd_hi),
-      .debug_bridge_rd_count_lo(debug_bridge_rd_count_lo),
-      .debug_bridge_rd_count_hi(debug_bridge_rd_count_hi),
-      .debug_first_rd_addr_lo  (debug_first_rd_addr_lo),
-      .debug_first_rd_addr_hi  (debug_first_rd_addr_hi),
-      .debug_last_w0_data_lo   (debug_last_w0_data_lo),
-      .debug_last_w0_data_hi   (debug_last_w0_data_hi),
-      .debug_w0_wr_count       (debug_w0_wr_count),
-
-      // Phase C: SDRAM staging interface (replaces SRAM pin set entirely)
-      .ss_sdram_wr_req (ss_sdram_wr_req),
-      .ss_sdram_wr_addr(ss_sdram_wr_addr),
-      .ss_sdram_wr_data(ss_sdram_wr_data),
-      .ss_sdram_wr_ack (ss_sdram_wr_ack),
-      .ss_sdram_rd_req (ss_sdram_rd_req),
-      .ss_sdram_rd_addr(ss_sdram_rd_addr),
-      .ss_sdram_rd_data(ss_sdram_rd_data),
-      .ss_sdram_rd_ack (ss_sdram_rd_ack),
-      .ss_loading      (ss_loading),
-      .ss_pause_cpu    (ss_pause_cpu),
-
-      // PSRAM (CRAM1 bank 1) staging interface — idle in Step-4 baseline.
-      .ss_psram_wr_req (ss_psram_wr_req),
-      .ss_psram_wr_addr(ss_psram_wr_addr),
-      .ss_psram_wr_data(ss_psram_wr_data),
-      .ss_psram_wr_ack (ss_psram_wr_ack),
-      .ss_psram_rd_req (ss_psram_rd_req),
-      .ss_psram_rd_addr(ss_psram_rd_addr),
-      .ss_psram_rd_data(ss_psram_rd_data),
-      .ss_psram_rd_ack (ss_psram_rd_ack)
+      // On-board SRAM — the stream ring (single master, no arbiter)
+      .sram_a   (sram_a),
+      .sram_dq  (sram_dq),
+      .sram_oe_n(sram_oe_n),
+      .sram_we_n(sram_we_n),
+      .sram_ub_n(sram_ub_n),
+      .sram_lb_n(sram_lb_n)
   );
 
   reg ioctl_download = 0;

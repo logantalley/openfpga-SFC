@@ -276,7 +276,11 @@ module MAIN_SNES (
   always @(negedge clk_sys) begin
     clk_sys_en <= ~ss_pause_any;
   end
-  wire mclk_gated = clk_sys & clk_sys_en;
+  // direct-stream: the console never pauses (no staging), so MCLK is the raw
+  // system clock — matching upstream agg23 and MiSTer.  The gated clock was
+  // this project's addition and the prime suspect for the spurious cpurd
+  // strobe repeats measured on silicon (FINDINGS §13–17).
+  wire mclk_gated = clk_sys;
 
   wire code_index = &ioctl_index;
   wire code_download = ioctl_download & code_index;
